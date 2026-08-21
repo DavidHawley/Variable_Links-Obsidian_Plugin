@@ -5,7 +5,7 @@ export const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
 /** A split, editable sidebar for the selected variable and its info card. */
 export class VariablePropertiesView extends ItemView {
   plugin: any;
-  private contentEl: any = null;
+  private panelContentEl: HTMLElement | null = null;
   private selectedVariableName: string | null = null;
   private active = false;
   private refreshGeneration = 0;
@@ -25,7 +25,7 @@ export class VariablePropertiesView extends ItemView {
     this.active = true;
     this.containerEl.empty();
     this.containerEl.addClass('variable-links-panel');
-    this.contentEl = this.containerEl.createDiv('variable-links-panel-inner');
+    this.panelContentEl = this.containerEl.createDiv('variable-links-panel-inner');
     await this.refresh();
   }
 
@@ -35,7 +35,7 @@ export class VariablePropertiesView extends ItemView {
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
     this.clearMarkdownChild();
-    this.contentEl = null;
+    this.panelContentEl = null;
   }
 
   async selectVariable(name: string) {
@@ -44,13 +44,13 @@ export class VariablePropertiesView extends ItemView {
   }
 
   async refresh() {
-    if (!this.active || !this.contentEl) return;
+    if (!this.active || !this.panelContentEl) return;
     const generation = ++this.refreshGeneration;
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
     this.clearMarkdownChild();
-    this.contentEl.empty();
-    const markdownChild = new (MarkdownRenderChild as any)(this.contentEl);
+    this.panelContentEl.empty();
+    const markdownChild = new (MarkdownRenderChild as any)(this.panelContentEl);
     this.markdownChild = markdownChild;
     try { (this as any).addChild(markdownChild); }
     catch (error) { markdownChild.load?.(); }
@@ -61,7 +61,7 @@ export class VariablePropertiesView extends ItemView {
     const activeName = this.selectedVariableName || last?.name || '';
     const definition = activeName ? registry?.getVariable(activeName) || {} : {};
 
-    const toolbar = this.contentEl.createDiv('variable-links-panel-toolbar');
+    const toolbar = this.panelContentEl.createDiv('variable-links-panel-toolbar');
     const select = toolbar.createEl('select') as HTMLSelectElement;
     select.add(new Option(activeName && !definition.file ? `[New] ${activeName}` : 'Select a Variable Link…', ''));
     for (const name of names) select.add(new Option(name, name));
@@ -96,7 +96,7 @@ export class VariablePropertiesView extends ItemView {
       }
     });
 
-    const layout = this.contentEl.createDiv('variable-links-panel-split');
+    const layout = this.panelContentEl.createDiv('variable-links-panel-split');
     const propertiesPane = layout.createDiv('variable-links-panel-pane variable-links-panel-properties');
     const cardPane = layout.createDiv('variable-links-panel-pane variable-links-panel-infocard');
 
@@ -308,6 +308,6 @@ export class VariablePropertiesView extends ItemView {
   }
 
   private isCurrent(generation: number) {
-    return this.active && !!this.contentEl && this.refreshGeneration === generation;
+    return this.active && !!this.panelContentEl && this.refreshGeneration === generation;
   }
 }

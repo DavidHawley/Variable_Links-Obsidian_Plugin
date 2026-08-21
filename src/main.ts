@@ -1,4 +1,4 @@
-import { App, Notice, Plugin } from 'obsidian';
+import { App, Notice, Plugin, WorkspaceLeaf } from 'obsidian';
 import { VariableLinksSettingTab, VariableLinksSettings, DEFAULT_SETTINGS } from './settings';
 import { Registry } from './registry';
 import Indexer from './indexer';
@@ -222,7 +222,7 @@ export default class VariableLinksPlugin extends Plugin {
 
   async loadSettings() {
     const saved = await this.loadData() || {};
-    const configDir = (this.app.vault as any).configDir || '.obsidian';
+    const configDir = this.app.vault.configDir;
     const pluginId = (this as any).manifest?.id || 'variable-links';
     const defaultRegistryPath = `${configDir}/plugins/${pluginId}/registry.json`;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, { registryFilePath: defaultRegistryPath }, saved);
@@ -236,13 +236,13 @@ export default class VariableLinksPlugin extends Plugin {
     if (!this.active) return;
     const panelMod = await import('./panel');
     if (!this.active) return;
-    let leaf = this.app.workspace.getLeavesOfType(panelMod.VIEW_TYPE_VARIABLE_PANEL)?.[0];
+    let leaf: WorkspaceLeaf | null = this.app.workspace.getLeavesOfType(panelMod.VIEW_TYPE_VARIABLE_PANEL)[0] ?? null;
     if (!leaf) {
       leaf = this.app.workspace.getRightLeaf(false);
       if (!leaf) throw new Error('A sidebar could not be opened.');
       await leaf.setViewState({ type: panelMod.VIEW_TYPE_VARIABLE_PANEL });
     }
-    if (variableName && typeof leaf.view?.selectVariable === 'function') {
+    if (variableName && leaf.view instanceof panelMod.VariablePropertiesView) {
       await leaf.view.selectVariable(variableName);
     }
     this.app.workspace.revealLeaf(leaf);
@@ -431,7 +431,7 @@ export default class VariableLinksPlugin extends Plugin {
       await this.registry.saveVariable(variableName, { ...definition, favorite });
       const panelMod = await import('./panel');
       for (const leaf of this.app.workspace.getLeavesOfType(panelMod.VIEW_TYPE_VARIABLE_PANEL) || []) {
-        if (typeof leaf.view?.refresh === 'function') await leaf.view.refresh();
+        if (leaf.view instanceof panelMod.VariablePropertiesView) await leaf.view.refresh();
       }
       new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} {{${variableName}}}`);
     } catch (error) {

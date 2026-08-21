@@ -25,7 +25,7 @@ export default class TokenCache {
     this.app = app;
     this.plugin = plugin;
     this.registry = registry;
-    const configDir = (app.vault as any).configDir || '.obsidian';
+    const configDir = app.vault.configDir;
     const pluginId = plugin.manifest?.id || 'variable-links';
     this.cachePath = `${configDir}/plugins/${pluginId}/token-cache.json`;
   }

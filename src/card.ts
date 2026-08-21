@@ -28,8 +28,6 @@ export class InfoCard {
     // build container
     const container = document.createElement('div');
     container.className = 'variable-links-card';
-    container.style.position = 'absolute';
-    container.style.zIndex = '9999';
     this.el = container;
     this.renderChild = new (MarkdownRenderChild as any)(container);
     this.renderChild.load?.();
@@ -45,7 +43,7 @@ export class InfoCard {
     // Note
     if (cardConfig?.note) {
       const p = document.createElement('div');
-      p.style.marginBottom = '6px';
+      p.className = 'variable-links-card-note';
       // render as markdown for convenience
       await MarkdownRenderer.renderMarkdown(cardConfig.note || '', p, '', this.renderChild);
       if (!this.isCurrent(container, generation)) return;
@@ -92,7 +90,7 @@ export class InfoCard {
     // Source link
     if (cardConfig?.showSourceLink) {
       const btn = document.createElement('div');
-      btn.style.marginTop = '6px';
+      btn.className = 'variable-links-card-source';
       const a = document.createElement('a');
       a.href = '#';
       a.textContent = 'Open source';
@@ -108,12 +106,6 @@ export class InfoCard {
       btn.appendChild(a);
       container.appendChild(btn);
     }
-
-    // Append first so browser can compute layout, then adjust width/position dynamically
-    // allow the card to size to its content but cap at a reasonable percentage of viewport
-    container.style.maxWidth = '60vw';
-    container.style.width = 'auto';
-    container.style.boxSizing = 'border-box';
 
     if (!this.isCurrent(container, generation)) return;
     document.body.appendChild(container);

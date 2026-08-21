@@ -123,9 +123,9 @@ export class Renderer {
     const result = await this.resolver.resolve(name).catch(() => null);
     if (!this.enabled || !result?.ok || !result.sourceFile) return;
     try {
-      this.app.workspace.openLinkText(result.sourceFile.path.replace(/\.md$/i, ''), '', false);
+      await this.app.workspace.openLinkText(result.sourceFile.path.replace(/\.md$/i, ''), '', false);
     } catch (error) {
-      this.app.workspace.openFile(result.sourceFile);
+      await this.app.workspace.getLeaf(false).openFile(result.sourceFile);
     }
     event.stopPropagation();
   }
