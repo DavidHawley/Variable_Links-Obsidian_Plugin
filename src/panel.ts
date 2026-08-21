@@ -26,6 +26,11 @@ export class VariablePropertiesView extends ItemView {
 
   async onClose() { this.contentEl = null; }
 
+  async selectVariable(name: string) {
+    this.selectedVariableName = name.trim() || null;
+    await this.refresh();
+  }
+
   async refresh() {
     if (!this.contentEl) return;
     this.contentEl.empty();
@@ -33,7 +38,6 @@ export class VariablePropertiesView extends ItemView {
     const registry = this.plugin.registry;
     const last = this.plugin.caretTracker?.lastTouched;
     const names = (Array.from(registry?.data?.keys?.() || []) as string[]).sort((a, b) => a.localeCompare(b));
-    if (this.selectedVariableName && !registry?.getVariable(this.selectedVariableName)) this.selectedVariableName = null;
     const activeName = this.selectedVariableName || last?.name || '';
     const definition = activeName ? registry?.getVariable(activeName) || {} : {};
 
@@ -117,12 +121,17 @@ export class VariablePropertiesView extends ItemView {
     const fileInput = this.addInput(form, 'Source note', definition.file || '', '[[People/John Smith]] or People/John Smith.md');
     const propertyInput = this.addInput(form, 'Property', definition.property || '', 'e.g. company');
     const displayInput = this.addInput(form, 'Display name (optional)', definition.display || '', 'e.g. John Smith');
+    const favoriteRow = form.createDiv('variable-links-panel-checkbox');
+    const favoriteInput = favoriteRow.createEl('input', { attr: { type: 'checkbox' } }) as HTMLInputElement;
+    favoriteInput.checked = definition.favorite === true;
+    favoriteRow.createEl('label', { text: 'Favorite' });
     this.addSaveButton(form, name ? 'Save properties' : 'Add variable', async () => {
       const newName = nameInput.value.trim();
       await this.plugin.registry.saveVariable(newName, {
         file: fileInput.value,
         property: propertyInput.value,
-        display: displayInput.value
+        display: displayInput.value,
+        favorite: favoriteInput.checked
       }, definition.file ? name : undefined);
       const touched = this.plugin.caretTracker?.lastTouched;
       if (touched?.name === name && newName !== name) {

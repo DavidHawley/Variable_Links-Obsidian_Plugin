@@ -189,6 +189,7 @@ class Registry {
                     file: raw.file,
                     property: raw.property,
                     display: raw.display,
+                    favorite: raw.favorite === true,
                     card: raw.card,
                     format: raw.format
                 };
@@ -302,6 +303,8 @@ class Registry {
         };
         if (Object.prototype.hasOwnProperty.call(definition, 'card'))
             normalized.card = definition.card;
+        if (Object.prototype.hasOwnProperty.call(definition, 'favorite'))
+            normalized.favorite = definition.favorite === true;
         const rename = !!oldName && oldName !== variableName;
         const tokenCache = this.plugin.tokenCache;
         if (rename && !tokenCache) {
@@ -319,6 +322,8 @@ class Registry {
                     updated.display = definition.display.trim();
                 else
                     delete updated.display;
+                if (Object.prototype.hasOwnProperty.call(definition, 'favorite') && !definition.favorite)
+                    delete updated.favorite;
                 if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card)
                     delete updated.card;
                 links[variableName] = updated;
@@ -1424,6 +1429,7 @@ class VariableLinksPlugin extends obsidian.Plugin {
         this.livePreviewRenderer = null;
         this.tokenCache = null;
         this.suggest = null;
+        this.lastContextClick = null;
     }
     async onload() {
         console.log('Variable Links: onload start');
@@ -1521,12 +1527,9 @@ class VariableLinksPlugin extends obsidian.Plugin {
                 this.addCommand({
                     id: 'open-variable-properties',
                     name: 'Open Variable Properties',
-                    callback: async () => {
-                        const right = this.app.workspace.getRightLeaf(false);
-                        await right.setViewState({ type: panelMod.VIEW_TYPE_VARIABLE_PANEL });
-                        this.app.workspace.revealLeaf(right);
-                    }
+                    callback: () => this.openVariableProperties()
                 });
+                this.registerVariableContextMenu();
                 // start caret tracker
                 const CaretTracker = (await Promise.resolve().then(function () { return caretTracker; })).default;
                 const ct = new CaretTracker(this.app, this, this.registry, this.resolver);
@@ -1695,6 +1698,222 @@ class VariableLinksPlugin extends obsidian.Plugin {
     async saveSettings() {
         await this.saveData(this.settings);
     }
+    async openVariableProperties(variableName) {
+        var _a, _b;
+        const panelMod = await Promise.resolve().then(function () { return panel; });
+        let leaf = (_a = this.app.workspace.getLeavesOfType(panelMod.VIEW_TYPE_VARIABLE_PANEL)) === null || _a === void 0 ? void 0 : _a[0];
+        if (!leaf) {
+            leaf = this.app.workspace.getRightLeaf(false);
+            if (!leaf)
+                throw new Error('A sidebar could not be opened.');
+            await leaf.setViewState({ type: panelMod.VIEW_TYPE_VARIABLE_PANEL });
+        }
+        if (variableName && typeof ((_b = leaf.view) === null || _b === void 0 ? void 0 : _b.selectVariable) === 'function') {
+            await leaf.view.selectVariable(variableName);
+        }
+        this.app.workspace.revealLeaf(leaf);
+    }
+    registerVariableContextMenu() {
+        if (typeof this.registerDomEvent === 'function') {
+            this.registerDomEvent(document, 'contextmenu', (event) => {
+                this.lastContextClick = {
+                    x: event.clientX,
+                    y: event.clientY,
+                    target: event.target,
+                    time: Date.now()
+                };
+            }, true);
+        }
+        const eventRef = this.app.workspace.on('editor-menu', (menu, editor) => {
+            var _a, _b, _c, _d, _e, _f, _g;
+            const variableName = this.getContextVariableName(editor);
+            const insertionPosition = this.getContextEditorPosition(editor);
+            const definition = variableName ? (_a = this.registry) === null || _a === void 0 ? void 0 : _a.getVariable(variableName) : null;
+            const isFavorite = (definition === null || definition === void 0 ? void 0 : definition.favorite) === true;
+            const favorites = Array.from(((_d = (_c = (_b = this.registry) === null || _b === void 0 ? void 0 : _b.data) === null || _c === void 0 ? void 0 : _c.entries) === null || _d === void 0 ? void 0 : _d.call(_c)) || [])
+                .filter((entry) => { var _a; return ((_a = entry[1]) === null || _a === void 0 ? void 0 : _a.favorite) === true; })
+                .map((entry) => String(entry[0]))
+                .sort((a, b) => a.localeCompare(b));
+            const allLinks = Array.from(((_g = (_f = (_e = this.registry) === null || _e === void 0 ? void 0 : _e.data) === null || _f === void 0 ? void 0 : _f.keys) === null || _g === void 0 ? void 0 : _g.call(_f)) || [])
+                .map((name) => String(name))
+                .sort((a, b) => a.localeCompare(b));
+            menu.addItem((parentItem) => {
+                parentItem.setTitle('Variable Links').setIcon('braces');
+                if (typeof parentItem.setSubmenu === 'function') {
+                    const submenu = parentItem.setSubmenu();
+                    submenu.addItem((item) => {
+                        item.setTitle('Properties').setIcon('list').setDisabled(!variableName);
+                        if (variableName)
+                            item.onClick(() => void this.openVariableProperties(variableName));
+                    });
+                    submenu.addItem((item) => {
+                        item
+                            .setTitle(isFavorite ? 'Unfavorite' : 'Favorite')
+                            .setIcon('star')
+                            .setDisabled(!definition);
+                        if (definition && variableName) {
+                            item.onClick(() => void this.setVariableFavorite(variableName, !isFavorite));
+                        }
+                    });
+                    if (typeof submenu.addSeparator === 'function')
+                        submenu.addSeparator();
+                    submenu.addItem((insertItem) => {
+                        insertItem.setTitle('Insert Favorite').setIcon('text-cursor-input').setDisabled(!favorites.length);
+                        if (!favorites.length || typeof insertItem.setSubmenu !== 'function')
+                            return;
+                        const favoritesMenu = insertItem.setSubmenu();
+                        this.enableNestedSubmenuSwitch(submenu, insertItem, favoritesMenu);
+                        for (const favoriteName of favorites) {
+                            favoritesMenu.addItem((item) => item
+                                .setTitle(favoriteName)
+                                .setIcon('star')
+                                .onClick(() => this.insertVariable(editor, favoriteName, insertionPosition)));
+                        }
+                    });
+                    submenu.addItem((insertItem) => {
+                        insertItem.setTitle('Insert').setIcon('text-cursor-input').setDisabled(!allLinks.length);
+                        if (!allLinks.length || typeof insertItem.setSubmenu !== 'function')
+                            return;
+                        const linksMenu = insertItem.setSubmenu();
+                        this.enableNestedSubmenuSwitch(submenu, insertItem, linksMenu);
+                        for (const linkName of allLinks) {
+                            linksMenu.addItem((item) => item
+                                .setTitle(linkName)
+                                .onClick(() => this.insertVariable(editor, linkName, insertionPosition)));
+                        }
+                    });
+                    return;
+                }
+                // Older Obsidian versions do not expose nested menu items.
+                parentItem
+                    .setTitle('Variable Links: Properties')
+                    .setDisabled(!variableName);
+                if (variableName)
+                    parentItem.onClick(() => void this.openVariableProperties(variableName));
+            });
+        });
+        if (typeof this.registerEvent === 'function')
+            this.registerEvent(eventRef);
+    }
+    getContextVariableName(editor) {
+        var _a, _b, _c, _d, _e;
+        const click = this.lastContextClick;
+        const recentClick = click && Date.now() - click.time < 1000 ? click : null;
+        if (recentClick) {
+            const tokenElement = (_b = (_a = recentClick.target) === null || _a === void 0 ? void 0 : _a.closest) === null || _b === void 0 ? void 0 : _b.call(_a, '.variable-links-token[data-var]');
+            const renderedName = (_d = (_c = tokenElement === null || tokenElement === void 0 ? void 0 : tokenElement.dataset) === null || _c === void 0 ? void 0 : _c.var) === null || _d === void 0 ? void 0 : _d.trim();
+            if (renderedName)
+                return renderedName;
+            return this.getVariableAtPosition(editor, this.getContextEditorPosition(editor));
+        }
+        return this.getVariableAtPosition(editor, (_e = editor === null || editor === void 0 ? void 0 : editor.getCursor) === null || _e === void 0 ? void 0 : _e.call(editor));
+    }
+    getVariableAtPosition(editor, position) {
+        var _a;
+        if (!position || typeof position.line !== 'number' || typeof position.ch !== 'number')
+            return null;
+        const line = (_a = editor === null || editor === void 0 ? void 0 : editor.getLine) === null || _a === void 0 ? void 0 : _a.call(editor, position.line);
+        if (typeof line !== 'string')
+            return null;
+        const pattern = /\{\{\s*([^\}\s]+)\s*\}\}/g;
+        let match;
+        while ((match = pattern.exec(line)) !== null) {
+            if (position.ch >= match.index && position.ch <= pattern.lastIndex)
+                return match[1].trim();
+        }
+        return null;
+    }
+    getContextEditorPosition(editor) {
+        var _a, _b, _c, _d, _e;
+        const click = this.lastContextClick;
+        const recentClick = click && Date.now() - click.time < 1000 ? click : null;
+        if (!recentClick)
+            return ((_a = editor === null || editor === void 0 ? void 0 : editor.getCursor) === null || _a === void 0 ? void 0 : _a.call(editor)) || null;
+        if (!((_c = (_b = recentClick.target) === null || _b === void 0 ? void 0 : _b.closest) === null || _c === void 0 ? void 0 : _c.call(_b, '.cm-editor')))
+            return null;
+        const offset = (_e = (_d = editor === null || editor === void 0 ? void 0 : editor.cm) === null || _d === void 0 ? void 0 : _d.posAtCoords) === null || _e === void 0 ? void 0 : _e.call(_d, { x: recentClick.x, y: recentClick.y });
+        if (typeof offset !== 'number')
+            return null;
+        return typeof editor.offsetToPos === 'function'
+            ? editor.offsetToPos(offset)
+            : this.positionFromOffset(editor.getValue(), offset);
+    }
+    insertVariable(editor, variableName, contextPosition) {
+        var _a;
+        const position = contextPosition || ((_a = editor === null || editor === void 0 ? void 0 : editor.getCursor) === null || _a === void 0 ? void 0 : _a.call(editor));
+        if (!position || typeof (editor === null || editor === void 0 ? void 0 : editor.replaceRange) !== 'function') {
+            new obsidian.Notice('Variable Links: the insertion position is unavailable.');
+            return;
+        }
+        editor.replaceRange(`{{${variableName}}}`, position);
+    }
+    /** Work around Obsidian retaining the first open sibling sub-submenu. */
+    enableNestedSubmenuSwitch(parentMenu, item, itemSubmenu) {
+        const itemElement = item === null || item === void 0 ? void 0 : item.dom;
+        if (!(itemElement === null || itemElement === void 0 ? void 0 : itemElement.addEventListener))
+            return;
+        const timerKey = '__variableLinksSubmenuSwitchTimer';
+        itemElement.addEventListener('mouseenter', () => {
+            const current = parentMenu === null || parentMenu === void 0 ? void 0 : parentMenu.currentSubmenu;
+            if (!current || current === itemSubmenu)
+                return;
+            if (parentMenu[timerKey])
+                clearTimeout(parentMenu[timerKey]);
+            parentMenu[timerKey] = setTimeout(() => {
+                var _a, _b, _c;
+                parentMenu[timerKey] = null;
+                if (!itemElement.isConnected || !((_a = itemElement.matches) === null || _a === void 0 ? void 0 : _a.call(itemElement, ':hover')))
+                    return;
+                try {
+                    if (typeof parentMenu.closeSubmenu === 'function')
+                        parentMenu.closeSubmenu();
+                    else if (typeof current.hide === 'function')
+                        current.hide();
+                    try {
+                        parentMenu.currentSubmenu = null;
+                    }
+                    catch (_) { }
+                    // Re-send the hover after clearing the stale submenu so Obsidian's
+                    // own positioning and menu activation code opens the intended list.
+                    const MouseEventCtor = ((_c = (_b = itemElement.ownerDocument) === null || _b === void 0 ? void 0 : _b.defaultView) === null || _c === void 0 ? void 0 : _c.MouseEvent) || MouseEvent;
+                    itemElement.dispatchEvent(new MouseEventCtor('mouseover', { bubbles: true, cancelable: true }));
+                }
+                catch (error) {
+                    console.warn('Variable Links: failed to switch insert submenu', error);
+                }
+            }, 300);
+        });
+        itemElement.addEventListener('mouseleave', () => {
+            if (!parentMenu[timerKey])
+                return;
+            clearTimeout(parentMenu[timerKey]);
+            parentMenu[timerKey] = null;
+        });
+    }
+    async setVariableFavorite(variableName, favorite) {
+        var _a, _b;
+        const definition = (_a = this.registry) === null || _a === void 0 ? void 0 : _a.getVariable(variableName);
+        if (!definition || !this.registry) {
+            new obsidian.Notice(`Variable Links: {{${variableName}}} is not configured.`);
+            return;
+        }
+        try {
+            await this.registry.saveVariable(variableName, { ...definition, favorite });
+            const panelMod = await Promise.resolve().then(function () { return panel; });
+            for (const leaf of this.app.workspace.getLeavesOfType(panelMod.VIEW_TYPE_VARIABLE_PANEL) || []) {
+                if (typeof ((_b = leaf.view) === null || _b === void 0 ? void 0 : _b.refresh) === 'function')
+                    await leaf.view.refresh();
+            }
+            new obsidian.Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} {{${variableName}}}`);
+        }
+        catch (error) {
+            new obsidian.Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    positionFromOffset(text, offset) {
+        const before = text.slice(0, offset).split(/\r?\n/);
+        return { line: before.length - 1, ch: before[before.length - 1].length };
+    }
 }
 
 const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
@@ -1716,6 +1935,10 @@ class VariablePropertiesView extends obsidian.ItemView {
         await this.refresh();
     }
     async onClose() { this.contentEl = null; }
+    async selectVariable(name) {
+        this.selectedVariableName = name.trim() || null;
+        await this.refresh();
+    }
     async refresh() {
         var _a, _b, _c;
         if (!this.contentEl)
@@ -1724,8 +1947,6 @@ class VariablePropertiesView extends obsidian.ItemView {
         const registry = this.plugin.registry;
         const last = (_a = this.plugin.caretTracker) === null || _a === void 0 ? void 0 : _a.lastTouched;
         const names = Array.from(((_c = (_b = registry === null || registry === void 0 ? void 0 : registry.data) === null || _b === void 0 ? void 0 : _b.keys) === null || _c === void 0 ? void 0 : _c.call(_b)) || []).sort((a, b) => a.localeCompare(b));
-        if (this.selectedVariableName && !(registry === null || registry === void 0 ? void 0 : registry.getVariable(this.selectedVariableName)))
-            this.selectedVariableName = null;
         const activeName = this.selectedVariableName || (last === null || last === void 0 ? void 0 : last.name) || '';
         const definition = activeName ? (registry === null || registry === void 0 ? void 0 : registry.getVariable(activeName)) || {} : {};
         const toolbar = this.contentEl.createDiv('variable-links-panel-toolbar');
@@ -1804,13 +2025,18 @@ class VariablePropertiesView extends obsidian.ItemView {
         const fileInput = this.addInput(form, 'Source note', definition.file || '', '[[People/John Smith]] or People/John Smith.md');
         const propertyInput = this.addInput(form, 'Property', definition.property || '', 'e.g. company');
         const displayInput = this.addInput(form, 'Display name (optional)', definition.display || '', 'e.g. John Smith');
+        const favoriteRow = form.createDiv('variable-links-panel-checkbox');
+        const favoriteInput = favoriteRow.createEl('input', { attr: { type: 'checkbox' } });
+        favoriteInput.checked = definition.favorite === true;
+        favoriteRow.createEl('label', { text: 'Favorite' });
         this.addSaveButton(form, name ? 'Save properties' : 'Add variable', async () => {
             var _a;
             const newName = nameInput.value.trim();
             await this.plugin.registry.saveVariable(newName, {
                 file: fileInput.value,
                 property: propertyInput.value,
-                display: displayInput.value
+                display: displayInput.value,
+                favorite: favoriteInput.checked
             }, definition.file ? name : undefined);
             const touched = (_a = this.plugin.caretTracker) === null || _a === void 0 ? void 0 : _a.lastTouched;
             if ((touched === null || touched === void 0 ? void 0 : touched.name) === name && newName !== name) {

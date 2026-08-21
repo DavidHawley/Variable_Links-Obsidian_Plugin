@@ -7,6 +7,7 @@ export interface VariableDefinition {
   file: string; // vault path or wiki-link raw
   property: string;
   display?: string;
+  favorite?: boolean;
   card?: any;
   format?: any;
 }
@@ -116,6 +117,7 @@ export class Registry {
           file: (raw as any).file,
           property: (raw as any).property,
           display: (raw as any).display,
+          favorite: (raw as any).favorite === true,
           card: (raw as any).card,
           format: (raw as any).format
         };
@@ -219,6 +221,7 @@ export class Registry {
       property: definition.property.trim()
     };
     if (Object.prototype.hasOwnProperty.call(definition, 'card')) normalized.card = definition.card;
+    if (Object.prototype.hasOwnProperty.call(definition, 'favorite')) normalized.favorite = definition.favorite === true;
     const rename = !!oldName && oldName !== variableName;
     const tokenCache = (this.plugin as any).tokenCache;
     if (rename && !tokenCache) {
@@ -233,6 +236,7 @@ export class Registry {
         const updated: any = { ...stored, ...normalized };
         if (definition.display?.trim()) updated.display = definition.display.trim();
         else delete updated.display;
+        if (Object.prototype.hasOwnProperty.call(definition, 'favorite') && !definition.favorite) delete updated.favorite;
         if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card) delete updated.card;
         links[variableName] = updated;
         if (rename) delete links[oldName!];

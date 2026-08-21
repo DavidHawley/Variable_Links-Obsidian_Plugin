@@ -47,6 +47,7 @@ The default JSON registry uses this structure:
       "file": "[[People/John Smith]]",
       "property": "company",
       "display": "John Smith",
+      "favorite": true,
       "card": {
         "title": "Customer details",
         "note": "Primary contact for this account.",
@@ -70,6 +71,7 @@ Each variable definition supports:
 | `file` | Source note as a vault path or wiki-link. |
 | `property` | Frontmatter property whose value the token displays. |
 | `display` | Optional descriptive name used in suggestions. |
+| `favorite` | Optional favorite status. Favorited links appear in the Insert Favorite context submenu. |
 | `card` | Optional Info Card configuration. |
 
 ## Using variables
@@ -109,6 +111,15 @@ The toolbar at the top of the panel lets you:
 - Select any existing Variable Link from the registry.
 - Use **Set token** to replace the token currently under the editor caret with the selected Variable Link.
 - Use **Delete** to remove the selected registry entry.
+
+In the Markdown editor or Live Preview, the **Variable Links** right-click submenu provides:
+
+- **Properties** — opens the right-clicked token directly in the panel. It is disabled when the right-click is not on a token.
+- **Favorite** or **Unfavorite** — changes the saved favorite status of the right-clicked configured link.
+- **Insert Favorite** — lists favorite links and inserts the selected token at the original right-click position.
+- **Insert** — lists every configured Variable Link alphabetically and inserts the selected token at the original right-click position.
+
+Favorite status can also be changed with the **Favorite** checkbox in the Variable Properties form.
 
 Changing a variable name and saving renames the existing registry entry and replaces that link's tokens in Markdown notes throughout the vault. It does not leave the old entry behind, and it will not overwrite another existing Variable Link with the same name. Tokens inside inline code or fenced code blocks are not changed.
 
