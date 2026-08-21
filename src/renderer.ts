@@ -13,6 +13,10 @@ export class Renderer {
   indexer: Indexer;
   enabled: boolean = true;
   infoCard: InfoCard;
+  private hoverTimer: ReturnType<typeof setTimeout> | null = null;
+  private clickHandler: (event: MouseEvent) => void;
+  private mouseOverHandler: (event: MouseEvent) => void;
+  private mouseOutHandler: (event: MouseEvent) => void;
 
   constructor(app: App, registry: Registry, resolver: Resolver, indexer: Indexer) {
     this.app = app;
@@ -20,16 +24,16 @@ export class Renderer {
     this.resolver = resolver;
     this.indexer = indexer;
     this.infoCard = new InfoCard(app);
-  }
-
-  register() {
-    if (!this.enabled) return;
-    (this.app as any).registerMarkdownPostProcessor?.(async (el: HTMLElement, ctx: any) => {
-      await this.processElement(el);
-    });
+    this.clickHandler = (event) => void this.onClick(event);
+    this.mouseOverHandler = (event) => this.onMouseOver(event);
+    this.mouseOutHandler = (event) => this.onMouseOut(event);
+    document.addEventListener('click', this.clickHandler);
+    document.addEventListener('mouseover', this.mouseOverHandler);
+    document.addEventListener('mouseout', this.mouseOutHandler);
   }
 
   async processElement(el: HTMLElement) {
+    if (!this.enabled) return;
     // Walk text nodes and replace {{variable}} occurrences
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null as any);
     const nodes: Text[] = [];
@@ -57,12 +61,14 @@ export class Renderer {
         if (before) frag.appendChild(document.createTextNode(before));
         const varName = match[1].trim();
         const placeholder = document.createElement('span');
-        placeholder.className = 'variable-links-token';
+        placeholder.className = 'variable-links-token variable-links-token-reading';
         placeholder.textContent = '…';
+        placeholder.dataset.var = varName;
         frag.appendChild(placeholder);
 
         // resolve async and then update placeholder
         this.resolver.resolve(varName).then(res => {
+          if (!this.enabled) return;
           if (!res.ok) {
             placeholder.textContent = `[Missing: ${varName}]`;
             placeholder.classList.add('missing');
@@ -74,36 +80,7 @@ export class Renderer {
           if (res.type === 'array') display = (res.value as any[]).join(', ');
           else display = String(res.value);
           placeholder.textContent = display;
-
-          // click to open source
-          placeholder.addEventListener('click', (ev) => {
-            if (res.sourceFile) {
-              try { this.app.workspace.openLinkText(res.sourceFile.path.replace(/\.md$/i, ''), '', false); } catch (e) { this.app.workspace.openFile(res.sourceFile); }
-            }
-            ev.stopPropagation();
-          });
-
-          // hover -> info card (if configured and enabled)
-          if ((this.registry.plugin as any)?.settings?.enableInfoCards !== false) {
-            let enterTimer: any = null;
-            placeholder.addEventListener('mouseenter', () => {
-              if (enterTimer) clearTimeout(enterTimer);
-              const currentDef = this.registry.getVariable(varName);
-              if (!currentDef?.card) return;
-              enterTimer = setTimeout(() => {
-                const latestDef = this.registry.getVariable(varName);
-                const latestCard = latestDef?.card;
-                if (!latestCard) return;
-                const sourcePath = res.sourceFile?.path ?? (latestDef?.file ?? '');
-                this.infoCard.showFor(placeholder, sourcePath, latestCard);
-              }, 200);
-            });
-            placeholder.addEventListener('mouseleave', () => {
-              if (enterTimer) { clearTimeout(enterTimer); enterTimer = null; }
-              this.infoCard.hideWithDelay(100);
-            });
-          }
-        });
+        }).catch(() => {});
 
         lastIndex = TOKEN_REGEX.lastIndex;
       }
@@ -113,6 +90,72 @@ export class Renderer {
       textNode.parentNode?.replaceChild(frag, textNode);
     }
 
+  }
+
+  unload() {
+    if (!this.enabled) return;
+    this.enabled = false;
+    if (this.hoverTimer) clearTimeout(this.hoverTimer);
+    this.hoverTimer = null;
+    document.removeEventListener('click', this.clickHandler);
+    document.removeEventListener('mouseover', this.mouseOverHandler);
+    document.removeEventListener('mouseout', this.mouseOutHandler);
+    this.infoCard.destroy();
+    for (const leaf of (this.app.workspace as any).getLeavesOfType?.('markdown') || []) {
+      const previewMode = leaf?.view?.previewMode;
+      try {
+        if (typeof previewMode?.rerender === 'function') previewMode.rerender(true);
+        else if (typeof previewMode?.renderer?.rerender === 'function') previewMode.renderer.rerender(true);
+      } catch (error) {}
+    }
+  }
+
+  private tokenFromEvent(event: MouseEvent): HTMLElement | null {
+    const target = event.target instanceof Element ? event.target : null;
+    return target?.closest?.('.variable-links-token-reading[data-var]') as HTMLElement | null;
+  }
+
+  private async onClick(event: MouseEvent) {
+    if (!this.enabled) return;
+    const token = this.tokenFromEvent(event);
+    const name = token?.dataset.var?.trim();
+    if (!token || !name) return;
+    const result = await this.resolver.resolve(name).catch(() => null);
+    if (!this.enabled || !result?.ok || !result.sourceFile) return;
+    try {
+      this.app.workspace.openLinkText(result.sourceFile.path.replace(/\.md$/i, ''), '', false);
+    } catch (error) {
+      this.app.workspace.openFile(result.sourceFile);
+    }
+    event.stopPropagation();
+  }
+
+  private onMouseOver(event: MouseEvent) {
+    if (!this.enabled || (this.registry.plugin as any)?.settings?.enableInfoCards === false) return;
+    const token = this.tokenFromEvent(event);
+    const name = token?.dataset.var?.trim();
+    if (!token || !name) return;
+    if (event.relatedTarget instanceof Node && token.contains(event.relatedTarget)) return;
+    if (this.hoverTimer) clearTimeout(this.hoverTimer);
+    this.hoverTimer = setTimeout(async () => {
+      this.hoverTimer = null;
+      if (!this.enabled || !token.isConnected || !token.matches(':hover')) return;
+      const definition = this.registry.getVariable(name);
+      if (!definition?.card) return;
+      const result = await this.resolver.resolve(name).catch(() => null);
+      if (!this.enabled || !token.isConnected || !token.matches(':hover')) return;
+      const sourcePath = result?.sourceFile?.path ?? definition.file ?? '';
+      void this.infoCard.showFor(token, sourcePath, definition.card);
+    }, 200);
+  }
+
+  private onMouseOut(event: MouseEvent) {
+    const token = this.tokenFromEvent(event);
+    if (!token) return;
+    if (event.relatedTarget instanceof Node && token.contains(event.relatedTarget)) return;
+    if (this.hoverTimer) clearTimeout(this.hoverTimer);
+    this.hoverTimer = null;
+    this.infoCard.hideWithDelay(100);
   }
 }
 

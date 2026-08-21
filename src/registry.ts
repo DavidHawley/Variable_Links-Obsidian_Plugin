@@ -20,6 +20,9 @@ export class Registry {
   registryFile: TFile | null = null;
   registryPath: string = '';
   modifyHandler: ((file: TFile) => void) | null = null;
+  private reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private active = true;
+  private generation = 0;
 
   constructor(app: App, plugin: VariableLinksPlugin) {
     this.app = app;
@@ -68,6 +71,8 @@ export class Registry {
   }
 
   async load() {
+    if (!this.active) return;
+    const generation = this.generation;
     this.settings = this.plugin.settings;
     const path = this.settings.registryFilePath.replace(/\\/g, '/');
     if (!path) {
@@ -85,6 +90,7 @@ export class Registry {
     }
     this.registryFile = file;
     const content = file ? await this.app.vault.read(file) : await adapter.read(path);
+    if (!this.isCurrent(generation)) return;
 
     // Try to parse registry using intelligent handling based on extension and content
     const parsed = this.parseRegistryFromContent(content, path);
@@ -130,6 +136,7 @@ export class Registry {
           if (links[name]) links[name].guid = guid;
         }
       });
+      if (!this.isCurrent(generation)) return;
     }
 
     // register vault change listener to reload registry when the file is modified
@@ -139,19 +146,33 @@ export class Registry {
     }
     if (file) {
       this.modifyHandler = (f: TFile) => {
-        if (this.registryFile && f.path === this.registryFile.path) setTimeout(() => this.load(), 50);
+        if (!this.active || !this.registryFile || f.path !== this.registryFile.path) return;
+        if (this.reloadTimer) clearTimeout(this.reloadTimer);
+        this.reloadTimer = setTimeout(() => {
+          this.reloadTimer = null;
+          if (this.active) void this.load();
+        }, 50);
       };
       this.app.vault.on('modify', this.modifyHandler);
     }
 
-    console.log('Variable Links: registry loaded with', this.data.size, 'entries');
   }
 
   unload() {
+    this.active = false;
+    this.generation++;
+    if (this.reloadTimer) {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = null;
+    }
     if (this.modifyHandler) {
       this.app.vault.off('modify', this.modifyHandler as any);
       this.modifyHandler = null;
     }
+  }
+
+  private isCurrent(generation: number) {
+    return this.active && this.generation === generation;
   }
 
   getVariable(name: string) {
@@ -251,27 +272,23 @@ export class Registry {
     try {
       await this.load();
     } catch (error) {
-      console.error('Variable Links: the registry was saved but could not be refreshed', error);
       new Notice('Variable Links: the rename was saved, but the registry view could not be refreshed. Reload Obsidian.');
       return;
     }
     try {
       await (this.plugin as any).indexer?.build();
-    } catch (error) {
-      console.error('Variable Links: registry saved but the property index could not be rebuilt', error);
-    }
+    } catch (error) {}
 
     if (renamePlan) {
       try {
         await renamePlan.commit();
       } catch (error) {
-        console.error('Variable Links: rename succeeded but the token cache could not be committed; rebuilding', error);
         try { await tokenCache.rebuild(); }
-        catch (rebuildError) { console.error('Variable Links: token cache rebuild failed after rename', rebuildError); }
+        catch (rebuildError) {}
       }
     } else if (!existing && tokenCache) {
       try { await tokenCache.rebuild(); }
-      catch (error) { console.error('Variable Links: token cache rebuild failed after creating a link', error); }
+      catch (error) {}
     }
     this.plugin.livePreviewRenderer?.refresh();
   }

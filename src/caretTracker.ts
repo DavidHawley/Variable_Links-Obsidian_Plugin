@@ -21,6 +21,8 @@ export default class CaretTracker {
   plugin: any;
   pollMs: number = 200;
   timer: any = null;
+  running: boolean = false;
+  generation: number = 0;
   lastIndex: number = -1;
   lastTouched: LastTouched | null = null;
 
@@ -33,21 +35,30 @@ export default class CaretTracker {
   }
 
   start() {
-    if (this.timer) return;
+    if (this.running) return;
+    this.running = true;
+    const generation = ++this.generation;
     const loop = async () => {
       try {
         await this.checkCaret();
-      } catch (e) { console.error('CaretTracker check error', e); }
+      } catch (e) {}
+      if (!this.running || this.generation !== generation) return;
       this.timer = setTimeout(loop, this.pollMs);
     };
     loop();
   }
 
   stop() {
+    this.running = false;
+    this.generation++;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    this.lastIndex = -1;
+    this.lastTouched = null;
   }
 
   async checkCaret() {
+    if (!this.running) return;
+    const generation = this.generation;
     const leaf = this.app.workspace.activeLeaf;
     if (!leaf) return;
     const view: any = leaf.view;
@@ -93,6 +104,7 @@ export default class CaretTracker {
     const varName = token.name;
     // resolve and set lastTouched
     const res = await this.resolver.resolve(varName);
+    if (!this.running || this.generation !== generation) return;
     const def = this.registry.getVariable(varName);
     this.lastTouched = {
       name: varName,
@@ -105,9 +117,6 @@ export default class CaretTracker {
       to: this.positionAtIndex(editor, text, token.end),
       timestamp: Date.now(),
     };
-
-    // debug log when variable detected (use console.log to ensure visibility)
-    try { console.log('Variable Links: caret detected variable', this.lastTouched.name, 'value:', this.lastTouched.value); } catch (e) {}
 
     // notify plugin/view
     try { if (this.plugin && typeof this.plugin.onCaretVariableChanged === 'function') this.plugin.onCaretVariableChanged(this.lastTouched); } catch (e) {}

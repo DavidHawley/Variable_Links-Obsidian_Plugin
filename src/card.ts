@@ -1,4 +1,4 @@
-import { App, MarkdownRenderer, parseYaml } from 'obsidian';
+import { App, MarkdownRenderChild, MarkdownRenderer, parseYaml } from 'obsidian';
 
 export interface CardConfig {
   title?: string;
@@ -11,19 +11,28 @@ export class InfoCard {
   app: App;
   el: HTMLElement | null = null;
   hideTimeout: any = null;
+  private animationFrame: number | null = null;
+  private renderChild: any = null;
+  private generation = 0;
+  private destroyed = false;
 
   constructor(app: App) {
     this.app = app;
   }
 
   async showFor(targetEl: HTMLElement, sourceFilePath: string, cardConfig: CardConfig) {
+    if (this.destroyed) return;
     this.hideImmediate();
+    const generation = this.generation;
 
     // build container
     const container = document.createElement('div');
     container.className = 'variable-links-card';
     container.style.position = 'absolute';
     container.style.zIndex = '9999';
+    this.el = container;
+    this.renderChild = new (MarkdownRenderChild as any)(container);
+    this.renderChild.load?.();
 
     // Title
     if (cardConfig?.title) {
@@ -38,7 +47,8 @@ export class InfoCard {
       const p = document.createElement('div');
       p.style.marginBottom = '6px';
       // render as markdown for convenience
-      await MarkdownRenderer.renderMarkdown(cardConfig.note || '', p, '', this.app);
+      await MarkdownRenderer.renderMarkdown(cardConfig.note || '', p, '', this.renderChild);
+      if (!this.isCurrent(container, generation)) return;
       container.appendChild(p);
     }
 
@@ -55,6 +65,7 @@ export class InfoCard {
         const customLabel = (external ? external[3] || '' : separator === -1 ? '' : fieldConfig.slice(separator + 1)).trim();
         const fieldSourcePath = external ? external[1] : sourceFilePath;
         const front = await this.getFrontmatter(fieldSourcePath);
+        if (!this.isCurrent(container, generation)) return;
         const row = document.createElement('tr');
         const val = front?.[field];
         const name = document.createElement('th');
@@ -65,7 +76,10 @@ export class InfoCard {
         value.className = 'variable-links-card-field-value';
         if (typeof val === 'undefined') value.textContent = '(missing)';
         else if (Array.isArray(val)) value.textContent = val.join(', ');
-        else if (typeof val === 'string') await MarkdownRenderer.renderMarkdown(val, value, '', this.app);
+        else if (typeof val === 'string') {
+          await MarkdownRenderer.renderMarkdown(val, value, '', this.renderChild);
+          if (!this.isCurrent(container, generation)) return;
+        }
         else value.textContent = String(val);
         row.appendChild(name);
         row.appendChild(value);
@@ -101,11 +115,13 @@ export class InfoCard {
     container.style.width = 'auto';
     container.style.boxSizing = 'border-box';
 
+    if (!this.isCurrent(container, generation)) return;
     document.body.appendChild(container);
-    this.el = container;
 
     // After element is in DOM, measure and position on next frame to allow proper layout
-    requestAnimationFrame(() => {
+    this.animationFrame = requestAnimationFrame(() => {
+      this.animationFrame = null;
+      if (!this.isCurrent(container, generation) || !targetEl.isConnected) return;
       // position near targetEl
       const rect = targetEl.getBoundingClientRect();
       const top = rect.bottom + window.scrollY + 6;
@@ -151,17 +167,36 @@ export class InfoCard {
   }
 
   hideWithDelay(ms = 150) {
+    if (this.destroyed) return;
     this.clearHideTimeout();
     this.hideTimeout = setTimeout(() => this.hideImmediate(), ms);
   }
   clearHideTimeout() { if (this.hideTimeout) { clearTimeout(this.hideTimeout); this.hideTimeout = null; } }
 
   hideImmediate() {
+    this.generation++;
     this.clearHideTimeout();
+    if (this.animationFrame !== null) {
+      cancelAnimationFrame(this.animationFrame);
+      this.animationFrame = null;
+    }
+    if (this.renderChild) {
+      try { this.renderChild.unload?.(); } catch (error) {}
+      this.renderChild = null;
+    }
     if (this.el && this.el.parentElement) {
       this.el.parentElement.removeChild(this.el);
     }
     this.el = null;
+  }
+
+  destroy() {
+    this.destroyed = true;
+    this.hideImmediate();
+  }
+
+  private isCurrent(container: HTMLElement, generation: number) {
+    return !this.destroyed && this.el === container && this.generation === generation;
   }
 }
 

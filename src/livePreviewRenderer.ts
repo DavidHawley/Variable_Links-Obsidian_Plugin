@@ -14,6 +14,8 @@ export default class LivePreviewRenderer {
   private resolver: Resolver;
   private app: any;
   private revision = 0;
+  private active = true;
+  private timers = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(app: any, resolver: Resolver) {
     this.app = app;
@@ -22,43 +24,70 @@ export default class LivePreviewRenderer {
 
   /** Force open Markdown panes to resolve their variables again. */
   refresh() {
+    if (!this.active) return;
     this.revision++;
-    const leaves: any[] = [];
-    if (typeof this.app.workspace?.iterateAllLeaves === 'function') {
-      this.app.workspace.iterateAllLeaves((leaf: any) => {
-        if (leaf?.view?.getViewType?.() === 'markdown') leaves.push(leaf);
-      });
-    } else leaves.push(...(this.app.workspace?.getLeavesOfType?.('markdown') || []));
+    const leaves = this.getMarkdownLeaves();
 
     for (const leaf of leaves) {
       const editorView = leaf?.view?.editor?.cm;
       if (typeof editorView?.dispatch === 'function') {
         try { editorView.dispatch({ effects: refreshVariableLinks.of(undefined) }); }
-        catch (error) { console.warn('Variable Links: failed to refresh an open editor', error); }
+        catch (error) {}
       }
 
       const previewMode = leaf?.view?.previewMode;
       try {
         if (typeof previewMode?.rerender === 'function') previewMode.rerender(true);
         else if (typeof previewMode?.renderer?.rerender === 'function') previewMode.renderer.rerender(true);
-      } catch (error) {
-        console.warn('Variable Links: failed to refresh an open Reading View', error);
-      }
+      } catch (error) {}
     }
 
     // File-change rendering can be queued just after a vault write. Run a
     // second Reading View pass once that queue has settled.
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      if (!this.active) return;
       for (const leaf of leaves) {
         const previewMode = leaf?.view?.previewMode;
         try {
           if (typeof previewMode?.rerender === 'function') previewMode.rerender(true);
           else if (typeof previewMode?.renderer?.rerender === 'function') previewMode.renderer.rerender(true);
-        } catch (error) {
-          console.warn('Variable Links: delayed Reading View refresh failed', error);
-        }
+        } catch (error) {}
       }
     }, 50);
+    this.timers.add(timer);
+  }
+
+  /** Cancel delayed work and remove this plugin's visible editor decorations. */
+  unload() {
+    if (!this.active) return;
+    this.active = false;
+    this.revision++;
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
+    for (const leaf of this.getMarkdownLeaves()) {
+      const editorView = leaf?.view?.editor?.cm;
+      try {
+        if (typeof editorView?.dispatch === 'function') {
+          editorView.dispatch({ effects: refreshVariableLinks.of(undefined) });
+        }
+      } catch (error) {}
+      const previewMode = leaf?.view?.previewMode;
+      try {
+        if (typeof previewMode?.rerender === 'function') previewMode.rerender(true);
+        else if (typeof previewMode?.renderer?.rerender === 'function') previewMode.renderer.rerender(true);
+      } catch (error) {}
+    }
+  }
+
+  private getMarkdownLeaves(): any[] {
+    const leaves: any[] = [];
+    if (typeof this.app.workspace?.iterateAllLeaves === 'function') {
+      this.app.workspace.iterateAllLeaves((leaf: any) => {
+        if (leaf?.view?.getViewType?.() === 'markdown') leaves.push(leaf);
+      });
+    } else leaves.push(...(this.app.workspace?.getLeavesOfType?.('markdown') || []));
+    return leaves;
   }
 
   createExtension(): any {
@@ -76,6 +105,7 @@ export default class LivePreviewRenderer {
         el.dataset.var = this.name;
 
         void renderer.resolver.resolve(this.name).then((result: any) => {
+          if (!renderer.active) return;
           if (!result.ok) {
             el.textContent = `[Missing: ${this.name}]`;
             el.classList.add('missing');
@@ -84,6 +114,7 @@ export default class LivePreviewRenderer {
           }
           el.textContent = Array.isArray(result.value) ? result.value.join(', ') : String(result.value);
         }).catch(() => {
+          if (!renderer.active) return;
           el.textContent = `[Missing: ${this.name}]`;
           el.classList.add('missing');
         });
@@ -97,6 +128,7 @@ export default class LivePreviewRenderer {
 
     const buildDecorations = (view: any) => {
       const builder = new RangeSetBuilder();
+      if (!renderer.active) return builder.finish();
       const text = view.state.doc.toString();
       const selection = view.state.selection.main;
       let match: RegExpExecArray | null;

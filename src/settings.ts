@@ -39,6 +39,8 @@ class FilePickerModal extends FuzzySuggestModal<TFile> {
 
 export class VariableLinksSettingTab extends PluginSettingTab {
   plugin: VariableLinksPlugin;
+  private activeModal: FilePickerModal | null = null;
+  private disposed = false;
 
   constructor(app: App, plugin: VariableLinksPlugin) {
     super(app, plugin);
@@ -46,6 +48,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
   }
 
   display(): void {
+    if (this.disposed) return;
     const containerEl: any = (this as any).containerEl;
     containerEl.empty();
 
@@ -71,7 +74,11 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       )
       .addButton((btn: any) =>
         btn.setButtonText('Choose...').onClick(() => {
+          if (this.disposed) return;
+          this.activeModal?.close();
           const modal = new FilePickerModal((this as any).app, async (file) => {
+            this.activeModal = null;
+            if (this.disposed) return;
             this.plugin.settings.registryFilePath = file.path;
             await this.plugin.saveSettings();
             modal.close();
@@ -83,6 +90,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
             }
             this.display();
           });
+          this.activeModal = modal;
           modal.open();
         })
       );
@@ -106,6 +114,13 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       .setName('Default date format')
       .setDesc('Format used for date properties if not specified per-variable')
       .addText((t: any) => t.setValue(this.plugin.settings.defaultDateFormat).onChange(async (v: any)=>{ this.plugin.settings.defaultDateFormat = v; await this.plugin.saveSettings(); }));
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.activeModal?.close();
+    this.activeModal = null;
+    try { (this as any).containerEl?.empty?.(); } catch (error) {}
   }
 }
 

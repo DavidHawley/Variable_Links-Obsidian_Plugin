@@ -3,9 +3,9 @@
   "name": "Variable Links",
   "version": "1.0.0",
   "minAppVersion": "0.12.0",
-  "description": "Global variable-like links that resolve to frontmatter properties in other files.",
-  "author": "(Your Name)",
-  "authorUrl": "",
+  "description": "Variable-like links that resolve to frontmatter properties and can display Info cards on hover.",
+  "author": "DavidHawley",
+  "authorUrl": "https://github.com/DavidHawley",
   "main": "main.js",
   "css": "styles.css"
 }

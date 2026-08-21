@@ -12,6 +12,8 @@ export class EditRenderer {
   indexer: Indexer;
   resolver: Resolver;
   infoCard: InfoCard;
+  private active = false;
+  private activeLeafHandler = () => this.onActiveLeafChange();
 
   // Map of editor -> state
   editorState: Map<any, any> = new Map();
@@ -25,11 +27,22 @@ export class EditRenderer {
   }
 
   attach() {
-    this.app.workspace.on('active-leaf-change', () => this.onActiveLeafChange());
+    if (this.active) return;
+    this.active = true;
+    this.app.workspace.on('active-leaf-change', this.activeLeafHandler);
     this.onActiveLeafChange();
   }
 
+  detach() {
+    if (!this.active) return;
+    this.active = false;
+    this.app.workspace.off('active-leaf-change', this.activeLeafHandler);
+    for (const editor of Array.from(this.editorState.keys())) this.disableForEditor(editor);
+    this.infoCard.destroy();
+  }
+
   onActiveLeafChange() {
+    if (!this.active) return;
     const leaves = (this.app.workspace as any).getLeavesOfType?.('markdown') || [];
     for (const leaf of leaves) {
       const view = leaf.view;
@@ -41,6 +54,7 @@ export class EditRenderer {
   }
 
   enableForEditor(editor: any) {
+    if (!this.active) return;
     // CM5 path
     if (typeof editor.markText === 'function') {
       this.enableForEditorCM5(editor);
@@ -152,6 +166,7 @@ export class EditRenderer {
       node.setAttribute('data-var', varName);
 
       this.resolver.resolve(varName).then(res => {
+        if (!this.active || this.editorState.get(editor) !== state) return;
         if (!res.ok) {
           node.textContent = `[Missing: ${varName}]`;
           node.classList.add('missing');
@@ -186,10 +201,13 @@ export class EditRenderer {
     // schedule update on content changes using MutationObserver + scroll/resize
     const contentDOM = cm.contentDOM;
     const schedule = () => {
+      if (!this.active || this.editorState.get(editor) !== state) return;
       if (state.scheduled) return;
       state.scheduled = true;
       state.rafId = requestAnimationFrame(() => {
+        state.rafId = 0;
         state.scheduled = false;
+        if (!this.active || this.editorState.get(editor) !== state) return;
         this.updateMarksCM6(editor, cm);
       });
     };
@@ -322,6 +340,7 @@ export class EditRenderer {
 
       // resolve value and attach handlers
       this.resolver.resolve(varName).then(res => {
+        if (!this.active || this.editorState.get(editor) !== state || !node.isConnected) return;
         if (!res.ok) {
           node.textContent = `[Missing: ${varName}]`;
           node.classList.add('missing');
@@ -395,11 +414,6 @@ export class EditRenderer {
       }
     }
 
-    if (count === 0) {
-      try { console.debug('Variable Links: CM6 update - no overlays created (tokens may be inside caret/selection or none present)'); } catch (e) {}
-    } else {
-      try { console.debug('Variable Links: CM6 update - created ' + count + ' overlays'); } catch (e) {}
-    }
   }
 }
 

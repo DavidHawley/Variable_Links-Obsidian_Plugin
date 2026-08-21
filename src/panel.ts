@@ -1,4 +1,4 @@
-import { ItemView, MarkdownRenderer, Notice } from 'obsidian';
+import { ItemView, MarkdownRenderChild, MarkdownRenderer, Notice } from 'obsidian';
 
 export const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
 
@@ -7,6 +7,10 @@ export class VariablePropertiesView extends ItemView {
   plugin: any;
   private contentEl: any = null;
   private selectedVariableName: string | null = null;
+  private active = false;
+  private refreshGeneration = 0;
+  private timers = new Set<ReturnType<typeof setTimeout>>();
+  private markdownChild: any = null;
 
   constructor(leaf: any, plugin: any) {
     super(leaf);
@@ -18,13 +22,21 @@ export class VariablePropertiesView extends ItemView {
   getIcon() { return 'list'; }
 
   async onOpen() {
+    this.active = true;
     this.containerEl.empty();
     this.containerEl.addClass('variable-links-panel');
     this.contentEl = this.containerEl.createDiv('variable-links-panel-inner');
     await this.refresh();
   }
 
-  async onClose() { this.contentEl = null; }
+  async onClose() {
+    this.active = false;
+    this.refreshGeneration++;
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
+    this.clearMarkdownChild();
+    this.contentEl = null;
+  }
 
   async selectVariable(name: string) {
     this.selectedVariableName = name.trim() || null;
@@ -32,8 +44,16 @@ export class VariablePropertiesView extends ItemView {
   }
 
   async refresh() {
-    if (!this.contentEl) return;
+    if (!this.active || !this.contentEl) return;
+    const generation = ++this.refreshGeneration;
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
+    this.clearMarkdownChild();
     this.contentEl.empty();
+    const markdownChild = new (MarkdownRenderChild as any)(this.contentEl);
+    this.markdownChild = markdownChild;
+    try { (this as any).addChild(markdownChild); }
+    catch (error) { markdownChild.load?.(); }
 
     const registry = this.plugin.registry;
     const last = this.plugin.caretTracker?.lastTouched;
@@ -91,10 +111,12 @@ export class VariablePropertiesView extends ItemView {
     }
 
     const result = definition.file ? await this.plugin.resolver.resolve(activeName) : null;
+    if (!this.isCurrent(generation)) return;
     propertiesPane.createEl('h5', { text: `{{${activeName}}}` });
     const valueText = result?.ok ? String(result.value) : '[Missing]';
     const valueEl = propertiesPane.createDiv('variable-links-panel-value');
-    await MarkdownRenderer.renderMarkdown(valueText, valueEl, '', this.plugin);
+    await MarkdownRenderer.renderMarkdown(valueText, valueEl, '', markdownChild);
+    if (!this.isCurrent(generation)) return;
 
     const actions = propertiesPane.createDiv('variable-links-panel-actions');
     actions.createEl('button', { text: 'Open source' }).addEventListener('click', async () => {
@@ -259,7 +281,13 @@ export class VariablePropertiesView extends ItemView {
 
     input.addEventListener('focus', render);
     input.addEventListener('input', () => { selected = 0; render(); });
-    input.addEventListener('blur', () => setTimeout(() => menu.classList.remove('is-visible'), 100));
+    input.addEventListener('blur', () => {
+      const timer = setTimeout(() => {
+        this.timers.delete(timer);
+        if (this.active) menu.classList.remove('is-visible');
+      }, 100);
+      this.timers.add(timer);
+    });
     input.addEventListener('keydown', (event) => {
       if (!menu.classList.contains('is-visible') || !visibleItems.length) return;
       if (event.key === 'ArrowDown') { event.preventDefault(); selected = (selected + 1) % visibleItems.length; render(); }
@@ -267,5 +295,19 @@ export class VariablePropertiesView extends ItemView {
       else if (event.key === 'Enter') { event.preventDefault(); choose(visibleItems[selected]); }
       else if (event.key === 'Escape') menu.classList.remove('is-visible');
     });
+  }
+
+  private clearMarkdownChild() {
+    if (!this.markdownChild) return;
+    const child = this.markdownChild;
+    this.markdownChild = null;
+    try { (this as any).removeChild(child); }
+    catch (error) {
+      try { child.unload?.(); } catch (unloadError) {}
+    }
+  }
+
+  private isCurrent(generation: number) {
+    return this.active && !!this.contentEl && this.refreshGeneration === generation;
   }
 }

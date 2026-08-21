@@ -18,6 +18,8 @@ export default class TokenCache {
   private data: CacheData = { version: 1, files: {}, tokens: {} };
   private listeners: Array<{ event: string; callback: any }> = [];
   private timers = new Map<string, any>();
+  private active = true;
+  private generation = 0;
 
   constructor(app: App, plugin: any, registry: Registry) {
     this.app = app;
@@ -29,6 +31,7 @@ export default class TokenCache {
   }
 
   async initialize() {
+    const generation = this.generation;
     const adapter = (this.app.vault as any).adapter;
     try {
       if (await adapter.exists(this.cachePath)) {
@@ -36,14 +39,17 @@ export default class TokenCache {
         if (parsed?.version === 1 && parsed.files && parsed.tokens) this.data = parsed;
       }
     } catch (error) {
-      console.warn('Variable Links: token cache could not be read; rebuilding', error);
       this.data = { version: 1, files: {}, tokens: {} };
     }
+    if (!this.isCurrent(generation)) return;
     await this.synchronize();
-    this.attach();
+    if (this.isCurrent(generation)) this.attach();
   }
 
   stop() {
+    if (!this.active) return;
+    this.active = false;
+    this.generation++;
     const vault: any = this.app.vault;
     for (const listener of this.listeners) vault.off(listener.event, listener.callback);
     this.listeners = [];
@@ -52,31 +58,38 @@ export default class TokenCache {
   }
 
   async rebuild() {
+    if (!this.active) return;
     this.data = { version: 1, files: {}, tokens: {} };
     await this.synchronize(true);
   }
 
   async synchronize(force = false) {
+    if (!this.active) return;
+    const generation = this.generation;
     const files: TFile[] = (this.app.vault as any).getMarkdownFiles?.() || [];
     const currentPaths = new Set(files.map((file) => file.path));
     for (const path of Object.keys(this.data.files)) {
       if (!currentPaths.has(path)) this.removeFile(path);
     }
     for (const file of files) {
+      if (!this.isCurrent(generation)) return;
       const stat = (file as any).stat || {};
       const cached = this.data.files[file.path];
       if (force || !cached || cached.mtime !== stat.mtime || cached.size !== stat.size) await this.indexFile(file);
     }
+    if (!this.isCurrent(generation)) return;
     this.syncTokenNames();
     await this.persist();
   }
 
   async removeGuid(guid: string) {
+    if (!this.active) return;
     delete this.data.tokens[guid];
     await this.persist();
   }
 
   async prepareRename(guid: string, oldName: string, newName: string) {
+    if (!this.active) throw new Error('The token cache is not active.');
     await this.synchronize();
     if (!this.data.tokens[guid]) await this.rebuild();
     let paths = Array.from(new Set((this.data.tokens[guid]?.locations || []).map((location) => location.file)));
@@ -93,9 +106,7 @@ export default class TokenCache {
           await (cache.app.vault as any).process(change.file, (current: string) =>
             current === change.updated ? change.original : current
           );
-        } catch (error) {
-          console.error('Variable Links: failed to roll back token rename in ' + change.file.path, error);
-        }
+        } catch (error) {}
       }
       applied.length = 0;
       await cache.rebuild();
@@ -133,32 +144,37 @@ export default class TokenCache {
   }
 
   private attach() {
+    if (!this.active || this.listeners.length) return;
     const vault: any = this.app.vault;
     const add = (event: string, callback: any) => {
+      if (!this.active) return;
       vault.on(event, callback);
       this.listeners.push({ event, callback });
     };
     add('modify', (file: TFile) => this.schedule(file));
     add('create', (file: TFile) => this.schedule(file));
     add('delete', (file: TFile) => {
+      if (!this.active) return;
       if (!this.isMarkdown(file)) return;
       this.removeFile(file.path);
       void this.persist();
     });
     add('rename', (file: TFile, oldPath: string) => {
+      if (!this.active) return;
       this.removeFile(oldPath);
       this.schedule(file);
     });
   }
 
   private schedule(file: TFile) {
-    if (!this.isMarkdown(file)) return;
+    if (!this.active || !this.isMarkdown(file)) return;
     const prior = this.timers.get(file.path);
     if (prior) clearTimeout(prior);
     this.timers.set(file.path, setTimeout(async () => {
       this.timers.delete(file.path);
+      if (!this.active) return;
       try { await this.indexFile(file); await this.persist(); }
-      catch (error) { console.error('Variable Links: failed to update token cache for ' + file.path, error); }
+      catch (error) {}
     }, 150));
   }
 
@@ -167,8 +183,11 @@ export default class TokenCache {
   }
 
   private async indexFile(file: TFile) {
-    this.removeFile(file.path);
+    if (!this.active) return;
+    const generation = this.generation;
     const content = await this.app.vault.read(file);
+    if (!this.isCurrent(generation)) return;
+    this.removeFile(file.path);
     for (const occurrence of this.findTokens(content)) {
       const definition = this.registry.getVariable(occurrence.name);
       if (!definition?.guid) continue;
@@ -265,7 +284,12 @@ export default class TokenCache {
   }
 
   private async persist() {
+    if (!this.active) return;
     const adapter = (this.app.vault as any).adapter;
     await adapter.write(this.cachePath, JSON.stringify(this.data, null, 2) + '\n');
+  }
+
+  private isCurrent(generation: number) {
+    return this.active && this.generation === generation;
   }
 }

@@ -31,9 +31,13 @@ class FilePickerModal extends obsidian.FuzzySuggestModal {
 class VariableLinksSettingTab extends obsidian.PluginSettingTab {
     constructor(app, plugin) {
         super(app, plugin);
+        this.activeModal = null;
+        this.disposed = false;
         this.plugin = plugin;
     }
     display() {
+        if (this.disposed)
+            return;
         const containerEl = this.containerEl;
         containerEl.empty();
         containerEl.createEl('h2', { text: 'Variable Links — Settings' });
@@ -56,8 +60,15 @@ class VariableLinksSettingTab extends obsidian.PluginSettingTab {
             }
         }))
             .addButton((btn) => btn.setButtonText('Choose...').onClick(() => {
+            var _a;
+            if (this.disposed)
+                return;
+            (_a = this.activeModal) === null || _a === void 0 ? void 0 : _a.close();
             const modal = new FilePickerModal(this.app, async (file) => {
                 var _a;
+                this.activeModal = null;
+                if (this.disposed)
+                    return;
                 this.plugin.settings.registryFilePath = file.path;
                 await this.plugin.saveSettings();
                 modal.close();
@@ -70,6 +81,7 @@ class VariableLinksSettingTab extends obsidian.PluginSettingTab {
                 }
                 this.display();
             });
+            this.activeModal = modal;
             modal.open();
         }));
         new obsidian.Setting(containerEl)
@@ -89,6 +101,16 @@ class VariableLinksSettingTab extends obsidian.PluginSettingTab {
             .setDesc('Format used for date properties if not specified per-variable')
             .addText((t) => t.setValue(this.plugin.settings.defaultDateFormat).onChange(async (v) => { this.plugin.settings.defaultDateFormat = v; await this.plugin.saveSettings(); }));
     }
+    dispose() {
+        var _a, _b, _c;
+        this.disposed = true;
+        (_a = this.activeModal) === null || _a === void 0 ? void 0 : _a.close();
+        this.activeModal = null;
+        try {
+            (_c = (_b = this.containerEl) === null || _b === void 0 ? void 0 : _b.empty) === null || _c === void 0 ? void 0 : _c.call(_b);
+        }
+        catch (error) { }
+    }
 }
 
 class Registry {
@@ -97,6 +119,9 @@ class Registry {
         this.registryFile = null;
         this.registryPath = '';
         this.modifyHandler = null;
+        this.reloadTimer = null;
+        this.active = true;
+        this.generation = 0;
         this.app = app;
         this.plugin = plugin;
         this.settings = plugin.settings;
@@ -142,6 +167,9 @@ class Registry {
         return await vault.create(path, content);
     }
     async load() {
+        if (!this.active)
+            return;
+        const generation = this.generation;
         this.settings = this.plugin.settings;
         const path = this.settings.registryFilePath.replace(/\\/g, '/');
         if (!path) {
@@ -158,6 +186,8 @@ class Registry {
         }
         this.registryFile = file;
         const content = file ? await this.app.vault.read(file) : await adapter.read(path);
+        if (!this.isCurrent(generation))
+            return;
         // Try to parse registry using intelligent handling based on extension and content
         const parsed = this.parseRegistryFromContent(content, path);
         if (!parsed || typeof parsed !== 'object') {
@@ -203,6 +233,8 @@ class Registry {
                         links[name].guid = guid;
                 }
             });
+            if (!this.isCurrent(generation))
+                return;
         }
         // register vault change listener to reload registry when the file is modified
         if (this.modifyHandler) {
@@ -211,18 +243,33 @@ class Registry {
         }
         if (file) {
             this.modifyHandler = (f) => {
-                if (this.registryFile && f.path === this.registryFile.path)
-                    setTimeout(() => this.load(), 50);
+                if (!this.active || !this.registryFile || f.path !== this.registryFile.path)
+                    return;
+                if (this.reloadTimer)
+                    clearTimeout(this.reloadTimer);
+                this.reloadTimer = setTimeout(() => {
+                    this.reloadTimer = null;
+                    if (this.active)
+                        void this.load();
+                }, 50);
             };
             this.app.vault.on('modify', this.modifyHandler);
         }
-        console.log('Variable Links: registry loaded with', this.data.size, 'entries');
     }
     unload() {
+        this.active = false;
+        this.generation++;
+        if (this.reloadTimer) {
+            clearTimeout(this.reloadTimer);
+            this.reloadTimer = null;
+        }
         if (this.modifyHandler) {
             this.app.vault.off('modify', this.modifyHandler);
             this.modifyHandler = null;
         }
+    }
+    isCurrent(generation) {
+        return this.active && this.generation === generation;
     }
     getVariable(name) {
         var _a;
@@ -342,37 +389,29 @@ class Registry {
             await this.load();
         }
         catch (error) {
-            console.error('Variable Links: the registry was saved but could not be refreshed', error);
             new obsidian.Notice('Variable Links: the rename was saved, but the registry view could not be refreshed. Reload Obsidian.');
             return;
         }
         try {
             await ((_c = this.plugin.indexer) === null || _c === void 0 ? void 0 : _c.build());
         }
-        catch (error) {
-            console.error('Variable Links: registry saved but the property index could not be rebuilt', error);
-        }
+        catch (error) { }
         if (renamePlan) {
             try {
                 await renamePlan.commit();
             }
             catch (error) {
-                console.error('Variable Links: rename succeeded but the token cache could not be committed; rebuilding', error);
                 try {
                     await tokenCache.rebuild();
                 }
-                catch (rebuildError) {
-                    console.error('Variable Links: token cache rebuild failed after rename', rebuildError);
-                }
+                catch (rebuildError) { }
             }
         }
         else if (!existing && tokenCache) {
             try {
                 await tokenCache.rebuild();
             }
-            catch (error) {
-                console.error('Variable Links: token cache rebuild failed after creating a link', error);
-            }
+            catch (error) { }
         }
         (_d = this.plugin.livePreviewRenderer) === null || _d === void 0 ? void 0 : _d.refresh();
     }
@@ -656,15 +695,26 @@ class InfoCard {
     constructor(app) {
         this.el = null;
         this.hideTimeout = null;
+        this.animationFrame = null;
+        this.renderChild = null;
+        this.generation = 0;
+        this.destroyed = false;
         this.app = app;
     }
     async showFor(targetEl, sourceFilePath, cardConfig) {
+        var _a, _b;
+        if (this.destroyed)
+            return;
         this.hideImmediate();
+        const generation = this.generation;
         // build container
         const container = document.createElement('div');
         container.className = 'variable-links-card';
         container.style.position = 'absolute';
         container.style.zIndex = '9999';
+        this.el = container;
+        this.renderChild = new obsidian.MarkdownRenderChild(container);
+        (_b = (_a = this.renderChild).load) === null || _b === void 0 ? void 0 : _b.call(_a);
         // Title
         if (cardConfig === null || cardConfig === void 0 ? void 0 : cardConfig.title) {
             const h = document.createElement('div');
@@ -677,7 +727,9 @@ class InfoCard {
             const p = document.createElement('div');
             p.style.marginBottom = '6px';
             // render as markdown for convenience
-            await obsidian.MarkdownRenderer.renderMarkdown(cardConfig.note || '', p, '', this.app);
+            await obsidian.MarkdownRenderer.renderMarkdown(cardConfig.note || '', p, '', this.renderChild);
+            if (!this.isCurrent(container, generation))
+                return;
             container.appendChild(p);
         }
         // Fields
@@ -692,6 +744,8 @@ class InfoCard {
                 const customLabel = (external ? external[3] || '' : separator === -1 ? '' : fieldConfig.slice(separator + 1)).trim();
                 const fieldSourcePath = external ? external[1] : sourceFilePath;
                 const front = await this.getFrontmatter(fieldSourcePath);
+                if (!this.isCurrent(container, generation))
+                    return;
                 const row = document.createElement('tr');
                 const val = front === null || front === void 0 ? void 0 : front[field];
                 const name = document.createElement('th');
@@ -704,8 +758,11 @@ class InfoCard {
                     value.textContent = '(missing)';
                 else if (Array.isArray(val))
                     value.textContent = val.join(', ');
-                else if (typeof val === 'string')
-                    await obsidian.MarkdownRenderer.renderMarkdown(val, value, '', this.app);
+                else if (typeof val === 'string') {
+                    await obsidian.MarkdownRenderer.renderMarkdown(val, value, '', this.renderChild);
+                    if (!this.isCurrent(container, generation))
+                        return;
+                }
                 else
                     value.textContent = String(val);
                 row.appendChild(name);
@@ -741,10 +798,14 @@ class InfoCard {
         container.style.maxWidth = '60vw';
         container.style.width = 'auto';
         container.style.boxSizing = 'border-box';
+        if (!this.isCurrent(container, generation))
+            return;
         document.body.appendChild(container);
-        this.el = container;
         // After element is in DOM, measure and position on next frame to allow proper layout
-        requestAnimationFrame(() => {
+        this.animationFrame = requestAnimationFrame(() => {
+            this.animationFrame = null;
+            if (!this.isCurrent(container, generation) || !targetEl.isConnected)
+                return;
             // position near targetEl
             const rect = targetEl.getBoundingClientRect();
             const top = rect.bottom + window.scrollY + 6;
@@ -789,6 +850,8 @@ class InfoCard {
         }
     }
     hideWithDelay(ms = 150) {
+        if (this.destroyed)
+            return;
         this.clearHideTimeout();
         this.hideTimeout = setTimeout(() => this.hideImmediate(), ms);
     }
@@ -797,11 +860,31 @@ class InfoCard {
         this.hideTimeout = null;
     } }
     hideImmediate() {
+        var _a, _b;
+        this.generation++;
         this.clearHideTimeout();
+        if (this.animationFrame !== null) {
+            cancelAnimationFrame(this.animationFrame);
+            this.animationFrame = null;
+        }
+        if (this.renderChild) {
+            try {
+                (_b = (_a = this.renderChild).unload) === null || _b === void 0 ? void 0 : _b.call(_a);
+            }
+            catch (error) { }
+            this.renderChild = null;
+        }
         if (this.el && this.el.parentElement) {
             this.el.parentElement.removeChild(this.el);
         }
         this.el = null;
+    }
+    destroy() {
+        this.destroyed = true;
+        this.hideImmediate();
+    }
+    isCurrent(container, generation) {
+        return !this.destroyed && this.el === container && this.generation === generation;
     }
 }
 
@@ -809,22 +892,23 @@ const TOKEN_REGEX$1 = /\{\{\s*([^\}\s]+)\s*\}\}/g;
 class Renderer {
     constructor(app, registry, resolver, indexer) {
         this.enabled = true;
+        this.hoverTimer = null;
         this.app = app;
         this.registry = registry;
         this.resolver = resolver;
         this.indexer = indexer;
         this.infoCard = new InfoCard(app);
-    }
-    register() {
-        var _a, _b;
-        if (!this.enabled)
-            return;
-        (_b = (_a = this.app).registerMarkdownPostProcessor) === null || _b === void 0 ? void 0 : _b.call(_a, async (el, ctx) => {
-            await this.processElement(el);
-        });
+        this.clickHandler = (event) => void this.onClick(event);
+        this.mouseOverHandler = (event) => this.onMouseOver(event);
+        this.mouseOutHandler = (event) => this.onMouseOut(event);
+        document.addEventListener('click', this.clickHandler);
+        document.addEventListener('mouseover', this.mouseOverHandler);
+        document.addEventListener('mouseout', this.mouseOutHandler);
     }
     async processElement(el) {
         var _a;
+        if (!this.enabled)
+            return;
         // Walk text nodes and replace {{variable}} occurrences
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
         const nodes = [];
@@ -855,12 +939,14 @@ class Renderer {
                     frag.appendChild(document.createTextNode(before));
                 const varName = match[1].trim();
                 const placeholder = document.createElement('span');
-                placeholder.className = 'variable-links-token';
+                placeholder.className = 'variable-links-token variable-links-token-reading';
                 placeholder.textContent = '…';
+                placeholder.dataset.var = varName;
                 frag.appendChild(placeholder);
                 // resolve async and then update placeholder
                 this.resolver.resolve(varName).then(res => {
-                    var _a, _b;
+                    if (!this.enabled)
+                        return;
                     if (!res.ok) {
                         placeholder.textContent = `[Missing: ${varName}]`;
                         placeholder.classList.add('missing');
@@ -874,46 +960,7 @@ class Renderer {
                     else
                         display = String(res.value);
                     placeholder.textContent = display;
-                    // click to open source
-                    placeholder.addEventListener('click', (ev) => {
-                        if (res.sourceFile) {
-                            try {
-                                this.app.workspace.openLinkText(res.sourceFile.path.replace(/\.md$/i, ''), '', false);
-                            }
-                            catch (e) {
-                                this.app.workspace.openFile(res.sourceFile);
-                            }
-                        }
-                        ev.stopPropagation();
-                    });
-                    // hover -> info card (if configured and enabled)
-                    if (((_b = (_a = this.registry.plugin) === null || _a === void 0 ? void 0 : _a.settings) === null || _b === void 0 ? void 0 : _b.enableInfoCards) !== false) {
-                        let enterTimer = null;
-                        placeholder.addEventListener('mouseenter', () => {
-                            if (enterTimer)
-                                clearTimeout(enterTimer);
-                            const currentDef = this.registry.getVariable(varName);
-                            if (!(currentDef === null || currentDef === void 0 ? void 0 : currentDef.card))
-                                return;
-                            enterTimer = setTimeout(() => {
-                                var _a, _b, _c;
-                                const latestDef = this.registry.getVariable(varName);
-                                const latestCard = latestDef === null || latestDef === void 0 ? void 0 : latestDef.card;
-                                if (!latestCard)
-                                    return;
-                                const sourcePath = (_b = (_a = res.sourceFile) === null || _a === void 0 ? void 0 : _a.path) !== null && _b !== void 0 ? _b : ((_c = latestDef === null || latestDef === void 0 ? void 0 : latestDef.file) !== null && _c !== void 0 ? _c : '');
-                                this.infoCard.showFor(placeholder, sourcePath, latestCard);
-                            }, 200);
-                        });
-                        placeholder.addEventListener('mouseleave', () => {
-                            if (enterTimer) {
-                                clearTimeout(enterTimer);
-                                enterTimer = null;
-                            }
-                            this.infoCard.hideWithDelay(100);
-                        });
-                    }
-                });
+                }).catch(() => { });
                 lastIndex = TOKEN_REGEX$1.lastIndex;
             }
             if (!any)
@@ -923,6 +970,91 @@ class Renderer {
                 frag.appendChild(document.createTextNode(rest));
             (_a = textNode.parentNode) === null || _a === void 0 ? void 0 : _a.replaceChild(frag, textNode);
         }
+    }
+    unload() {
+        var _a, _b, _c, _d;
+        if (!this.enabled)
+            return;
+        this.enabled = false;
+        if (this.hoverTimer)
+            clearTimeout(this.hoverTimer);
+        this.hoverTimer = null;
+        document.removeEventListener('click', this.clickHandler);
+        document.removeEventListener('mouseover', this.mouseOverHandler);
+        document.removeEventListener('mouseout', this.mouseOutHandler);
+        this.infoCard.destroy();
+        for (const leaf of ((_b = (_a = this.app.workspace).getLeavesOfType) === null || _b === void 0 ? void 0 : _b.call(_a, 'markdown')) || []) {
+            const previewMode = (_c = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _c === void 0 ? void 0 : _c.previewMode;
+            try {
+                if (typeof (previewMode === null || previewMode === void 0 ? void 0 : previewMode.rerender) === 'function')
+                    previewMode.rerender(true);
+                else if (typeof ((_d = previewMode === null || previewMode === void 0 ? void 0 : previewMode.renderer) === null || _d === void 0 ? void 0 : _d.rerender) === 'function')
+                    previewMode.renderer.rerender(true);
+            }
+            catch (error) { }
+        }
+    }
+    tokenFromEvent(event) {
+        var _a;
+        const target = event.target instanceof Element ? event.target : null;
+        return (_a = target === null || target === void 0 ? void 0 : target.closest) === null || _a === void 0 ? void 0 : _a.call(target, '.variable-links-token-reading[data-var]');
+    }
+    async onClick(event) {
+        var _a;
+        if (!this.enabled)
+            return;
+        const token = this.tokenFromEvent(event);
+        const name = (_a = token === null || token === void 0 ? void 0 : token.dataset.var) === null || _a === void 0 ? void 0 : _a.trim();
+        if (!token || !name)
+            return;
+        const result = await this.resolver.resolve(name).catch(() => null);
+        if (!this.enabled || !(result === null || result === void 0 ? void 0 : result.ok) || !result.sourceFile)
+            return;
+        try {
+            this.app.workspace.openLinkText(result.sourceFile.path.replace(/\.md$/i, ''), '', false);
+        }
+        catch (error) {
+            this.app.workspace.openFile(result.sourceFile);
+        }
+        event.stopPropagation();
+    }
+    onMouseOver(event) {
+        var _a, _b, _c;
+        if (!this.enabled || ((_b = (_a = this.registry.plugin) === null || _a === void 0 ? void 0 : _a.settings) === null || _b === void 0 ? void 0 : _b.enableInfoCards) === false)
+            return;
+        const token = this.tokenFromEvent(event);
+        const name = (_c = token === null || token === void 0 ? void 0 : token.dataset.var) === null || _c === void 0 ? void 0 : _c.trim();
+        if (!token || !name)
+            return;
+        if (event.relatedTarget instanceof Node && token.contains(event.relatedTarget))
+            return;
+        if (this.hoverTimer)
+            clearTimeout(this.hoverTimer);
+        this.hoverTimer = setTimeout(async () => {
+            var _a, _b, _c;
+            this.hoverTimer = null;
+            if (!this.enabled || !token.isConnected || !token.matches(':hover'))
+                return;
+            const definition = this.registry.getVariable(name);
+            if (!(definition === null || definition === void 0 ? void 0 : definition.card))
+                return;
+            const result = await this.resolver.resolve(name).catch(() => null);
+            if (!this.enabled || !token.isConnected || !token.matches(':hover'))
+                return;
+            const sourcePath = (_c = (_b = (_a = result === null || result === void 0 ? void 0 : result.sourceFile) === null || _a === void 0 ? void 0 : _a.path) !== null && _b !== void 0 ? _b : definition.file) !== null && _c !== void 0 ? _c : '';
+            void this.infoCard.showFor(token, sourcePath, definition.card);
+        }, 200);
+    }
+    onMouseOut(event) {
+        const token = this.tokenFromEvent(event);
+        if (!token)
+            return;
+        if (event.relatedTarget instanceof Node && token.contains(event.relatedTarget))
+            return;
+        if (this.hoverTimer)
+            clearTimeout(this.hoverTimer);
+        this.hoverTimer = null;
+        this.infoCard.hideWithDelay(100);
     }
 }
 
@@ -1024,13 +1156,85 @@ const refreshVariableLinks = state.StateEffect.define();
 class LivePreviewRenderer {
     constructor(app, resolver) {
         this.revision = 0;
+        this.active = true;
+        this.timers = new Set();
         this.app = app;
         this.resolver = resolver;
     }
     /** Force open Markdown panes to resolve their variables again. */
     refresh() {
-        var _a, _b, _c, _d, _e, _f, _g;
+        var _a, _b, _c, _d;
+        if (!this.active)
+            return;
         this.revision++;
+        const leaves = this.getMarkdownLeaves();
+        for (const leaf of leaves) {
+            const editorView = (_b = (_a = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _a === void 0 ? void 0 : _a.editor) === null || _b === void 0 ? void 0 : _b.cm;
+            if (typeof (editorView === null || editorView === void 0 ? void 0 : editorView.dispatch) === 'function') {
+                try {
+                    editorView.dispatch({ effects: refreshVariableLinks.of(undefined) });
+                }
+                catch (error) { }
+            }
+            const previewMode = (_c = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _c === void 0 ? void 0 : _c.previewMode;
+            try {
+                if (typeof (previewMode === null || previewMode === void 0 ? void 0 : previewMode.rerender) === 'function')
+                    previewMode.rerender(true);
+                else if (typeof ((_d = previewMode === null || previewMode === void 0 ? void 0 : previewMode.renderer) === null || _d === void 0 ? void 0 : _d.rerender) === 'function')
+                    previewMode.renderer.rerender(true);
+            }
+            catch (error) { }
+        }
+        // File-change rendering can be queued just after a vault write. Run a
+        // second Reading View pass once that queue has settled.
+        const timer = setTimeout(() => {
+            var _a, _b;
+            this.timers.delete(timer);
+            if (!this.active)
+                return;
+            for (const leaf of leaves) {
+                const previewMode = (_a = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _a === void 0 ? void 0 : _a.previewMode;
+                try {
+                    if (typeof (previewMode === null || previewMode === void 0 ? void 0 : previewMode.rerender) === 'function')
+                        previewMode.rerender(true);
+                    else if (typeof ((_b = previewMode === null || previewMode === void 0 ? void 0 : previewMode.renderer) === null || _b === void 0 ? void 0 : _b.rerender) === 'function')
+                        previewMode.renderer.rerender(true);
+                }
+                catch (error) { }
+            }
+        }, 50);
+        this.timers.add(timer);
+    }
+    /** Cancel delayed work and remove this plugin's visible editor decorations. */
+    unload() {
+        var _a, _b, _c, _d;
+        if (!this.active)
+            return;
+        this.active = false;
+        this.revision++;
+        for (const timer of this.timers)
+            clearTimeout(timer);
+        this.timers.clear();
+        for (const leaf of this.getMarkdownLeaves()) {
+            const editorView = (_b = (_a = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _a === void 0 ? void 0 : _a.editor) === null || _b === void 0 ? void 0 : _b.cm;
+            try {
+                if (typeof (editorView === null || editorView === void 0 ? void 0 : editorView.dispatch) === 'function') {
+                    editorView.dispatch({ effects: refreshVariableLinks.of(undefined) });
+                }
+            }
+            catch (error) { }
+            const previewMode = (_c = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _c === void 0 ? void 0 : _c.previewMode;
+            try {
+                if (typeof (previewMode === null || previewMode === void 0 ? void 0 : previewMode.rerender) === 'function')
+                    previewMode.rerender(true);
+                else if (typeof ((_d = previewMode === null || previewMode === void 0 ? void 0 : previewMode.renderer) === null || _d === void 0 ? void 0 : _d.rerender) === 'function')
+                    previewMode.renderer.rerender(true);
+            }
+            catch (error) { }
+        }
+    }
+    getMarkdownLeaves() {
+        var _a, _b, _c;
         const leaves = [];
         if (typeof ((_a = this.app.workspace) === null || _a === void 0 ? void 0 : _a.iterateAllLeaves) === 'function') {
             this.app.workspace.iterateAllLeaves((leaf) => {
@@ -1041,44 +1245,7 @@ class LivePreviewRenderer {
         }
         else
             leaves.push(...(((_c = (_b = this.app.workspace) === null || _b === void 0 ? void 0 : _b.getLeavesOfType) === null || _c === void 0 ? void 0 : _c.call(_b, 'markdown')) || []));
-        for (const leaf of leaves) {
-            const editorView = (_e = (_d = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _d === void 0 ? void 0 : _d.editor) === null || _e === void 0 ? void 0 : _e.cm;
-            if (typeof (editorView === null || editorView === void 0 ? void 0 : editorView.dispatch) === 'function') {
-                try {
-                    editorView.dispatch({ effects: refreshVariableLinks.of(undefined) });
-                }
-                catch (error) {
-                    console.warn('Variable Links: failed to refresh an open editor', error);
-                }
-            }
-            const previewMode = (_f = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _f === void 0 ? void 0 : _f.previewMode;
-            try {
-                if (typeof (previewMode === null || previewMode === void 0 ? void 0 : previewMode.rerender) === 'function')
-                    previewMode.rerender(true);
-                else if (typeof ((_g = previewMode === null || previewMode === void 0 ? void 0 : previewMode.renderer) === null || _g === void 0 ? void 0 : _g.rerender) === 'function')
-                    previewMode.renderer.rerender(true);
-            }
-            catch (error) {
-                console.warn('Variable Links: failed to refresh an open Reading View', error);
-            }
-        }
-        // File-change rendering can be queued just after a vault write. Run a
-        // second Reading View pass once that queue has settled.
-        setTimeout(() => {
-            var _a, _b;
-            for (const leaf of leaves) {
-                const previewMode = (_a = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _a === void 0 ? void 0 : _a.previewMode;
-                try {
-                    if (typeof (previewMode === null || previewMode === void 0 ? void 0 : previewMode.rerender) === 'function')
-                        previewMode.rerender(true);
-                    else if (typeof ((_b = previewMode === null || previewMode === void 0 ? void 0 : previewMode.renderer) === null || _b === void 0 ? void 0 : _b.rerender) === 'function')
-                        previewMode.renderer.rerender(true);
-                }
-                catch (error) {
-                    console.warn('Variable Links: delayed Reading View refresh failed', error);
-                }
-            }
-        }, 50);
+        return leaves;
     }
     createExtension() {
         const renderer = this;
@@ -1095,6 +1262,8 @@ class LivePreviewRenderer {
                 el.textContent = '…';
                 el.dataset.var = this.name;
                 void renderer.resolver.resolve(this.name).then((result) => {
+                    if (!renderer.active)
+                        return;
                     if (!result.ok) {
                         el.textContent = `[Missing: ${this.name}]`;
                         el.classList.add('missing');
@@ -1103,6 +1272,8 @@ class LivePreviewRenderer {
                     }
                     el.textContent = Array.isArray(result.value) ? result.value.join(', ') : String(result.value);
                 }).catch(() => {
+                    if (!renderer.active)
+                        return;
                     el.textContent = `[Missing: ${this.name}]`;
                     el.classList.add('missing');
                 });
@@ -1114,6 +1285,8 @@ class LivePreviewRenderer {
         }
         const buildDecorations = (view$1) => {
             const builder = new state.RangeSetBuilder();
+            if (!renderer.active)
+                return builder.finish();
             const text = view$1.state.doc.toString();
             const selection = view$1.state.selection.main;
             let match;
@@ -1146,6 +1319,8 @@ class TokenCache {
         this.data = { version: 1, files: {}, tokens: {} };
         this.listeners = [];
         this.timers = new Map();
+        this.active = true;
+        this.generation = 0;
         this.app = app;
         this.plugin = plugin;
         this.registry = registry;
@@ -1154,6 +1329,7 @@ class TokenCache {
         this.cachePath = `${configDir}/plugins/${pluginId}/token-cache.json`;
     }
     async initialize() {
+        const generation = this.generation;
         const adapter = this.app.vault.adapter;
         try {
             if (await adapter.exists(this.cachePath)) {
@@ -1163,13 +1339,19 @@ class TokenCache {
             }
         }
         catch (error) {
-            console.warn('Variable Links: token cache could not be read; rebuilding', error);
             this.data = { version: 1, files: {}, tokens: {} };
         }
+        if (!this.isCurrent(generation))
+            return;
         await this.synchronize();
-        this.attach();
+        if (this.isCurrent(generation))
+            this.attach();
     }
     stop() {
+        if (!this.active)
+            return;
+        this.active = false;
+        this.generation++;
         const vault = this.app.vault;
         for (const listener of this.listeners)
             vault.off(listener.event, listener.callback);
@@ -1179,11 +1361,16 @@ class TokenCache {
         this.timers.clear();
     }
     async rebuild() {
+        if (!this.active)
+            return;
         this.data = { version: 1, files: {}, tokens: {} };
         await this.synchronize(true);
     }
     async synchronize(force = false) {
         var _a, _b;
+        if (!this.active)
+            return;
+        const generation = this.generation;
         const files = ((_b = (_a = this.app.vault).getMarkdownFiles) === null || _b === void 0 ? void 0 : _b.call(_a)) || [];
         const currentPaths = new Set(files.map((file) => file.path));
         for (const path of Object.keys(this.data.files)) {
@@ -1191,20 +1378,28 @@ class TokenCache {
                 this.removeFile(path);
         }
         for (const file of files) {
+            if (!this.isCurrent(generation))
+                return;
             const stat = file.stat || {};
             const cached = this.data.files[file.path];
             if (force || !cached || cached.mtime !== stat.mtime || cached.size !== stat.size)
                 await this.indexFile(file);
         }
+        if (!this.isCurrent(generation))
+            return;
         this.syncTokenNames();
         await this.persist();
     }
     async removeGuid(guid) {
+        if (!this.active)
+            return;
         delete this.data.tokens[guid];
         await this.persist();
     }
     async prepareRename(guid, oldName, newName) {
         var _a, _b, _c;
+        if (!this.active)
+            throw new Error('The token cache is not active.');
         await this.synchronize();
         if (!this.data.tokens[guid])
             await this.rebuild();
@@ -1221,9 +1416,7 @@ class TokenCache {
                 try {
                     await cache.app.vault.process(change.file, (current) => current === change.updated ? change.original : current);
                 }
-                catch (error) {
-                    console.error('Variable Links: failed to roll back token rename in ' + change.file.path, error);
-                }
+                catch (error) { }
             }
             applied.length = 0;
             await cache.rebuild();
@@ -1264,47 +1457,60 @@ class TokenCache {
         };
     }
     attach() {
+        if (!this.active || this.listeners.length)
+            return;
         const vault = this.app.vault;
         const add = (event, callback) => {
+            if (!this.active)
+                return;
             vault.on(event, callback);
             this.listeners.push({ event, callback });
         };
         add('modify', (file) => this.schedule(file));
         add('create', (file) => this.schedule(file));
         add('delete', (file) => {
+            if (!this.active)
+                return;
             if (!this.isMarkdown(file))
                 return;
             this.removeFile(file.path);
             void this.persist();
         });
         add('rename', (file, oldPath) => {
+            if (!this.active)
+                return;
             this.removeFile(oldPath);
             this.schedule(file);
         });
     }
     schedule(file) {
-        if (!this.isMarkdown(file))
+        if (!this.active || !this.isMarkdown(file))
             return;
         const prior = this.timers.get(file.path);
         if (prior)
             clearTimeout(prior);
         this.timers.set(file.path, setTimeout(async () => {
             this.timers.delete(file.path);
+            if (!this.active)
+                return;
             try {
                 await this.indexFile(file);
                 await this.persist();
             }
-            catch (error) {
-                console.error('Variable Links: failed to update token cache for ' + file.path, error);
-            }
+            catch (error) { }
         }, 150));
     }
     isMarkdown(file) {
         return file instanceof obsidian.TFile && /\.md$/i.test(file.path);
     }
     async indexFile(file) {
-        this.removeFile(file.path);
+        if (!this.active)
+            return;
+        const generation = this.generation;
         const content = await this.app.vault.read(file);
+        if (!this.isCurrent(generation))
+            return;
+        this.removeFile(file.path);
         for (const occurrence of this.findTokens(content)) {
             const definition = this.registry.getVariable(occurrence.name);
             if (!(definition === null || definition === void 0 ? void 0 : definition.guid))
@@ -1414,8 +1620,13 @@ class TokenCache {
         return openLength > 0;
     }
     async persist() {
+        if (!this.active)
+            return;
         const adapter = this.app.vault.adapter;
         await adapter.write(this.cachePath, JSON.stringify(this.data, null, 2) + '\n');
+    }
+    isCurrent(generation) {
+        return this.active && this.generation === generation;
     }
 }
 
@@ -1429,80 +1640,71 @@ class VariableLinksPlugin extends obsidian.Plugin {
         this.livePreviewRenderer = null;
         this.tokenCache = null;
         this.suggest = null;
+        this.caretTracker = null;
+        this.settingTab = null;
+        this.active = false;
+        this.timers = new Set();
+        this.contextMenuCleanups = [];
+        this.vaultModifyHandler = null;
+        this.editorMenuHandler = null;
+        this.contextMenuHandler = null;
         this.lastContextClick = null;
     }
     async onload() {
-        console.log('Variable Links: onload start');
+        this.active = true;
         try {
             await this.loadSettings();
-            console.log('Variable Links: settings loaded', this.settings);
-            this.addSettingTab(new VariableLinksSettingTab(this.app, this));
+            if (!this.active)
+                return;
+            this.settingTab = new VariableLinksSettingTab(this.app, this);
+            this.addSettingTab(this.settingTab);
             // Initialize registry/indexer/resolver/renderer with defensive try/catch so one failure doesn't break plugin
             try {
                 this.registry = new Registry(this.app, this);
                 await this.registry.load();
-                console.log('Variable Links: registry loaded');
+                if (!this.active)
+                    return;
             }
             catch (e) {
-                console.error('Variable Links: registry failed to load', e);
                 try {
                     const N = globalThis.Notice;
                     if (typeof N === 'function')
-                        new N('Variable Links: registry failed to load. See console for details.');
+                        new N('Variable Links: registry failed to load.');
                 }
                 catch (e) { }
             }
             try {
                 this.indexer = new Indexer(this.app, this.registry);
                 await this.indexer.build();
-                console.log('Variable Links: index built');
+                if (!this.active)
+                    return;
             }
-            catch (e) {
-                console.error('Variable Links: indexer failed', e);
-            }
+            catch (e) { }
             try {
                 this.tokenCache = new TokenCache(this.app, this, this.registry);
                 await this.tokenCache.initialize();
-                console.log('Variable Links: token cache initialized');
+                if (!this.active)
+                    return;
             }
-            catch (e) {
-                console.error('Variable Links: token cache failed to initialize', e);
-            }
+            catch (e) { }
             try {
                 this.resolver = new Resolver(this.app, this.registry);
-                console.log('Variable Links: resolver initialized');
             }
-            catch (e) {
-                console.error('Variable Links: resolver failed', e);
-            }
+            catch (e) { }
             try {
+                if (typeof this.registerMarkdownPostProcessor !== 'function') {
+                    throw new Error('registerMarkdownPostProcessor is unavailable.');
+                }
                 this.renderer = new Renderer(this.app, this.registry, this.resolver, this.indexer);
-                // register markdown post processor using plugin API so it actually runs
-                if (typeof this.registerMarkdownPostProcessor === 'function') {
-                    this.registerMarkdownPostProcessor((el, ctx) => {
-                        var _a;
-                        try {
-                            return (_a = this.renderer) === null || _a === void 0 ? void 0 : _a.processElement(el);
-                        }
-                        catch (err) {
-                            console.error('renderer.processElement error', err);
-                        }
-                    });
-                }
-                else {
-                    // fallback: try renderer's own register (older code)
+                this.registerMarkdownPostProcessor((el, ctx) => {
+                    var _a;
                     try {
-                        this.renderer.register();
+                        return (_a = this.renderer) === null || _a === void 0 ? void 0 : _a.processElement(el);
                     }
-                    catch (e) {
-                        console.warn('renderer.register fallback failed', e);
-                    }
-                }
-                console.log('Variable Links: renderer registered');
+                    catch (err) { }
+                });
             }
-            catch (e) {
-                console.error('Variable Links: renderer failed', e);
-            }
+            catch (e) { }
             // Use native CodeMirror decorations in Live Preview. Unlike positioned
             // overlays, they replace the text in the editor's normal layout.
             try {
@@ -1510,19 +1712,19 @@ class VariableLinksPlugin extends obsidian.Plugin {
                     throw new Error('registerEditorExtension is unavailable.');
                 this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver);
                 this.registerEditorExtension(this.livePreviewRenderer.createExtension());
-                const refreshOpenViews = () => { var _a; return (_a = this.livePreviewRenderer) === null || _a === void 0 ? void 0 : _a.refresh(); };
-                if (typeof this.app.workspace.onLayoutReady === 'function') {
-                    this.app.workspace.onLayoutReady(refreshOpenViews);
-                }
-                setTimeout(refreshOpenViews, 0);
-                console.log('Variable Links: live preview renderer attached');
+                const refreshOpenViews = () => {
+                    var _a;
+                    if (this.active)
+                        (_a = this.livePreviewRenderer) === null || _a === void 0 ? void 0 : _a.refresh();
+                };
+                this.schedule(refreshOpenViews, 0);
             }
-            catch (e) {
-                console.warn('Variable Links: failed to attach live preview renderer', e);
-            }
+            catch (e) { }
             try {
                 // register view
                 const panelMod = await Promise.resolve().then(function () { return panel; });
+                if (!this.active)
+                    return;
                 this.registerView(panelMod.VIEW_TYPE_VARIABLE_PANEL, (leaf) => new panelMod.VariablePropertiesView(leaf, this));
                 this.addCommand({
                     id: 'open-variable-properties',
@@ -1532,14 +1734,13 @@ class VariableLinksPlugin extends obsidian.Plugin {
                 this.registerVariableContextMenu();
                 // start caret tracker
                 const CaretTracker = (await Promise.resolve().then(function () { return caretTracker; })).default;
+                if (!this.active)
+                    return;
                 const ct = new CaretTracker(this.app, this, this.registry, this.resolver);
                 ct.start();
                 this.caretTracker = ct;
-                console.log('Variable Links: caret tracker started and panel registered');
             }
-            catch (e) {
-                console.warn('Variable Links: failed to initialize caret tracker/panel', e);
-            }
+            catch (e) { }
             // register suggest if enabled
             try {
                 if (this.settings) {
@@ -1548,131 +1749,70 @@ class VariableLinksPlugin extends obsidian.Plugin {
                         if (typeof this.registerEditorSuggest === 'function') {
                             try {
                                 this.registerEditorSuggest(this.suggest);
-                                console.log('Variable Links: suggest registered via registerEditorSuggest');
                             }
-                            catch (e) {
-                                console.warn('registerEditorSuggest failed', e);
-                            }
-                        }
-                        else {
-                            console.log('Variable Links: registerEditorSuggest missing; suggest not registered');
+                            catch (e) { }
                         }
                     }
                 }
             }
-            catch (e) {
-                console.error('Variable Links: suggest failed', e);
-            }
+            catch (e) { }
             // watch registry reloads to rebuild index
-            const reloadIndex = async () => { if (this.indexer)
-                await this.indexer.build(); };
+            const reloadIndex = async () => {
+                if (this.active && this.indexer)
+                    await this.indexer.build();
+            };
             // listen to vault modify events so we can update index when registry changed
             try {
-                this.app.vault.on('modify', (file) => {
+                this.vaultModifyHandler = (file) => {
                     var _a;
+                    if (!this.active)
+                        return;
                     try {
                         if (((_a = this.registry) === null || _a === void 0 ? void 0 : _a.registryFile) && file.path === this.registry.registryFile.path) {
-                            setTimeout(reloadIndex, 100);
+                            this.schedule(() => void reloadIndex(), 100);
                         }
                     }
-                    catch (e) {
-                        console.error('modify handler error', e);
-                    }
-                });
+                    catch (e) { }
+                };
+                const modifyRef = this.app.vault.on('modify', this.vaultModifyHandler);
+                if (typeof this.registerEvent === 'function')
+                    this.registerEvent(modifyRef);
             }
-            catch (e) {
-                console.error('Failed to register vault.modify handler', e);
-            }
+            catch (e) { }
             // expose helper for panel: when caret tracker notifies, refresh any open panel views
             this.onCaretVariableChanged = (last) => {
-                // TypeScript hint: ensure caretTracker typed access available in this scope
-                const _self = this;
+                if (!this.active)
+                    return;
                 try {
-                    console.log('Variable Links: onCaretVariableChanged', last === null || last === void 0 ? void 0 : last.name);
                     Promise.resolve().then(function () { return panel; }).then(async (mod) => {
-                        var _a, _b, _c, _d;
+                        if (!this.active)
+                            return;
                         try {
                             const leaves = this.app.workspace.getLeavesOfType(mod.VIEW_TYPE_VARIABLE_PANEL);
-                            console.log('Variable Links: panel leaves found', leaves === null || leaves === void 0 ? void 0 : leaves.length);
                             if (leaves && leaves.length > 0) {
                                 for (let i = 0; i < leaves.length; i++) {
+                                    if (!this.active)
+                                        return;
                                     try {
                                         const view = leaves[i].view;
-                                        console.log('Variable Links: refreshing panel leaf', i, 'view present', !!view, 'has refresh', typeof (view === null || view === void 0 ? void 0 : view.refresh) === 'function');
                                         if (view && typeof view.refresh === 'function') {
                                             await view.refresh();
                                         }
                                         else if (view && typeof view.renderContent === 'function') {
                                             await view.renderContent();
                                         }
-                                        else {
-                                            // Fallback: try to directly render into the leaf/container element
-                                            try {
-                                                const container = leaves[i].containerEl || (view && view.containerEl) || (view && view.containerElInner) || null;
-                                                let inner = null;
-                                                if (container) {
-                                                    inner = ((_a = container.querySelector) === null || _a === void 0 ? void 0 : _a.call(container, '.variable-links-panel-inner')) || ((_b = container.querySelector) === null || _b === void 0 ? void 0 : _b.call(container, '.variable-links-panel')) || null;
-                                                    if (!inner) {
-                                                        // create an inner container
-                                                        inner = document.createElement('div');
-                                                        inner.className = 'variable-links-panel-inner';
-                                                        if (container.appendChild)
-                                                            container.appendChild(inner);
-                                                    }
-                                                }
-                                                if (inner) {
-                                                    // render simple content mirroring renderContent()
-                                                    const last = _self.caretTracker ? _self.caretTracker.lastTouched : null;
-                                                    if (!last) {
-                                                        inner.textContent = 'No variable selected.';
-                                                    }
-                                                    else {
-                                                        inner.innerHTML = '';
-                                                        const h = document.createElement('h4');
-                                                        h.textContent = `{{${last.name}}}`;
-                                                        inner.appendChild(h);
-                                                        const valDiv = document.createElement('div');
-                                                        valDiv.className = 'variable-links-panel-value';
-                                                        inner.appendChild(valDiv);
-                                                        const valueText = last.value === undefined ? '[Missing]' : String(last.value);
-                                                        try {
-                                                            await ((_c = this.app.markdownRenderer) === null || _c === void 0 ? void 0 : _c.renderMarkdown(valueText, valDiv, '', this));
-                                                        }
-                                                        catch (e) {
-                                                            try {
-                                                                await ((_d = this.app.markdownRenderer) === null || _d === void 0 ? void 0 : _d.renderMarkdown(valueText, valDiv, '', this));
-                                                            }
-                                                            catch (e2) {
-                                                                valDiv.textContent = valueText;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            catch (e) {
-                                                console.error('Variable Links: DOM fallback render failed for leaf', i, e);
-                                            }
-                                        }
                                     }
-                                    catch (e) {
-                                        console.error('Variable Links: error refreshing leaf', i, e);
-                                    }
+                                    catch (e) { }
                                 }
                             }
                         }
-                        catch (e) {
-                            console.error('Variable Links: error notifying panel', e);
-                        }
+                        catch (e) { }
                     });
                 }
-                catch (e) {
-                    console.error('Variable Links: onCaretVariableChanged top-level error', e);
-                }
+                catch (e) { }
             };
-            console.log('Variable Links: onload complete');
         }
         catch (e) {
-            console.error('Variable Links: onload top-level error', e);
             try {
                 const N = globalThis.Notice;
                 if (typeof N === 'function')
@@ -1682,10 +1822,72 @@ class VariableLinksPlugin extends obsidian.Plugin {
         }
     }
     onunload() {
-        var _a, _b;
-        (_a = this.tokenCache) === null || _a === void 0 ? void 0 : _a.stop();
-        (_b = this.registry) === null || _b === void 0 ? void 0 : _b.unload();
-        console.log('Variable Links unloaded');
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+        this.active = false;
+        if (this.vaultModifyHandler) {
+            try {
+                this.app.vault.off('modify', this.vaultModifyHandler);
+            }
+            catch (error) { }
+            this.vaultModifyHandler = null;
+        }
+        if (this.editorMenuHandler) {
+            try {
+                this.app.workspace.off('editor-menu', this.editorMenuHandler);
+            }
+            catch (error) { }
+            this.editorMenuHandler = null;
+        }
+        if (this.contextMenuHandler) {
+            try {
+                document.removeEventListener('contextmenu', this.contextMenuHandler, true);
+            }
+            catch (error) { }
+            this.contextMenuHandler = null;
+        }
+        for (const timer of this.timers)
+            clearTimeout(timer);
+        this.timers.clear();
+        this.clearContextMenuResources();
+        (_a = this.settingTab) === null || _a === void 0 ? void 0 : _a.dispose();
+        this.lastContextClick = null;
+        try {
+            (_c = (_b = this.suggest) === null || _b === void 0 ? void 0 : _b.close) === null || _c === void 0 ? void 0 : _c.call(_b);
+        }
+        catch (error) { }
+        (_d = this.caretTracker) === null || _d === void 0 ? void 0 : _d.stop();
+        (_e = this.tokenCache) === null || _e === void 0 ? void 0 : _e.stop();
+        (_f = this.registry) === null || _f === void 0 ? void 0 : _f.unload();
+        (_g = this.renderer) === null || _g === void 0 ? void 0 : _g.unload();
+        (_h = this.livePreviewRenderer) === null || _h === void 0 ? void 0 : _h.unload();
+        // Explicitly close plugin-owned views. registerView removes the factory,
+        // while this removes already-created ItemView instances and their DOM.
+        try {
+            const viewType = 'variable-links-panel';
+            (_k = (_j = this.app.workspace).detachLeavesOfType) === null || _k === void 0 ? void 0 : _k.call(_j, viewType);
+        }
+        catch (error) { }
+        this.onCaretVariableChanged = undefined;
+        this.caretTracker = null;
+        this.tokenCache = null;
+        this.registry = null;
+        this.renderer = null;
+        this.livePreviewRenderer = null;
+        this.resolver = null;
+        this.indexer = null;
+        this.suggest = null;
+        this.settingTab = null;
+    }
+    schedule(callback, delay) {
+        if (!this.active)
+            return null;
+        const timer = setTimeout(() => {
+            this.timers.delete(timer);
+            if (this.active)
+                callback();
+        }, delay);
+        this.timers.add(timer);
+        return timer;
     }
     async loadSettings() {
         var _a;
@@ -1700,7 +1902,11 @@ class VariableLinksPlugin extends obsidian.Plugin {
     }
     async openVariableProperties(variableName) {
         var _a, _b;
+        if (!this.active)
+            return;
         const panelMod = await Promise.resolve().then(function () { return panel; });
+        if (!this.active)
+            return;
         let leaf = (_a = this.app.workspace.getLeavesOfType(panelMod.VIEW_TYPE_VARIABLE_PANEL)) === null || _a === void 0 ? void 0 : _a[0];
         if (!leaf) {
             leaf = this.app.workspace.getRightLeaf(false);
@@ -1715,17 +1921,23 @@ class VariableLinksPlugin extends obsidian.Plugin {
     }
     registerVariableContextMenu() {
         if (typeof this.registerDomEvent === 'function') {
-            this.registerDomEvent(document, 'contextmenu', (event) => {
+            this.contextMenuHandler = (event) => {
+                if (!this.active)
+                    return;
                 this.lastContextClick = {
                     x: event.clientX,
                     y: event.clientY,
                     target: event.target,
                     time: Date.now()
                 };
-            }, true);
+            };
+            this.registerDomEvent(document, 'contextmenu', this.contextMenuHandler, true);
         }
-        const eventRef = this.app.workspace.on('editor-menu', (menu, editor) => {
+        this.editorMenuHandler = (menu, editor) => {
             var _a, _b, _c, _d, _e, _f, _g;
+            if (!this.active)
+                return;
+            this.clearContextMenuResources();
             const variableName = this.getContextVariableName(editor);
             const insertionPosition = this.getContextEditorPosition(editor);
             const definition = variableName ? (_a = this.registry) === null || _a === void 0 ? void 0 : _a.getVariable(variableName) : null;
@@ -1791,7 +2003,8 @@ class VariableLinksPlugin extends obsidian.Plugin {
                 if (variableName)
                     parentItem.onClick(() => void this.openVariableProperties(variableName));
             });
-        });
+        };
+        const eventRef = this.app.workspace.on('editor-menu', this.editorMenuHandler);
         if (typeof this.registerEvent === 'function')
             this.registerEvent(eventRef);
     }
@@ -1852,17 +2065,17 @@ class VariableLinksPlugin extends obsidian.Plugin {
         const itemElement = item === null || item === void 0 ? void 0 : item.dom;
         if (!(itemElement === null || itemElement === void 0 ? void 0 : itemElement.addEventListener))
             return;
-        const timerKey = '__variableLinksSubmenuSwitchTimer';
-        itemElement.addEventListener('mouseenter', () => {
+        let timer = null;
+        const onMouseEnter = () => {
             const current = parentMenu === null || parentMenu === void 0 ? void 0 : parentMenu.currentSubmenu;
             if (!current || current === itemSubmenu)
                 return;
-            if (parentMenu[timerKey])
-                clearTimeout(parentMenu[timerKey]);
-            parentMenu[timerKey] = setTimeout(() => {
+            if (timer)
+                clearTimeout(timer);
+            timer = setTimeout(() => {
                 var _a, _b, _c;
-                parentMenu[timerKey] = null;
-                if (!itemElement.isConnected || !((_a = itemElement.matches) === null || _a === void 0 ? void 0 : _a.call(itemElement, ':hover')))
+                timer = null;
+                if (!this.active || !itemElement.isConnected || !((_a = itemElement.matches) === null || _a === void 0 ? void 0 : _a.call(itemElement, ':hover')))
                     return;
                 try {
                     if (typeof parentMenu.closeSubmenu === 'function')
@@ -1876,17 +2089,32 @@ class VariableLinksPlugin extends obsidian.Plugin {
                     const MouseEventCtor = ((_c = (_b = itemElement.ownerDocument) === null || _b === void 0 ? void 0 : _b.defaultView) === null || _c === void 0 ? void 0 : _c.MouseEvent) || MouseEvent;
                     itemElement.dispatchEvent(new MouseEventCtor('mouseover', { bubbles: true, cancelable: true }));
                 }
-                catch (error) {
-                    console.warn('Variable Links: failed to switch insert submenu', error);
-                }
+                catch (error) { }
             }, 300);
-        });
-        itemElement.addEventListener('mouseleave', () => {
-            if (!parentMenu[timerKey])
+        };
+        const onMouseLeave = () => {
+            if (!timer)
                 return;
-            clearTimeout(parentMenu[timerKey]);
-            parentMenu[timerKey] = null;
+            clearTimeout(timer);
+            timer = null;
+        };
+        itemElement.addEventListener('mouseenter', onMouseEnter);
+        itemElement.addEventListener('mouseleave', onMouseLeave);
+        this.contextMenuCleanups.push(() => {
+            if (timer)
+                clearTimeout(timer);
+            timer = null;
+            itemElement.removeEventListener('mouseenter', onMouseEnter);
+            itemElement.removeEventListener('mouseleave', onMouseLeave);
         });
+    }
+    clearContextMenuResources() {
+        for (const cleanup of this.contextMenuCleanups.splice(0)) {
+            try {
+                cleanup();
+            }
+            catch (error) { }
+        }
     }
     async setVariableFavorite(variableName, favorite) {
         var _a, _b;
@@ -1921,30 +2149,56 @@ class VariablePropertiesView extends obsidian.ItemView {
         super(leaf);
         this.contentEl = null;
         this.selectedVariableName = null;
+        this.active = false;
+        this.refreshGeneration = 0;
+        this.timers = new Set();
+        this.markdownChild = null;
         this.plugin = plugin;
     }
     getViewType() { return VIEW_TYPE_VARIABLE_PANEL; }
     getDisplayText() { return 'Variable Properties'; }
     getIcon() { return 'list'; }
     async onOpen() {
+        this.active = true;
         this.containerEl.empty();
         this.containerEl.addClass('variable-links-panel');
         this.contentEl = this.containerEl.createDiv('variable-links-panel-inner');
         await this.refresh();
     }
-    async onClose() { this.contentEl = null; }
+    async onClose() {
+        this.active = false;
+        this.refreshGeneration++;
+        for (const timer of this.timers)
+            clearTimeout(timer);
+        this.timers.clear();
+        this.clearMarkdownChild();
+        this.contentEl = null;
+    }
     async selectVariable(name) {
         this.selectedVariableName = name.trim() || null;
         await this.refresh();
     }
     async refresh() {
-        var _a, _b, _c;
-        if (!this.contentEl)
+        var _a, _b, _c, _d;
+        if (!this.active || !this.contentEl)
             return;
+        const generation = ++this.refreshGeneration;
+        for (const timer of this.timers)
+            clearTimeout(timer);
+        this.timers.clear();
+        this.clearMarkdownChild();
         this.contentEl.empty();
+        const markdownChild = new obsidian.MarkdownRenderChild(this.contentEl);
+        this.markdownChild = markdownChild;
+        try {
+            this.addChild(markdownChild);
+        }
+        catch (error) {
+            (_a = markdownChild.load) === null || _a === void 0 ? void 0 : _a.call(markdownChild);
+        }
         const registry = this.plugin.registry;
-        const last = (_a = this.plugin.caretTracker) === null || _a === void 0 ? void 0 : _a.lastTouched;
-        const names = Array.from(((_c = (_b = registry === null || registry === void 0 ? void 0 : registry.data) === null || _b === void 0 ? void 0 : _b.keys) === null || _c === void 0 ? void 0 : _c.call(_b)) || []).sort((a, b) => a.localeCompare(b));
+        const last = (_b = this.plugin.caretTracker) === null || _b === void 0 ? void 0 : _b.lastTouched;
+        const names = Array.from(((_d = (_c = registry === null || registry === void 0 ? void 0 : registry.data) === null || _c === void 0 ? void 0 : _c.keys) === null || _d === void 0 ? void 0 : _d.call(_c)) || []).sort((a, b) => a.localeCompare(b));
         const activeName = this.selectedVariableName || (last === null || last === void 0 ? void 0 : last.name) || '';
         const definition = activeName ? (registry === null || registry === void 0 ? void 0 : registry.getVariable(activeName)) || {} : {};
         const toolbar = this.contentEl.createDiv('variable-links-panel-toolbar');
@@ -1998,10 +2252,14 @@ class VariablePropertiesView extends obsidian.ItemView {
             return;
         }
         const result = definition.file ? await this.plugin.resolver.resolve(activeName) : null;
+        if (!this.isCurrent(generation))
+            return;
         propertiesPane.createEl('h5', { text: `{{${activeName}}}` });
         const valueText = (result === null || result === void 0 ? void 0 : result.ok) ? String(result.value) : '[Missing]';
         const valueEl = propertiesPane.createDiv('variable-links-panel-value');
-        await obsidian.MarkdownRenderer.renderMarkdown(valueText, valueEl, '', this.plugin);
+        await obsidian.MarkdownRenderer.renderMarkdown(valueText, valueEl, '', markdownChild);
+        if (!this.isCurrent(generation))
+            return;
         const actions = propertiesPane.createDiv('variable-links-panel-actions');
         actions.createEl('button', { text: 'Open source' }).addEventListener('click', async () => {
             if (result === null || result === void 0 ? void 0 : result.sourceFile)
@@ -2159,7 +2417,14 @@ class VariablePropertiesView extends obsidian.ItemView {
         };
         input.addEventListener('focus', render);
         input.addEventListener('input', () => { selected = 0; render(); });
-        input.addEventListener('blur', () => setTimeout(() => menu.classList.remove('is-visible'), 100));
+        input.addEventListener('blur', () => {
+            const timer = setTimeout(() => {
+                this.timers.delete(timer);
+                if (this.active)
+                    menu.classList.remove('is-visible');
+            }, 100);
+            this.timers.add(timer);
+        });
         input.addEventListener('keydown', (event) => {
             if (!menu.classList.contains('is-visible') || !visibleItems.length)
                 return;
@@ -2181,6 +2446,25 @@ class VariablePropertiesView extends obsidian.ItemView {
                 menu.classList.remove('is-visible');
         });
     }
+    clearMarkdownChild() {
+        var _a;
+        if (!this.markdownChild)
+            return;
+        const child = this.markdownChild;
+        this.markdownChild = null;
+        try {
+            this.removeChild(child);
+        }
+        catch (error) {
+            try {
+                (_a = child.unload) === null || _a === void 0 ? void 0 : _a.call(child);
+            }
+            catch (unloadError) { }
+        }
+    }
+    isCurrent(generation) {
+        return this.active && !!this.contentEl && this.refreshGeneration === generation;
+    }
 }
 
 var panel = /*#__PURE__*/Object.freeze({
@@ -2193,6 +2477,8 @@ class CaretTracker {
     constructor(app, plugin, registry, resolver, pollMs = 200) {
         this.pollMs = 200;
         this.timer = null;
+        this.running = false;
+        this.generation = 0;
         this.lastIndex = -1;
         this.lastTouched = null;
         this.app = app;
@@ -2202,27 +2488,36 @@ class CaretTracker {
         this.pollMs = pollMs;
     }
     start() {
-        if (this.timer)
+        if (this.running)
             return;
+        this.running = true;
+        const generation = ++this.generation;
         const loop = async () => {
             try {
                 await this.checkCaret();
             }
-            catch (e) {
-                console.error('CaretTracker check error', e);
-            }
+            catch (e) { }
+            if (!this.running || this.generation !== generation)
+                return;
             this.timer = setTimeout(loop, this.pollMs);
         };
         loop();
     }
     stop() {
+        this.running = false;
+        this.generation++;
         if (this.timer) {
             clearTimeout(this.timer);
             this.timer = null;
         }
+        this.lastIndex = -1;
+        this.lastTouched = null;
     }
     async checkCaret() {
         var _a, _b, _c;
+        if (!this.running)
+            return;
+        const generation = this.generation;
         const leaf = this.app.workspace.activeLeaf;
         if (!leaf)
             return;
@@ -2271,6 +2566,8 @@ class CaretTracker {
         const varName = token.name;
         // resolve and set lastTouched
         const res = await this.resolver.resolve(varName);
+        if (!this.running || this.generation !== generation)
+            return;
         const def = this.registry.getVariable(varName);
         this.lastTouched = {
             name: varName,
@@ -2283,11 +2580,6 @@ class CaretTracker {
             to: this.positionAtIndex(editor, text, token.end),
             timestamp: Date.now(),
         };
-        // debug log when variable detected (use console.log to ensure visibility)
-        try {
-            console.log('Variable Links: caret detected variable', this.lastTouched.name, 'value:', this.lastTouched.value);
-        }
-        catch (e) { }
         // notify plugin/view
         try {
             if (this.plugin && typeof this.plugin.onCaretVariableChanged === 'function')

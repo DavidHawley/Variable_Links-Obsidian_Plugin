@@ -17,63 +17,58 @@ export default class VariableLinksPlugin extends Plugin {
   livePreviewRenderer: LivePreviewRenderer | null = null;
   tokenCache: TokenCache | null = null;
   suggest: any = null;
+  caretTracker: any = null;
+  private settingTab: VariableLinksSettingTab | null = null;
+  private active = false;
+  private timers = new Set<ReturnType<typeof setTimeout>>();
+  private contextMenuCleanups: Array<() => void> = [];
+  private vaultModifyHandler: ((file: any) => void) | null = null;
+  private editorMenuHandler: ((menu: any, editor: any) => void) | null = null;
+  private contextMenuHandler: ((event: MouseEvent) => void) | null = null;
   private lastContextClick: { x: number; y: number; target: any; time: number } | null = null;
 
   async onload() {
-    console.log('Variable Links: onload start');
+    this.active = true;
     try {
       await this.loadSettings();
-      console.log('Variable Links: settings loaded', this.settings);
-      this.addSettingTab(new VariableLinksSettingTab(this.app, this));
+      if (!this.active) return;
+      this.settingTab = new VariableLinksSettingTab(this.app, this);
+      this.addSettingTab(this.settingTab);
 
       // Initialize registry/indexer/resolver/renderer with defensive try/catch so one failure doesn't break plugin
       try {
         this.registry = new Registry(this.app, this);
         await this.registry.load();
-        console.log('Variable Links: registry loaded');
+        if (!this.active) return;
       } catch (e) {
-        console.error('Variable Links: registry failed to load', e);
-        try { const N = (globalThis as any).Notice; if (typeof N === 'function') new N('Variable Links: registry failed to load. See console for details.'); } catch (e) { }
+        try { const N = (globalThis as any).Notice; if (typeof N === 'function') new N('Variable Links: registry failed to load.'); } catch (e) { }
       }
 
       try {
         this.indexer = new Indexer(this.app, this.registry!);
         await this.indexer.build();
-        console.log('Variable Links: index built');
-      } catch (e) {
-        console.error('Variable Links: indexer failed', e);
-      }
+        if (!this.active) return;
+      } catch (e) {}
 
       try {
         this.tokenCache = new TokenCache(this.app, this, this.registry!);
         await this.tokenCache.initialize();
-        console.log('Variable Links: token cache initialized');
-      } catch (e) {
-        console.error('Variable Links: token cache failed to initialize', e);
-      }
+        if (!this.active) return;
+      } catch (e) {}
 
       try {
         this.resolver = new Resolver(this.app, this.registry!);
-        console.log('Variable Links: resolver initialized');
-      } catch (e) {
-        console.error('Variable Links: resolver failed', e);
-      }
+      } catch (e) {}
 
       try {
-        this.renderer = new Renderer(this.app, this.registry!, this.resolver!, this.indexer!);
-        // register markdown post processor using plugin API so it actually runs
-        if (typeof this.registerMarkdownPostProcessor === 'function') {
-          this.registerMarkdownPostProcessor((el: HTMLElement, ctx: any) => {
-            try { return this.renderer?.processElement(el); } catch (err) { console.error('renderer.processElement error', err); }
-          });
-        } else {
-          // fallback: try renderer's own register (older code)
-          try { this.renderer.register(); } catch (e) { console.warn('renderer.register fallback failed', e); }
+        if (typeof this.registerMarkdownPostProcessor !== 'function') {
+          throw new Error('registerMarkdownPostProcessor is unavailable.');
         }
-        console.log('Variable Links: renderer registered');
-      } catch (e) {
-        console.error('Variable Links: renderer failed', e);
-      }
+        this.renderer = new Renderer(this.app, this.registry!, this.resolver!, this.indexer!);
+        this.registerMarkdownPostProcessor((el: HTMLElement, ctx: any) => {
+          try { return this.renderer?.processElement(el); } catch (err) {}
+        });
+      } catch (e) {}
 
       // Use native CodeMirror decorations in Live Preview. Unlike positioned
       // overlays, they replace the text in the editor's normal layout.
@@ -81,19 +76,16 @@ export default class VariableLinksPlugin extends Plugin {
         if (typeof (this as any).registerEditorExtension !== 'function') throw new Error('registerEditorExtension is unavailable.');
         this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver!);
         (this as any).registerEditorExtension(this.livePreviewRenderer.createExtension());
-        const refreshOpenViews = () => this.livePreviewRenderer?.refresh();
-        if (typeof (this.app.workspace as any).onLayoutReady === 'function') {
-          (this.app.workspace as any).onLayoutReady(refreshOpenViews);
-        }
-        setTimeout(refreshOpenViews, 0);
-        console.log('Variable Links: live preview renderer attached');
-      } catch (e) {
-        console.warn('Variable Links: failed to attach live preview renderer', e);
-      }
+        const refreshOpenViews = () => {
+          if (this.active) this.livePreviewRenderer?.refresh();
+        };
+        this.schedule(refreshOpenViews, 0);
+      } catch (e) {}
 
       try {
         // register view
         const panelMod = await import('./panel');
+        if (!this.active) return;
         (this as any).registerView(panelMod.VIEW_TYPE_VARIABLE_PANEL, (leaf: any) =>
           new panelMod.VariablePropertiesView(leaf, this)
         );
@@ -106,13 +98,11 @@ export default class VariableLinksPlugin extends Plugin {
 
         // start caret tracker
         const CaretTracker = (await import('./caretTracker')).default;
+        if (!this.active) return;
         const ct = new CaretTracker(this.app, this, this.registry!, this.resolver!);
         ct.start();
-        (this as any).caretTracker = ct;
-        console.log('Variable Links: caret tracker started and panel registered');
-      } catch (e) {
-        console.warn('Variable Links: failed to initialize caret tracker/panel', e);
-      }
+        this.caretTracker = ct;
+      } catch (e) {}
 
       // register suggest if enabled
       try {
@@ -120,100 +110,114 @@ export default class VariableLinksPlugin extends Plugin {
           if ((this.settings as any).autocomplete !== false) {
                 this.suggest = new VariableSuggest(this.app, this.indexer!, this.registry!);
                 if (typeof this.registerEditorSuggest === 'function') {
-                  try { this.registerEditorSuggest(this.suggest); console.log('Variable Links: suggest registered via registerEditorSuggest'); }
-                  catch (e) { console.warn('registerEditorSuggest failed', e); }
-                }
-                else {
-                  console.log('Variable Links: registerEditorSuggest missing; suggest not registered');
+                  try { this.registerEditorSuggest(this.suggest); }
+                  catch (e) {}
                 }
               }
         }
-      } catch (e) { console.error('Variable Links: suggest failed', e); }
+      } catch (e) {}
 
       // watch registry reloads to rebuild index
-      const reloadIndex = async () => { if (this.indexer) await this.indexer.build(); };
+      const reloadIndex = async () => {
+        if (this.active && this.indexer) await this.indexer.build();
+      };
       // listen to vault modify events so we can update index when registry changed
       try {
-        this.app.vault.on('modify', (file: any) => {
+        this.vaultModifyHandler = (file: any) => {
+          if (!this.active) return;
           try {
             if (this.registry?.registryFile && file.path === this.registry.registryFile.path) {
-              setTimeout(reloadIndex, 100);
+              this.schedule(() => void reloadIndex(), 100);
             }
-          } catch (e) { console.error('modify handler error', e); }
-        });
-      } catch (e) { console.error('Failed to register vault.modify handler', e); }
+          } catch (e) {}
+        };
+        const modifyRef = this.app.vault.on('modify', this.vaultModifyHandler);
+        if (typeof (this as any).registerEvent === 'function') (this as any).registerEvent(modifyRef);
+      } catch (e) {}
 
       // expose helper for panel: when caret tracker notifies, refresh any open panel views
       (this as any).onCaretVariableChanged = (last: any) => {
-        // TypeScript hint: ensure caretTracker typed access available in this scope
-        const _self = (this as any);
+        if (!this.active) return;
         try {
-          console.log('Variable Links: onCaretVariableChanged', last?.name);
           import('./panel').then(async (mod) => {
+            if (!this.active) return;
             try {
               const leaves = this.app.workspace.getLeavesOfType(mod.VIEW_TYPE_VARIABLE_PANEL);
-              console.log('Variable Links: panel leaves found', leaves?.length);
               if (leaves && leaves.length > 0) {
                 for (let i = 0; i < leaves.length; i++) {
+                  if (!this.active) return;
                   try {
                     const view = (leaves[i] as any).view;
-                    console.log('Variable Links: refreshing panel leaf', i, 'view present', !!view, 'has refresh', typeof view?.refresh === 'function');
                     if (view && typeof view.refresh === 'function') {
                       await view.refresh();
                     } else if (view && typeof view.renderContent === 'function') {
                       await view.renderContent();
-                    } else {
-                      // Fallback: try to directly render into the leaf/container element
-                      try {
-                        const container = leaves[i].containerEl || (view && view.containerEl) || (view && view.containerElInner) || null;
-                        let inner = null;
-                        if (container) {
-                          inner = container.querySelector?.('.variable-links-panel-inner') || container.querySelector?.('.variable-links-panel') || null;
-                          if (!inner) {
-                            // create an inner container
-                            inner = document.createElement('div');
-                            inner.className = 'variable-links-panel-inner';
-                            if (container.appendChild) container.appendChild(inner);
-                          }
-                        }
-                        if (inner) {
-                          // render simple content mirroring renderContent()
-                          const last = _self.caretTracker ? _self.caretTracker.lastTouched : null;
-                          if (!last) {
-                            inner.textContent = 'No variable selected.';
-                          } else {
-                            inner.innerHTML = '';
-                            const h = document.createElement('h4'); h.textContent = `{{${last.name}}}`; inner.appendChild(h);
-                            const valDiv = document.createElement('div'); valDiv.className = 'variable-links-panel-value'; inner.appendChild(valDiv);
-                            const valueText = last.value === undefined ? '[Missing]' : String(last.value);
-                            try { await this.app.markdownRenderer?.renderMarkdown(valueText, valDiv, '', this); }
-                            catch (e) {
-                              try { await (this.app as any).markdownRenderer?.renderMarkdown(valueText, valDiv, '', this); }
-                              catch (e2) { valDiv.textContent = valueText; }
-                            }
-                          }
-                        }
-                      } catch (e) { console.error('Variable Links: DOM fallback render failed for leaf', i, e); }
                     }
-                  } catch (e) { console.error('Variable Links: error refreshing leaf', i, e); }
+                  } catch (e) {}
                 }
               }
-            } catch (e) { console.error('Variable Links: error notifying panel', e); }
+            } catch (e) {}
           });
-        } catch (e) { console.error('Variable Links: onCaretVariableChanged top-level error', e); }
+        } catch (e) {}
       };
-
-      console.log('Variable Links: onload complete');
     } catch (e) {
-      console.error('Variable Links: onload top-level error', e);
       try { const N = (globalThis as any).Notice; if (typeof N === 'function') new N('Variable Links failed to load: ' + String(e)); } catch {}
     }
   }
 
   onunload() {
+    this.active = false;
+    if (this.vaultModifyHandler) {
+      try { this.app.vault.off('modify', this.vaultModifyHandler); } catch (error) {}
+      this.vaultModifyHandler = null;
+    }
+    if (this.editorMenuHandler) {
+      try { (this.app.workspace as any).off('editor-menu', this.editorMenuHandler); } catch (error) {}
+      this.editorMenuHandler = null;
+    }
+    if (this.contextMenuHandler) {
+      try { document.removeEventListener('contextmenu', this.contextMenuHandler, true); } catch (error) {}
+      this.contextMenuHandler = null;
+    }
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
+    this.clearContextMenuResources();
+    this.settingTab?.dispose();
+    this.lastContextClick = null;
+    try { this.suggest?.close?.(); } catch (error) {}
+    this.caretTracker?.stop();
     this.tokenCache?.stop();
     this.registry?.unload();
-    console.log('Variable Links unloaded');
+    this.renderer?.unload();
+    this.livePreviewRenderer?.unload();
+
+    // Explicitly close plugin-owned views. registerView removes the factory,
+    // while this removes already-created ItemView instances and their DOM.
+    try {
+      const viewType = 'variable-links-panel';
+      (this.app.workspace as any).detachLeavesOfType?.(viewType);
+    } catch (error) {}
+
+    (this as any).onCaretVariableChanged = undefined;
+    this.caretTracker = null;
+    this.tokenCache = null;
+    this.registry = null;
+    this.renderer = null;
+    this.livePreviewRenderer = null;
+    this.resolver = null;
+    this.indexer = null;
+    this.suggest = null;
+    this.settingTab = null;
+  }
+
+  private schedule(callback: () => void, delay: number) {
+    if (!this.active) return null;
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      if (this.active) callback();
+    }, delay);
+    this.timers.add(timer);
+    return timer;
   }
 
   async loadSettings() {
@@ -229,7 +233,9 @@ export default class VariableLinksPlugin extends Plugin {
   }
 
   async openVariableProperties(variableName?: string) {
+    if (!this.active) return;
     const panelMod = await import('./panel');
+    if (!this.active) return;
     let leaf = this.app.workspace.getLeavesOfType(panelMod.VIEW_TYPE_VARIABLE_PANEL)?.[0];
     if (!leaf) {
       leaf = this.app.workspace.getRightLeaf(false);
@@ -244,17 +250,21 @@ export default class VariableLinksPlugin extends Plugin {
 
   private registerVariableContextMenu() {
     if (typeof (this as any).registerDomEvent === 'function') {
-      (this as any).registerDomEvent(document, 'contextmenu', (event: MouseEvent) => {
+      this.contextMenuHandler = (event: MouseEvent) => {
+        if (!this.active) return;
         this.lastContextClick = {
           x: event.clientX,
           y: event.clientY,
           target: event.target,
           time: Date.now()
         };
-      }, true);
+      };
+      (this as any).registerDomEvent(document, 'contextmenu', this.contextMenuHandler, true);
     }
 
-    const eventRef = (this.app.workspace as any).on('editor-menu', (menu: any, editor: any) => {
+    this.editorMenuHandler = (menu: any, editor: any) => {
+      if (!this.active) return;
+      this.clearContextMenuResources();
       const variableName = this.getContextVariableName(editor);
       const insertionPosition = this.getContextEditorPosition(editor);
       const definition = variableName ? this.registry?.getVariable(variableName) : null;
@@ -316,7 +326,8 @@ export default class VariableLinksPlugin extends Plugin {
           .setDisabled(!variableName);
         if (variableName) parentItem.onClick(() => void this.openVariableProperties(variableName));
       });
-    });
+    };
+    const eventRef = (this.app.workspace as any).on('editor-menu', this.editorMenuHandler);
     if (typeof (this as any).registerEvent === 'function') (this as any).registerEvent(eventRef);
   }
 
@@ -371,14 +382,14 @@ export default class VariableLinksPlugin extends Plugin {
   private enableNestedSubmenuSwitch(parentMenu: any, item: any, itemSubmenu: any) {
     const itemElement = item?.dom;
     if (!itemElement?.addEventListener) return;
-    const timerKey = '__variableLinksSubmenuSwitchTimer';
-    itemElement.addEventListener('mouseenter', () => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onMouseEnter = () => {
       const current = parentMenu?.currentSubmenu;
       if (!current || current === itemSubmenu) return;
-      if (parentMenu[timerKey]) clearTimeout(parentMenu[timerKey]);
-      parentMenu[timerKey] = setTimeout(() => {
-        parentMenu[timerKey] = null;
-        if (!itemElement.isConnected || !itemElement.matches?.(':hover')) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        if (!this.active || !itemElement.isConnected || !itemElement.matches?.(':hover')) return;
         try {
           if (typeof parentMenu.closeSubmenu === 'function') parentMenu.closeSubmenu();
           else if (typeof current.hide === 'function') current.hide();
@@ -386,16 +397,28 @@ export default class VariableLinksPlugin extends Plugin {
 
           const MouseEventCtor = itemElement.ownerDocument?.defaultView?.MouseEvent || MouseEvent;
           itemElement.dispatchEvent(new MouseEventCtor('mouseover', { bubbles: true, cancelable: true }));
-        } catch (error) {
-          console.warn('Variable Links: failed to switch insert submenu', error);
-        }
+        } catch (error) {}
       }, 300);
+    };
+    const onMouseLeave = () => {
+      if (!timer) return;
+      clearTimeout(timer);
+      timer = null;
+    };
+    itemElement.addEventListener('mouseenter', onMouseEnter);
+    itemElement.addEventListener('mouseleave', onMouseLeave);
+    this.contextMenuCleanups.push(() => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      itemElement.removeEventListener('mouseenter', onMouseEnter);
+      itemElement.removeEventListener('mouseleave', onMouseLeave);
     });
-    itemElement.addEventListener('mouseleave', () => {
-      if (!parentMenu[timerKey]) return;
-      clearTimeout(parentMenu[timerKey]);
-      parentMenu[timerKey] = null;
-    });
+  }
+
+  private clearContextMenuResources() {
+    for (const cleanup of this.contextMenuCleanups.splice(0)) {
+      try { cleanup(); } catch (error) {}
+    }
   }
 
   private async setVariableFavorite(variableName: string, favorite: boolean) {
