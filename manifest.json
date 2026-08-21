@@ -5,7 +5,7 @@
   "minAppVersion": "0.12.0",
   "description": "Global variable-like links that resolve to frontmatter properties in other files.",
   "author": "DavidHawley",
-  "authorUrl": "",
+  "authorUrl": "https://github.com/DavidHawley",
   "main": "main.js",
   "css": "styles.css"
 }
