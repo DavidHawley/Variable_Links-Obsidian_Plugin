@@ -1,6 +1,5 @@
 import { App, TFile, parseYaml, Notice } from 'obsidian';
 import Registry from './registry';
-import { parseWikiLink } from './utils';
 
 export interface ResolveResult {
   ok: boolean;
