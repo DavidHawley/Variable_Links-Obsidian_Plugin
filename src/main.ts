@@ -371,17 +371,31 @@ export default class VariableLinksPlugin extends Plugin {
   private enableNestedSubmenuSwitch(parentMenu: any, item: any, itemSubmenu: any) {
     const itemElement = item?.dom;
     if (!itemElement?.addEventListener) return;
-    itemElement.addEventListener('mouseover', () => {
+    const timerKey = '__variableLinksSubmenuSwitchTimer';
+    itemElement.addEventListener('mouseenter', () => {
       const current = parentMenu?.currentSubmenu;
       if (!current || current === itemSubmenu) return;
-      try {
-        if (typeof parentMenu.closeSubmenu === 'function') parentMenu.closeSubmenu();
-        else if (typeof current.hide === 'function') current.hide();
-      } catch (error) {
-        console.warn('Variable Links: failed to switch insert submenu', error);
-      }
-      try { parentMenu.currentSubmenu = null; } catch (_) {}
-    }, { capture: true });
+      if (parentMenu[timerKey]) clearTimeout(parentMenu[timerKey]);
+      parentMenu[timerKey] = setTimeout(() => {
+        parentMenu[timerKey] = null;
+        if (!itemElement.isConnected || !itemElement.matches?.(':hover')) return;
+        try {
+          if (typeof parentMenu.closeSubmenu === 'function') parentMenu.closeSubmenu();
+          else if (typeof current.hide === 'function') current.hide();
+          try { parentMenu.currentSubmenu = null; } catch (_) {}
+
+          const MouseEventCtor = itemElement.ownerDocument?.defaultView?.MouseEvent || MouseEvent;
+          itemElement.dispatchEvent(new MouseEventCtor('mouseover', { bubbles: true, cancelable: true }));
+        } catch (error) {
+          console.warn('Variable Links: failed to switch insert submenu', error);
+        }
+      }, 300);
+    });
+    itemElement.addEventListener('mouseleave', () => {
+      if (!parentMenu[timerKey]) return;
+      clearTimeout(parentMenu[timerKey]);
+      parentMenu[timerKey] = null;
+    });
   }
 
   private async setVariableFavorite(variableName: string, favorite: boolean) {

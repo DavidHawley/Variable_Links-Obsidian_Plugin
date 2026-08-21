@@ -179,6 +179,10 @@ The Fields editor provides property suggestions from Markdown files across the v
 
 Info Card fields are displayed in a full-width bordered table.
 
+## AI development disclosure
+
+Variable Links was made almost completely with AI-generated code and documentation, guided, tested, and iteratively reviewed through human direction and feedback.
+
 ## Development
 
 Install dependencies and build:
@@ -190,4 +194,4 @@ Copy-Item dist/main.js main.js
 Copy-Item src/styles.css styles.css
 ```
 
-The distributable plugin consists of `manifest.json`, `main.js`, and `styles.css`.
+The installable plugin consists of `manifest.json`, `main.js`, and `styles.css`. Packaged releases also include an install-focused `README.md`.
