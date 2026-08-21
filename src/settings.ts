@@ -1,0 +1,112 @@
+import { App, PluginSettingTab, Setting, TFile, FuzzySuggestModal, Notice } from 'obsidian';
+import VariableLinksPlugin from './main';
+
+export interface VariableLinksSettings {
+  registryFilePath: string;
+  enableInfoCards: boolean;
+  openInNewPane: boolean;
+  suggestionFuzzy: boolean;
+  defaultDateFormat: string;
+}
+
+export const DEFAULT_SETTINGS: VariableLinksSettings = {
+  registryFilePath: 'Variable Links.md',
+  enableInfoCards: true,
+  openInNewPane: false,
+  suggestionFuzzy: true,
+  defaultDateFormat: 'YYYY-MM-DD'
+};
+
+class FilePickerModal extends FuzzySuggestModal<TFile> {
+  app: App;
+  onChoose: (file: TFile) => void;
+  constructor(app: App, onChoose: (file: TFile) => void) {
+    super(app);
+    this.app = app;
+    this.onChoose = onChoose;
+    this.setPlaceholder('Select a file to use as the registry');
+  }
+  getItems(): TFile[] {
+    return (this.app.vault as any).getFiles();
+  }
+  getItemText(item: TFile): string {
+    return item.path;
+  }
+  onChooseItem(item: TFile): void {
+    this.onChoose(item);
+  }
+}
+
+export class VariableLinksSettingTab extends PluginSettingTab {
+  plugin: VariableLinksPlugin;
+
+  constructor(app: App, plugin: VariableLinksPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const containerEl: any = (this as any).containerEl;
+    containerEl.empty();
+
+    containerEl.createEl('h2', { text: 'Variable Links — Settings' });
+
+    new Setting(containerEl)
+      .setName('Registry file')
+      .setDesc('Markdown file that contains the variable registry (frontmatter). Default: Variable Links.md')
+      .addText((text: any) =>
+        text
+          .setPlaceholder('Variable Links.md')
+          .setValue(this.plugin.settings.registryFilePath)
+          .onChange(async (value: string) => {
+            this.plugin.settings.registryFilePath = value.trim();
+            await this.plugin.saveSettings();
+            // attempt to reload registry
+            try {
+              await this.plugin.registry?.load();
+            } catch (e) {
+              new Notice('Failed to load registry: ' + String(e));
+            }
+          })
+      )
+      .addButton((btn: any) =>
+        btn.setButtonText('Choose...').onClick(() => {
+          const modal = new FilePickerModal((this as any).app, async (file) => {
+            this.plugin.settings.registryFilePath = file.path;
+            await this.plugin.saveSettings();
+            modal.close();
+            try {
+              await this.plugin.registry?.load();
+              new Notice('Registry loaded: ' + file.path);
+            } catch (e) {
+              new Notice('Failed to load registry: ' + String(e));
+            }
+            this.display();
+          });
+          modal.open();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('Enable info cards')
+      .setDesc('Show info cards on hover over rendered variables')
+      .addToggle((t: any) => t.setValue(this.plugin.settings.enableInfoCards).onChange(async (v: any)=>{ this.plugin.settings.enableInfoCards = v; await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName('Open source in new pane')
+      .setDesc('Open the source file in a new pane when clicking rendered variables')
+      .addToggle((t: any) => t.setValue(this.plugin.settings.openInNewPane).onChange(async (v: any)=>{ this.plugin.settings.openInNewPane = v; await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName('Suggestion fuzzy matching')
+      .setDesc('Allow fuzzy matching for suggestions (variable name, display, source file, property)')
+      .addToggle((t: any) => t.setValue(this.plugin.settings.suggestionFuzzy).onChange(async (v: any)=>{ this.plugin.settings.suggestionFuzzy = v; await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName('Default date format')
+      .setDesc('Format used for date properties if not specified per-variable')
+      .addText((t: any) => t.setValue(this.plugin.settings.defaultDateFormat).onChange(async (v: any)=>{ this.plugin.settings.defaultDateFormat = v; await this.plugin.saveSettings(); }));
+  }
+}
+
+export default VariableLinksSettingTab;

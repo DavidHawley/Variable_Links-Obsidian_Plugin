@@ -1,0 +1,11 @@
+{
+  "id": "variable-links",
+  "name": "Variable Links",
+  "version": "0.1.0",
+  "minAppVersion": "0.12.0",
+  "description": "Global variable-like links that resolve to frontmatter properties in other files.",
+  "author": "(Your Name)",
+  "authorUrl": "",
+  "main": "main.js",
+  "css": "styles.css"
+}

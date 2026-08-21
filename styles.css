@@ -1,0 +1,19 @@
+.variable-links-token {
+  color: var(--text-normal);
+  border-bottom: 1px dashed var(--interactive-accent);
+  cursor: pointer;
+}
+
+.variable-links-token.missing {
+  color: var(--text-muted);
+  border-bottom-style: dotted;
+}
+
+.variable-links-card {
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  padding: 8px;
+  border-radius: 6px;
+  box-shadow: var(--shadow-elevation-2);
+  max-width: 360px;
+}
