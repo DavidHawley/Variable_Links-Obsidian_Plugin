@@ -2,10 +2,11 @@
   "id": "variable-links",
   "name": "Variable Links",
   "version": "1.0.0",
-  "minAppVersion": "0.12.0",
+  "minAppVersion": "1.13.7",
   "description": "Variable-like links that resolve to frontmatter properties and can display Info cards on hover.",
   "author": "DavidHawley",
   "authorUrl": "https://github.com/DavidHawley",
+  "isDesktopOnly": false,
   "main": "main.js",
   "css": "styles.css"
 }

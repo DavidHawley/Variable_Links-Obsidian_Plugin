@@ -192,10 +192,19 @@ Variable Links is fully open-source software released under the [MIT License](LI
 Install dependencies and build:
 
 ```powershell
-npm install --legacy-peer-deps
+npm install
 npm run build
-Copy-Item dist/main.js main.js
-Copy-Item src/styles.css styles.css
 ```
 
 The installable plugin consists of `manifest.json`, `main.js`, and `styles.css`. Packaged releases also include an install-focused `README.md`.
+
+## Releasing
+
+The GitHub release workflow creates a draft release when a semantic-version tag is pushed. The tag must exactly match the version in `manifest.json` and must not have a `v` prefix.
+
+1. For the initial `1.0.0` release, create the tag after the release-preparation commit is on `main`: `git tag -a 1.0.0 -m "1.0.0"`. For later releases, use `npm version patch`, `npm version minor`, or `npm version major`; this also updates `manifest.json` and `versions.json` and creates the correctly named tag.
+2. Push the version commit to `main` and wait for CI to pass.
+3. Push the tag, for example `git push origin 1.0.0`.
+4. Review the draft release and its attested `main.js`, `manifest.json`, and `styles.css` assets, add release notes, and publish it.
+
+Repository administrators must allow GitHub Actions to use read and write workflow permissions.

@@ -10,7 +10,7 @@ export interface VariableLinksSettings {
 }
 
 export const DEFAULT_SETTINGS: VariableLinksSettings = {
-  registryFilePath: '.obsidian/plugins/variable-links/registry.json',
+  registryFilePath: '',
   enableInfoCards: true,
   openInNewPane: false,
   suggestionFuzzy: true,
@@ -52,14 +52,12 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     const containerEl: any = (this as any).containerEl;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Variable Links — Settings' });
-
     new Setting(containerEl)
       .setName('Registry file')
       .setDesc('JSON, YAML, or Markdown registry. The default is a hidden registry.json in this plugin folder.')
       .addText((text: any) =>
         text
-          .setPlaceholder('.obsidian/plugins/variable-links/registry.json')
+          .setPlaceholder('Path to a JSON, YAML, or Markdown registry')
           .setValue(this.plugin.settings.registryFilePath)
           .onChange(async (value: string) => {
             this.plugin.settings.registryFilePath = value.trim();

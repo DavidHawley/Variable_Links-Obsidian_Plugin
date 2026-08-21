@@ -20,12 +20,24 @@
 }
 
 .variable-links-card {
+  position: absolute;
+  z-index: var(--layer-popover);
+  box-sizing: border-box;
+  width: auto;
   background: var(--background-secondary);
   color: var(--text-normal);
   padding: 8px;
   border-radius: 6px;
   box-shadow: var(--shadow-elevation-2);
-  max-width: 360px;
+  max-width: min(360px, 60vw);
+}
+
+.variable-links-card-note {
+  margin-bottom: 6px;
+}
+
+.variable-links-card-source {
+  margin-top: 6px;
 }
 
 .variable-links-card-title {

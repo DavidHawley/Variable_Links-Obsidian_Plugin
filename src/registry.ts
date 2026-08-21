@@ -1,4 +1,4 @@
-import { App, TFile, parseYaml, stringifyYaml, Notice } from 'obsidian';
+import { App, TAbstractFile, TFile, parseYaml, stringifyYaml, Notice } from 'obsidian';
 import VariableLinksPlugin from './main';
 import { VariableLinksSettings } from './settings';
 
@@ -19,7 +19,7 @@ export class Registry {
   data: Map<string, VariableDefinition> = new Map();
   registryFile: TFile | null = null;
   registryPath: string = '';
-  modifyHandler: ((file: TFile) => void) | null = null;
+  modifyHandler: ((file: TAbstractFile) => void) | null = null;
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
   private active = true;
   private generation = 0;
@@ -49,7 +49,7 @@ export class Registry {
 
   private async createRegistry(path: string): Promise<TFile | null> {
     const vault: any = this.app.vault;
-    const configDir = vault.configDir || '.obsidian';
+    const configDir = vault.configDir;
     const hidden = path === configDir || path.startsWith(`${configDir}/`);
     const content = this.initialContent(path);
     if (hidden) {
@@ -145,7 +145,7 @@ export class Registry {
       this.modifyHandler = null;
     }
     if (file) {
-      this.modifyHandler = (f: TFile) => {
+      this.modifyHandler = (f: TAbstractFile) => {
         if (!this.active || !this.registryFile || f.path !== this.registryFile.path) return;
         if (this.reloadTimer) clearTimeout(this.reloadTimer);
         this.reloadTimer = setTimeout(() => {
