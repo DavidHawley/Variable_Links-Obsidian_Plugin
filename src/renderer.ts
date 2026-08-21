@@ -2,7 +2,7 @@ import { App } from 'obsidian';
 import Registry from './registry';
 import Resolver from './resolver';
 import Indexer from './indexer';
-import InfoCard, { CardConfig } from './card';
+import InfoCard from './card';
 
 const TOKEN_REGEX = /\{\{\s*([^\}\s]+)\s*\}\}/g;
 
@@ -30,6 +30,8 @@ export class Renderer {
   }
 
   async processElement(el: HTMLElement) {
+    // Avoid processing the same element multiple times
+    if (el.hasAttribute && el.hasAttribute('data-variable-links-processed')) return;
     // Walk text nodes and replace {{variable}} occurrences
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null as any);
     const nodes: Text[] = [];
@@ -82,15 +84,18 @@ export class Renderer {
           });
 
           // hover -> info card (if configured and enabled)
-          const def = this.registry.getVariable(varName);
-          const cardCfg: CardConfig | undefined = def?.card;
-          if (cardCfg && (this.registry.plugin as any)?.settings?.enableInfoCards !== false) {
+          if ((this.registry.plugin as any)?.settings?.enableInfoCards !== false) {
             let enterTimer: any = null;
             placeholder.addEventListener('mouseenter', () => {
               if (enterTimer) clearTimeout(enterTimer);
+              const currentDef = this.registry.getVariable(varName);
+              if (!currentDef?.card) return;
               enterTimer = setTimeout(() => {
-                const sourcePath = res.sourceFile?.path ?? (def?.file ?? '');
-                this.infoCard.showFor(placeholder, sourcePath, cardCfg);
+                const latestDef = this.registry.getVariable(varName);
+                const latestCard = latestDef?.card;
+                if (!latestCard) return;
+                const sourcePath = res.sourceFile?.path ?? (latestDef?.file ?? '');
+                this.infoCard.showFor(placeholder, sourcePath, latestCard);
               }, 200);
             });
             placeholder.addEventListener('mouseleave', () => {
@@ -107,6 +112,8 @@ export class Renderer {
       if (rest) frag.appendChild(document.createTextNode(rest));
       textNode.parentNode?.replaceChild(frag, textNode);
     }
+
+    try { el.setAttribute && el.setAttribute('data-variable-links-processed', '1'); } catch (e) {}
   }
 }
 

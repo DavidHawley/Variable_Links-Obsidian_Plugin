@@ -1,4 +1,4 @@
-import { App, MarkdownRenderer } from 'obsidian';
+import { App, MarkdownRenderer, parseYaml } from 'obsidian';
 
 export interface CardConfig {
   title?: string;
@@ -28,8 +28,7 @@ export class InfoCard {
     // Title
     if (cardConfig?.title) {
       const h = document.createElement('div');
-      h.style.fontWeight = '600';
-      h.style.marginBottom = '6px';
+      h.className = 'variable-links-card-title';
       h.textContent = cardConfig.title;
       container.appendChild(h);
     }
@@ -39,55 +38,41 @@ export class InfoCard {
       const p = document.createElement('div');
       p.style.marginBottom = '6px';
       // render as markdown for convenience
-      await MarkdownRenderer.renderMarkdown(cardConfig.note || '', p, '', null as any);
+      await MarkdownRenderer.renderMarkdown(cardConfig.note || '', p, '', this.app);
       container.appendChild(p);
     }
 
     // Fields
     if (cardConfig?.fields && cardConfig.fields.length > 0) {
-      const ul = document.createElement('ul');
-      ul.style.margin = '4px 0';
-      ul.style.paddingLeft = '18px';
+      const table = document.createElement('table');
+      table.className = 'variable-links-card-fields-table';
+      const tbody = document.createElement('tbody');
 
-      // Attempt to get frontmatter from metadataCache
-      const file = (this.app.vault as any).getAbstractFileByPath(sourceFilePath);
-      let front: any = null;
-      if (file) {
-        front = (this.app as any).metadataCache?.getFileCache(file)?.frontmatter ?? null;
-        if (!front) {
-          try {
-            const content = await (this.app.vault as any).read(file);
-            // quick frontmatter parse
-            const m = content.match(/^---\n([\s\S]*?)\n---/);
-            if (m) {
-              try { front = (window as any).parseYaml ? (window as any).parseYaml(m[1]) : null; } catch(e) { front = null; }
-            }
-          } catch (e) { front = null; }
-        }
-      }
-
-      for (const field of cardConfig.fields) {
-        const li = document.createElement('li');
+      for (const fieldConfig of cardConfig.fields) {
+        const external = fieldConfig.match(/^\[\[([^\]]+)\]\]#([^:]+)(?::([\s\S]*))?$/);
+        const separator = external ? -1 : fieldConfig.indexOf(':');
+        const field = (external ? external[2] : separator === -1 ? fieldConfig : fieldConfig.slice(0, separator)).trim();
+        const customLabel = (external ? external[3] || '' : separator === -1 ? '' : fieldConfig.slice(separator + 1)).trim();
+        const fieldSourcePath = external ? external[1] : sourceFilePath;
+        const front = await this.getFrontmatter(fieldSourcePath);
+        const row = document.createElement('tr');
         const val = front?.[field];
-        if (typeof val === 'undefined') {
-          li.textContent = `${field}: (missing)`;
-        } else if (Array.isArray(val)) {
-          li.textContent = `${field}: ${val.join(', ')}`;
-        } else {
-          // render markdown/value
-          if (typeof val === 'string') {
-            // render markdown into a temporary container
-            const span = document.createElement('span');
-            await MarkdownRenderer.renderMarkdown(String(val), span, '', null as any);
-            li.appendChild(document.createTextNode(`${field}: `));
-            li.appendChild(span);
-          } else {
-            li.textContent = `${field}: ${String(val)}`;
-          }
-        }
-        ul.appendChild(li);
+        const name = document.createElement('th');
+        name.className = 'variable-links-card-field-name';
+        name.scope = 'row';
+        name.textContent = customLabel || (field ? field.charAt(0).toUpperCase() + field.slice(1) : field);
+        const value = document.createElement('td');
+        value.className = 'variable-links-card-field-value';
+        if (typeof val === 'undefined') value.textContent = '(missing)';
+        else if (Array.isArray(val)) value.textContent = val.join(', ');
+        else if (typeof val === 'string') await MarkdownRenderer.renderMarkdown(val, value, '', this.app);
+        else value.textContent = String(val);
+        row.appendChild(name);
+        row.appendChild(value);
+        tbody.appendChild(row);
       }
-      container.appendChild(ul);
+      table.appendChild(tbody);
+      container.appendChild(table);
     }
 
     // Source link
@@ -146,6 +131,23 @@ export class InfoCard {
     // attach handlers to hide when mouse leaves
     container.addEventListener('mouseenter', () => { this.clearHideTimeout(); });
     container.addEventListener('mouseleave', () => { this.hideWithDelay(150); });
+  }
+
+  private async getFrontmatter(sourcePath: string): Promise<any> {
+    const linkPath = sourcePath.replace(/^\[\[|\]\]$/g, '').replace(/\.md$/i, '');
+    const cache = (this.app as any).metadataCache;
+    const file = cache?.getFirstLinkpathDest?.(linkPath, '')
+      || (this.app.vault as any).getAbstractFileByPath(/\.md$/i.test(sourcePath) ? sourcePath : `${sourcePath}.md`);
+    if (!file) return null;
+    const cached = cache?.getFileCache?.(file)?.frontmatter;
+    if (cached) return cached;
+    try {
+      const content = await (this.app.vault as any).read(file);
+      const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      return match ? parseYaml(match[1]) : null;
+    } catch (e) {
+      return null;
+    }
   }
 
   hideWithDelay(ms = 150) {

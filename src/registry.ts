@@ -1,4 +1,4 @@
-import { App, TFile, parseYaml, Notice } from 'obsidian';
+import { App, TFile, parseYaml, stringifyYaml, Notice } from 'obsidian';
 import VariableLinksPlugin from './main';
 import { VariableLinksSettings } from './settings';
 import { parseWikiLink } from './utils';
@@ -100,6 +100,73 @@ export class Registry {
 
   getVariable(name: string) {
     return this.data.get(name) ?? null;
+  }
+
+  /** Persist a registry mapping while preserving any Markdown body below its frontmatter. */
+  async saveVariable(name: string, definition: VariableDefinition) {
+    const variableName = name.trim();
+    if (!variableName) throw new Error('Variable name is required.');
+    if (!definition.file?.trim()) throw new Error('A source note is required.');
+    if (!definition.property?.trim()) throw new Error('A property name is required.');
+    if (!this.registryFile) throw new Error('The registry file is not loaded.');
+
+    const file = this.registryFile;
+    const content = await this.app.vault.read(file);
+    const normalized: Partial<VariableDefinition> = {
+      file: definition.file.trim(),
+      property: definition.property.trim()
+    };
+    if (Object.prototype.hasOwnProperty.call(definition, 'card')) normalized.card = definition.card;
+    const lowerPath = file.path.toLowerCase();
+    const mergeDefinition = (existing: any) => {
+      const updated: any = { ...(existing || {}), ...normalized };
+      if (definition.display?.trim()) updated.display = definition.display.trim();
+      else delete updated.display;
+      if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card) delete updated.card;
+      return updated;
+    };
+
+    // Let Obsidian update Markdown frontmatter instead of rewriting the note
+    // ourselves. This is the reliable save path for a Markdown registry.
+    if ((lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx'))
+      && typeof (this.app as any).fileManager?.processFrontMatter === 'function') {
+      await (this.app as any).fileManager.processFrontMatter(file, (frontmatter: any) => {
+        frontmatter['variable-links'] = frontmatter['variable-links'] || {};
+        frontmatter['variable-links'][variableName] = mergeDefinition(frontmatter['variable-links'][variableName]);
+      });
+      await this.load();
+      await (this.plugin as any).indexer?.build();
+      return;
+    }
+
+    if (lowerPath.endsWith('.json')) {
+      const registry = JSON.parse(content || '{}');
+      registry['variable-links'] = registry['variable-links'] || {};
+      registry['variable-links'][variableName] = mergeDefinition(registry['variable-links'][variableName]);
+      await this.app.vault.modify(file, JSON.stringify(registry, null, 2) + '\n');
+    } else {
+      const registry = this.parseRegistryFromContent(content, file.path);
+      if (!registry || typeof registry !== 'object') {
+        throw new Error('The registry must contain valid YAML or JSON.');
+      }
+      registry['variable-links'] = registry['variable-links'] || {};
+      registry['variable-links'][variableName] = mergeDefinition(registry['variable-links'][variableName]);
+      const yaml = stringifyYaml(registry).trimEnd();
+
+      if (lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx')) {
+        if (!content.startsWith('---')) throw new Error('The Markdown registry needs a YAML frontmatter block.');
+        const closing = content.indexOf('\n---', 3);
+        if (closing === -1) throw new Error('The registry frontmatter is not closed.');
+        const bodyStart = content.indexOf('\n', closing + 4);
+        const body = bodyStart === -1 ? '' : content.slice(bodyStart + 1);
+        await this.app.vault.modify(file, `---\n${yaml}\n---${body ? `\n${body}` : '\n'}`);
+      } else {
+        await this.app.vault.modify(file, yaml + '\n');
+      }
+    }
+
+    await this.load();
+    await (this.plugin as any).indexer?.build();
   }
 
   extractFrontmatter(content: string): any | null {
