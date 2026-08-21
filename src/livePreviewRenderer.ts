@@ -1,8 +1,9 @@
 import Resolver from './resolver';
 import { Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
-import { RangeSetBuilder } from '@codemirror/state';
+import { RangeSetBuilder, StateEffect } from '@codemirror/state';
 
 const TOKEN_REGEX = /\{\{\s*([^\}\s]+)\s*\}\}/g;
+const refreshVariableLinks = StateEffect.define<void>();
 
 /**
  * Uses CodeMirror's native replacement decorations rather than positioned DOM
@@ -12,19 +13,61 @@ const TOKEN_REGEX = /\{\{\s*([^\}\s]+)\s*\}\}/g;
 export default class LivePreviewRenderer {
   private resolver: Resolver;
   private app: any;
+  private revision = 0;
 
   constructor(app: any, resolver: Resolver) {
     this.app = app;
     this.resolver = resolver;
   }
 
+  /** Force open Markdown panes to resolve their variables again. */
+  refresh() {
+    this.revision++;
+    const leaves: any[] = [];
+    if (typeof this.app.workspace?.iterateAllLeaves === 'function') {
+      this.app.workspace.iterateAllLeaves((leaf: any) => {
+        if (leaf?.view?.getViewType?.() === 'markdown') leaves.push(leaf);
+      });
+    } else leaves.push(...(this.app.workspace?.getLeavesOfType?.('markdown') || []));
+
+    for (const leaf of leaves) {
+      const editorView = leaf?.view?.editor?.cm;
+      if (typeof editorView?.dispatch === 'function') {
+        try { editorView.dispatch({ effects: refreshVariableLinks.of(undefined) }); }
+        catch (error) { console.warn('Variable Links: failed to refresh an open editor', error); }
+      }
+
+      const previewMode = leaf?.view?.previewMode;
+      try {
+        if (typeof previewMode?.rerender === 'function') previewMode.rerender(true);
+        else if (typeof previewMode?.renderer?.rerender === 'function') previewMode.renderer.rerender(true);
+      } catch (error) {
+        console.warn('Variable Links: failed to refresh an open Reading View', error);
+      }
+    }
+
+    // File-change rendering can be queued just after a vault write. Run a
+    // second Reading View pass once that queue has settled.
+    setTimeout(() => {
+      for (const leaf of leaves) {
+        const previewMode = leaf?.view?.previewMode;
+        try {
+          if (typeof previewMode?.rerender === 'function') previewMode.rerender(true);
+          else if (typeof previewMode?.renderer?.rerender === 'function') previewMode.renderer.rerender(true);
+        } catch (error) {
+          console.warn('Variable Links: delayed Reading View refresh failed', error);
+        }
+      }
+    }, 50);
+  }
+
   createExtension(): any {
     const renderer = this;
 
     class VariableWidget extends WidgetType {
-      constructor(private name: string) { super(); }
+      constructor(private name: string, private revision: number) { super(); }
 
-      eq(other: VariableWidget) { return other.name === this.name; }
+      eq(other: VariableWidget) { return other.name === this.name && other.revision === this.revision; }
 
       toDOM() {
         const el = document.createElement('span');
@@ -63,7 +106,7 @@ export default class LivePreviewRenderer {
         const to = TOKEN_REGEX.lastIndex;
         // Do not replace the token while the caret or selection touches it.
         if (selection.from <= to && selection.to >= from) continue;
-        builder.add(from, to, Decoration.replace({ widget: new VariableWidget(match[1].trim()) }));
+        builder.add(from, to, Decoration.replace({ widget: new VariableWidget(match[1].trim(), renderer.revision) }));
       }
       return builder.finish();
     };
@@ -72,7 +115,10 @@ export default class LivePreviewRenderer {
       decorations: any;
       constructor(view: any) { this.decorations = buildDecorations(view); }
       update(update: any) {
-        if (update.docChanged || update.selectionSet || update.viewportChanged) {
+        const refreshRequested = update.transactions.some((transaction: any) =>
+          transaction.effects.some((effect: any) => effect.is(refreshVariableLinks))
+        );
+        if (update.docChanged || update.selectionSet || update.viewportChanged || refreshRequested) {
           this.decorations = buildDecorations(update.view);
         }
       }

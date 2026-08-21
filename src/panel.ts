@@ -6,6 +6,7 @@ export const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
 export class VariablePropertiesView extends ItemView {
   plugin: any;
   private contentEl: any = null;
+  private selectedVariableName: string | null = null;
 
   constructor(leaf: any, plugin: any) {
     super(leaf);
@@ -29,44 +30,82 @@ export class VariablePropertiesView extends ItemView {
     if (!this.contentEl) return;
     this.contentEl.empty();
 
+    const registry = this.plugin.registry;
+    const last = this.plugin.caretTracker?.lastTouched;
+    const names = (Array.from(registry?.data?.keys?.() || []) as string[]).sort((a, b) => a.localeCompare(b));
+    if (this.selectedVariableName && !registry?.getVariable(this.selectedVariableName)) this.selectedVariableName = null;
+    const activeName = this.selectedVariableName || last?.name || '';
+    const definition = activeName ? registry?.getVariable(activeName) || {} : {};
+
+    const toolbar = this.contentEl.createDiv('variable-links-panel-toolbar');
+    const select = toolbar.createEl('select') as HTMLSelectElement;
+    select.add(new Option(activeName && !definition.file ? `[New] ${activeName}` : 'Select a Variable Link…', ''));
+    for (const name of names) select.add(new Option(name, name));
+    select.value = definition.file ? activeName : '';
+    select.addEventListener('change', () => {
+      this.selectedVariableName = select.value || null;
+      void this.refresh();
+    });
+
+    const setButton = toolbar.createEl('button', { text: 'Set token' }) as HTMLButtonElement;
+    setButton.disabled = !activeName || !definition.file || !last?.editor || !last?.from || !last?.to;
+    setButton.addEventListener('click', () => {
+      if (setButton.disabled) return;
+      last.editor.replaceRange(`{{${activeName}}}`, last.from, last.to);
+      last.name = activeName;
+      last.def = definition;
+      new Notice(`Variable Links: token set to {{${activeName}}}`);
+    });
+
+    const deleteButton = toolbar.createEl('button', { text: 'Delete' }) as HTMLButtonElement;
+    deleteButton.disabled = !activeName || !definition.file;
+    deleteButton.addEventListener('click', async () => {
+      if (deleteButton.disabled || !window.confirm(`Delete Variable Link “${activeName}”?`)) return;
+      try {
+        await registry.deleteVariable(activeName);
+        if (last?.name === activeName) { last.def = null; last.value = undefined; }
+        this.selectedVariableName = null;
+        new Notice(`Variable Links: deleted {{${activeName}}}`);
+        await this.refresh();
+      } catch (error) {
+        new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+
     const layout = this.contentEl.createDiv('variable-links-panel-split');
     const propertiesPane = layout.createDiv('variable-links-panel-pane variable-links-panel-properties');
     const cardPane = layout.createDiv('variable-links-panel-pane variable-links-panel-infocard');
-    const last = this.plugin.caretTracker?.lastTouched;
 
     propertiesPane.createEl('h4', { text: 'Variable properties' });
     cardPane.createEl('h4', { text: 'Info card' });
 
-    if (!last) {
+    if (!activeName) {
       propertiesPane.createEl('p', { text: 'No variable selected. Add a variable below or place the caret in a {{token}}.' });
       this.renderVariableForm(propertiesPane, '', {}, 'Add a variable');
       cardPane.createEl('p', { text: 'Select or create a variable to configure its info card.' });
       return;
     }
 
-    // CaretTracker only resolves when the caret moves, so after a save it can
-    // still hold an older definition. Always render the current registry value.
-    const definition = this.plugin.registry?.getVariable(last.name) || last.def || {};
-    last.def = definition;
-
-    propertiesPane.createEl('h5', { text: `{{${last.name}}}` });
-    const valueText = last.value === undefined ? '[Missing]' : String(last.value);
+    const result = definition.file ? await this.plugin.resolver.resolve(activeName) : null;
+    propertiesPane.createEl('h5', { text: `{{${activeName}}}` });
+    const valueText = result?.ok ? String(result.value) : '[Missing]';
     const valueEl = propertiesPane.createDiv('variable-links-panel-value');
     await MarkdownRenderer.renderMarkdown(valueText, valueEl, '', this.plugin);
 
     const actions = propertiesPane.createDiv('variable-links-panel-actions');
     actions.createEl('button', { text: 'Open source' }).addEventListener('click', async () => {
-      if (last.sourceFile) await this.app.workspace.openLinkText(last.sourceFile.path.replace(/\.md$/i, ''), '', false);
+      if (result?.sourceFile) await this.app.workspace.openLinkText(result.sourceFile.path.replace(/\.md$/i, ''), '', false);
     });
     actions.createEl('button', { text: 'Copy value' }).addEventListener('click', () => void navigator.clipboard?.writeText(valueText));
 
     this.renderVariableForm(
       propertiesPane,
-      last.name,
+      activeName,
       definition,
       definition.file ? 'Edit mapping' : 'Set up this variable'
     );
-    this.renderInfoCardForm(cardPane, last.name, definition);
+    if (definition.file) this.renderInfoCardForm(cardPane, activeName, definition);
+    else cardPane.createEl('p', { text: 'Save the variable mapping before configuring its info card.' });
   }
 
   private renderVariableForm(parent: any, name: string, definition: any, title: string) {
@@ -79,12 +118,19 @@ export class VariablePropertiesView extends ItemView {
     const propertyInput = this.addInput(form, 'Property', definition.property || '', 'e.g. company');
     const displayInput = this.addInput(form, 'Display name (optional)', definition.display || '', 'e.g. John Smith');
     this.addSaveButton(form, name ? 'Save properties' : 'Add variable', async () => {
-      await this.plugin.registry.saveVariable(nameInput.value, {
+      const newName = nameInput.value.trim();
+      await this.plugin.registry.saveVariable(newName, {
         file: fileInput.value,
         property: propertyInput.value,
         display: displayInput.value
-      });
-      new Notice(`Variable Links: saved {{${nameInput.value.trim()}}}`);
+      }, definition.file ? name : undefined);
+      const touched = this.plugin.caretTracker?.lastTouched;
+      if (touched?.name === name && newName !== name) {
+        touched.name = newName;
+        touched.def = this.plugin.registry.getVariable(newName);
+      }
+      this.selectedVariableName = newName;
+      new Notice(`Variable Links: saved {{${newName}}}`);
       await this.refresh();
     });
   }

@@ -1,9 +1,9 @@
 import { App, TFile, parseYaml, stringifyYaml, Notice } from 'obsidian';
 import VariableLinksPlugin from './main';
 import { VariableLinksSettings } from './settings';
-import { parseWikiLink } from './utils';
 
 export interface VariableDefinition {
+  guid?: string;
   file: string; // vault path or wiki-link raw
   property: string;
   display?: string;
@@ -17,6 +17,7 @@ export class Registry {
   settings: VariableLinksSettings;
   data: Map<string, VariableDefinition> = new Map();
   registryFile: TFile | null = null;
+  registryPath: string = '';
   modifyHandler: ((file: TFile) => void) | null = null;
 
   constructor(app: App, plugin: VariableLinksPlugin) {
@@ -25,31 +26,69 @@ export class Registry {
     this.settings = plugin.settings;
   }
 
+  private initialContent(path: string): string {
+    const lower = path.toLowerCase();
+    if (lower.endsWith('.json')) return JSON.stringify({ 'variable-links': {} }, null, 2) + '\n';
+    if (lower.endsWith('.yml') || lower.endsWith('.yaml')) return 'variable-links: {}\n';
+    return '---\nvariable-links: {}\n---\n';
+  }
+
+  private async ensureAdapterFolders(path: string) {
+    const adapter = (this.app.vault as any).adapter;
+    const parts = path.split('/').slice(0, -1);
+    let current = '';
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!await adapter.exists(current)) await adapter.mkdir(current);
+    }
+  }
+
+  private async createRegistry(path: string): Promise<TFile | null> {
+    const vault: any = this.app.vault;
+    const configDir = vault.configDir || '.obsidian';
+    const hidden = path === configDir || path.startsWith(`${configDir}/`);
+    const content = this.initialContent(path);
+    if (hidden) {
+      await this.ensureAdapterFolders(path);
+      await vault.adapter.write(path, content);
+      return null;
+    }
+
+    const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+    if (parent && !vault.getAbstractFileByPath(parent)) {
+      const parts = parent.split('/');
+      let current = '';
+      for (const part of parts) {
+        current = current ? `${current}/${part}` : part;
+        if (!vault.getAbstractFileByPath(current)) await vault.createFolder(current);
+      }
+    }
+    return await vault.create(path, content);
+  }
+
   async load() {
     this.settings = this.plugin.settings;
-    const path = this.settings.registryFilePath;
+    const path = this.settings.registryFilePath.replace(/\\/g, '/');
     if (!path) {
       new Notice('Variable Links: registryFilePath not set');
       return;
     }
 
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!file || !(file instanceof TFile)) {
-      new Notice('Variable Links: registry file not found at ' + path);
-      this.registryFile = null;
-      this.data.clear();
-      return;
+    this.registryPath = path;
+    const adapter = (this.app.vault as any).adapter;
+    let abstractFile = this.app.vault.getAbstractFileByPath(path);
+    let file = abstractFile instanceof TFile ? abstractFile : null;
+    if (!file && !await adapter.exists(path)) {
+      file = await this.createRegistry(path);
+      new Notice('Variable Links: created registry at ' + path);
     }
-
     this.registryFile = file;
-
-    // read file content
-    const content = await this.app.vault.read(file as TFile);
+    const content = file ? await this.app.vault.read(file) : await adapter.read(path);
 
     // Try to parse registry using intelligent handling based on extension and content
-    const parsed = this.parseRegistryFromContent(content, file.path);
+    const parsed = this.parseRegistryFromContent(content, path);
     if (!parsed || typeof parsed !== 'object') {
-      new Notice('Variable Links: failed to parse registry from file: ' + file.path);
+      new Notice('Variable Links: failed to parse registry from file: ' + path);
       this.data.clear();
       return;
     }
@@ -62,9 +101,18 @@ export class Registry {
     }
 
     this.data.clear();
+    const generatedGuids = new Map<string, string>();
+    const usedGuids = new Set<string>();
     for (const [key, raw] of Object.entries(variableLinks)) {
       if (typeof raw === 'object' && raw !== null) {
+        let guid = typeof (raw as any).guid === 'string' ? (raw as any).guid.trim() : '';
+        if (!guid || usedGuids.has(guid)) {
+          do { guid = this.createGuid(); } while (usedGuids.has(guid));
+          generatedGuids.set(String(key), guid);
+        }
+        usedGuids.add(guid);
         const def: VariableDefinition = {
+          guid,
           file: (raw as any).file,
           property: (raw as any).property,
           display: (raw as any).display,
@@ -74,19 +122,25 @@ export class Registry {
         this.data.set(String(key), def);
       }
     }
+    if (generatedGuids.size) {
+      await this.mutateRegistryLinks((links) => {
+        for (const [name, guid] of generatedGuids) {
+          if (links[name]) links[name].guid = guid;
+        }
+      });
+    }
 
     // register vault change listener to reload registry when the file is modified
     if (this.modifyHandler) {
       this.app.vault.off('modify', this.modifyHandler as any);
       this.modifyHandler = null;
     }
-    this.modifyHandler = (f: TFile) => {
-      if (this.registryFile && f.path === this.registryFile.path) {
-        // debounce briefly
-        setTimeout(() => this.load(), 50);
-      }
-    };
-    this.app.vault.on('modify', this.modifyHandler);
+    if (file) {
+      this.modifyHandler = (f: TFile) => {
+        if (this.registryFile && f.path === this.registryFile.path) setTimeout(() => this.load(), 50);
+      };
+      this.app.vault.on('modify', this.modifyHandler);
+    }
 
     console.log('Variable Links: registry loaded with', this.data.size, 'entries');
   }
@@ -102,71 +156,131 @@ export class Registry {
     return this.data.get(name) ?? null;
   }
 
-  /** Persist a registry mapping while preserving any Markdown body below its frontmatter. */
-  async saveVariable(name: string, definition: VariableDefinition) {
-    const variableName = name.trim();
-    if (!variableName) throw new Error('Variable name is required.');
-    if (!definition.file?.trim()) throw new Error('A source note is required.');
-    if (!definition.property?.trim()) throw new Error('A property name is required.');
-    if (!this.registryFile) throw new Error('The registry file is not loaded.');
+  private createGuid(): string {
+    if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
+      const random = Math.random() * 16 | 0;
+      return (character === 'x' ? random : (random & 0x3 | 0x8)).toString(16);
+    });
+  }
 
+  private async mutateRegistryLinks(mutator: (links: any) => void) {
     const file = this.registryFile;
-    const content = await this.app.vault.read(file);
-    const normalized: Partial<VariableDefinition> = {
-      file: definition.file.trim(),
-      property: definition.property.trim()
-    };
-    if (Object.prototype.hasOwnProperty.call(definition, 'card')) normalized.card = definition.card;
-    const lowerPath = file.path.toLowerCase();
-    const mergeDefinition = (existing: any) => {
-      const updated: any = { ...(existing || {}), ...normalized };
-      if (definition.display?.trim()) updated.display = definition.display.trim();
-      else delete updated.display;
-      if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card) delete updated.card;
-      return updated;
-    };
-
-    // Let Obsidian update Markdown frontmatter instead of rewriting the note
-    // ourselves. This is the reliable save path for a Markdown registry.
+    const adapter = (this.app.vault as any).adapter;
+    const path = this.registryPath;
+    const lowerPath = path.toLowerCase();
     if ((lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx'))
-      && typeof (this.app as any).fileManager?.processFrontMatter === 'function') {
+      && file && typeof (this.app as any).fileManager?.processFrontMatter === 'function') {
       await (this.app as any).fileManager.processFrontMatter(file, (frontmatter: any) => {
         frontmatter['variable-links'] = frontmatter['variable-links'] || {};
-        frontmatter['variable-links'][variableName] = mergeDefinition(frontmatter['variable-links'][variableName]);
+        mutator(frontmatter['variable-links']);
       });
-      await this.load();
-      await (this.plugin as any).indexer?.build();
       return;
     }
 
-    if (lowerPath.endsWith('.json')) {
-      const registry = JSON.parse(content || '{}');
-      registry['variable-links'] = registry['variable-links'] || {};
-      registry['variable-links'][variableName] = mergeDefinition(registry['variable-links'][variableName]);
-      await this.app.vault.modify(file, JSON.stringify(registry, null, 2) + '\n');
-    } else {
-      const registry = this.parseRegistryFromContent(content, file.path);
-      if (!registry || typeof registry !== 'object') {
-        throw new Error('The registry must contain valid YAML or JSON.');
-      }
-      registry['variable-links'] = registry['variable-links'] || {};
-      registry['variable-links'][variableName] = mergeDefinition(registry['variable-links'][variableName]);
+    const content = file ? await this.app.vault.read(file) : await adapter.read(path);
+    const registry = this.parseRegistryFromContent(content, path);
+    if (!registry || typeof registry !== 'object') throw new Error('The registry must contain valid JSON or YAML.');
+    registry['variable-links'] = registry['variable-links'] || {};
+    mutator(registry['variable-links']);
+    let updatedContent: string;
+    if (lowerPath.endsWith('.json')) updatedContent = JSON.stringify(registry, null, 2) + '\n';
+    else {
       const yaml = stringifyYaml(registry).trimEnd();
-
       if (lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx')) {
-        if (!content.startsWith('---')) throw new Error('The Markdown registry needs a YAML frontmatter block.');
         const closing = content.indexOf('\n---', 3);
         if (closing === -1) throw new Error('The registry frontmatter is not closed.');
         const bodyStart = content.indexOf('\n', closing + 4);
         const body = bodyStart === -1 ? '' : content.slice(bodyStart + 1);
-        await this.app.vault.modify(file, `---\n${yaml}\n---${body ? `\n${body}` : '\n'}`);
-      } else {
-        await this.app.vault.modify(file, yaml + '\n');
-      }
+        updatedContent = `---\n${yaml}\n---${body ? `\n${body}` : '\n'}`;
+      } else updatedContent = yaml + '\n';
+    }
+    if (file) await this.app.vault.modify(file, updatedContent);
+    else await adapter.write(path, updatedContent);
+  }
+
+  /** Persist a mapping. A rename keeps the GUID and updates verified token references. */
+  async saveVariable(name: string, definition: VariableDefinition, previousName?: string) {
+    const variableName = name.trim();
+    const oldName = previousName?.trim();
+    if (!variableName) throw new Error('Variable name is required.');
+    if (!definition.file?.trim()) throw new Error('A source note is required.');
+    if (!definition.property?.trim()) throw new Error('A property name is required.');
+    if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
+    if (oldName && oldName !== variableName && this.data.has(variableName)) {
+      throw new Error(`A Variable Link named “${variableName}” already exists.`);
     }
 
+    const existing = this.data.get(oldName || variableName);
+    const guid = existing?.guid || definition.guid || this.createGuid();
+    const normalized: Partial<VariableDefinition> = {
+      guid,
+      file: definition.file.trim(),
+      property: definition.property.trim()
+    };
+    if (Object.prototype.hasOwnProperty.call(definition, 'card')) normalized.card = definition.card;
+    const rename = !!oldName && oldName !== variableName;
+    const tokenCache = (this.plugin as any).tokenCache;
+    if (rename && !tokenCache) {
+      throw new Error('The token cache is unavailable, so the rename was cancelled.');
+    }
+    const renamePlan = rename && tokenCache ? await tokenCache.prepareRename(guid, oldName!, variableName) : null;
+
+    if (renamePlan) await renamePlan.apply();
+    try {
+      await this.mutateRegistryLinks((links) => {
+        const stored = links[oldName || variableName] || {};
+        const updated: any = { ...stored, ...normalized };
+        if (definition.display?.trim()) updated.display = definition.display.trim();
+        else delete updated.display;
+        if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card) delete updated.card;
+        links[variableName] = updated;
+        if (rename) delete links[oldName!];
+      });
+    } catch (error) {
+      if (renamePlan) await renamePlan.rollback();
+      throw error;
+    }
+
+    // Once the registry write succeeds, the rename is authoritative. Derived
+    // indexes may be rebuilt, but must never roll note text back independently.
+    try {
+      await this.load();
+    } catch (error) {
+      console.error('Variable Links: the registry was saved but could not be refreshed', error);
+      new Notice('Variable Links: the rename was saved, but the registry view could not be refreshed. Reload Obsidian.');
+      return;
+    }
+    try {
+      await (this.plugin as any).indexer?.build();
+    } catch (error) {
+      console.error('Variable Links: registry saved but the property index could not be rebuilt', error);
+    }
+
+    if (renamePlan) {
+      try {
+        await renamePlan.commit();
+      } catch (error) {
+        console.error('Variable Links: rename succeeded but the token cache could not be committed; rebuilding', error);
+        try { await tokenCache.rebuild(); }
+        catch (rebuildError) { console.error('Variable Links: token cache rebuild failed after rename', rebuildError); }
+      }
+    } else if (!existing && tokenCache) {
+      try { await tokenCache.rebuild(); }
+      catch (error) { console.error('Variable Links: token cache rebuild failed after creating a link', error); }
+    }
+    this.plugin.livePreviewRenderer?.refresh();
+  }
+
+  async deleteVariable(name: string) {
+    const variableName = name.trim();
+    if (!variableName) return;
+    const guid = this.data.get(variableName)?.guid;
+    await this.mutateRegistryLinks((links) => delete links[variableName]);
     await this.load();
     await (this.plugin as any).indexer?.build();
+    if (guid) await (this.plugin as any).tokenCache?.removeGuid(guid);
+    this.plugin.livePreviewRenderer?.refresh();
   }
 
   extractFrontmatter(content: string): any | null {

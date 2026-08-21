@@ -30,8 +30,6 @@ export class Renderer {
   }
 
   async processElement(el: HTMLElement) {
-    // Avoid processing the same element multiple times
-    if (el.hasAttribute && el.hasAttribute('data-variable-links-processed')) return;
     // Walk text nodes and replace {{variable}} occurrences
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null as any);
     const nodes: Text[] = [];
@@ -40,7 +38,9 @@ export class Renderer {
       // skip if parent is code or pre
       const parent = n.parentElement;
       if (!parent) continue;
-      if (parent.closest('code, pre, .cm-s')) continue;
+      // Skipping our own rendered spans makes this processor idempotent without
+      // storing a marker on Obsidian's reusable Reading View section elements.
+      if (parent.closest('code, pre, .cm-s, .variable-links-token')) continue;
       if ((n.nodeValue || '').includes('{{')) nodes.push(n as Text);
     }
 
@@ -113,7 +113,6 @@ export class Renderer {
       textNode.parentNode?.replaceChild(frag, textNode);
     }
 
-    try { el.setAttribute && el.setAttribute('data-variable-links-processed', '1'); } catch (e) {}
   }
 }
 

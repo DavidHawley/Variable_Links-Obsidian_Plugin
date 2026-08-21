@@ -5,7 +5,7 @@ var view = require('@codemirror/view');
 var state = require('@codemirror/state');
 
 const DEFAULT_SETTINGS = {
-    registryFilePath: 'Variable Links.md',
+    registryFilePath: '.obsidian/plugins/variable-links/registry.json',
     enableInfoCards: true,
     openInNewPane: false,
     suggestionFuzzy: true,
@@ -39,9 +39,9 @@ class VariableLinksSettingTab extends obsidian.PluginSettingTab {
         containerEl.createEl('h2', { text: 'Variable Links — Settings' });
         new obsidian.Setting(containerEl)
             .setName('Registry file')
-            .setDesc('Markdown file that contains the variable registry (frontmatter). Default: Variable Links.md')
+            .setDesc('JSON, YAML, or Markdown registry. The default is a hidden registry.json in this plugin folder.')
             .addText((text) => text
-            .setPlaceholder('Variable Links.md')
+            .setPlaceholder('.obsidian/plugins/variable-links/registry.json')
             .setValue(this.plugin.settings.registryFilePath)
             .onChange(async (value) => {
             var _a;
@@ -95,32 +95,73 @@ class Registry {
     constructor(app, plugin) {
         this.data = new Map();
         this.registryFile = null;
+        this.registryPath = '';
         this.modifyHandler = null;
         this.app = app;
         this.plugin = plugin;
         this.settings = plugin.settings;
     }
+    initialContent(path) {
+        const lower = path.toLowerCase();
+        if (lower.endsWith('.json'))
+            return JSON.stringify({ 'variable-links': {} }, null, 2) + '\n';
+        if (lower.endsWith('.yml') || lower.endsWith('.yaml'))
+            return 'variable-links: {}\n';
+        return '---\nvariable-links: {}\n---\n';
+    }
+    async ensureAdapterFolders(path) {
+        const adapter = this.app.vault.adapter;
+        const parts = path.split('/').slice(0, -1);
+        let current = '';
+        for (const part of parts) {
+            current = current ? `${current}/${part}` : part;
+            if (!await adapter.exists(current))
+                await adapter.mkdir(current);
+        }
+    }
+    async createRegistry(path) {
+        const vault = this.app.vault;
+        const configDir = vault.configDir || '.obsidian';
+        const hidden = path === configDir || path.startsWith(`${configDir}/`);
+        const content = this.initialContent(path);
+        if (hidden) {
+            await this.ensureAdapterFolders(path);
+            await vault.adapter.write(path, content);
+            return null;
+        }
+        const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+        if (parent && !vault.getAbstractFileByPath(parent)) {
+            const parts = parent.split('/');
+            let current = '';
+            for (const part of parts) {
+                current = current ? `${current}/${part}` : part;
+                if (!vault.getAbstractFileByPath(current))
+                    await vault.createFolder(current);
+            }
+        }
+        return await vault.create(path, content);
+    }
     async load() {
         this.settings = this.plugin.settings;
-        const path = this.settings.registryFilePath;
+        const path = this.settings.registryFilePath.replace(/\\/g, '/');
         if (!path) {
             new obsidian.Notice('Variable Links: registryFilePath not set');
             return;
         }
-        const file = this.app.vault.getAbstractFileByPath(path);
-        if (!file || !(file instanceof obsidian.TFile)) {
-            new obsidian.Notice('Variable Links: registry file not found at ' + path);
-            this.registryFile = null;
-            this.data.clear();
-            return;
+        this.registryPath = path;
+        const adapter = this.app.vault.adapter;
+        let abstractFile = this.app.vault.getAbstractFileByPath(path);
+        let file = abstractFile instanceof obsidian.TFile ? abstractFile : null;
+        if (!file && !await adapter.exists(path)) {
+            file = await this.createRegistry(path);
+            new obsidian.Notice('Variable Links: created registry at ' + path);
         }
         this.registryFile = file;
-        // read file content
-        const content = await this.app.vault.read(file);
+        const content = file ? await this.app.vault.read(file) : await adapter.read(path);
         // Try to parse registry using intelligent handling based on extension and content
-        const parsed = this.parseRegistryFromContent(content, file.path);
+        const parsed = this.parseRegistryFromContent(content, path);
         if (!parsed || typeof parsed !== 'object') {
-            new obsidian.Notice('Variable Links: failed to parse registry from file: ' + file.path);
+            new obsidian.Notice('Variable Links: failed to parse registry from file: ' + path);
             this.data.clear();
             return;
         }
@@ -131,9 +172,20 @@ class Registry {
             return;
         }
         this.data.clear();
+        const generatedGuids = new Map();
+        const usedGuids = new Set();
         for (const [key, raw] of Object.entries(variableLinks)) {
             if (typeof raw === 'object' && raw !== null) {
+                let guid = typeof raw.guid === 'string' ? raw.guid.trim() : '';
+                if (!guid || usedGuids.has(guid)) {
+                    do {
+                        guid = this.createGuid();
+                    } while (usedGuids.has(guid));
+                    generatedGuids.set(String(key), guid);
+                }
+                usedGuids.add(guid);
                 const def = {
+                    guid,
                     file: raw.file,
                     property: raw.property,
                     display: raw.display,
@@ -143,18 +195,26 @@ class Registry {
                 this.data.set(String(key), def);
             }
         }
+        if (generatedGuids.size) {
+            await this.mutateRegistryLinks((links) => {
+                for (const [name, guid] of generatedGuids) {
+                    if (links[name])
+                        links[name].guid = guid;
+                }
+            });
+        }
         // register vault change listener to reload registry when the file is modified
         if (this.modifyHandler) {
             this.app.vault.off('modify', this.modifyHandler);
             this.modifyHandler = null;
         }
-        this.modifyHandler = (f) => {
-            if (this.registryFile && f.path === this.registryFile.path) {
-                // debounce briefly
-                setTimeout(() => this.load(), 50);
-            }
-        };
-        this.app.vault.on('modify', this.modifyHandler);
+        if (file) {
+            this.modifyHandler = (f) => {
+                if (this.registryFile && f.path === this.registryFile.path)
+                    setTimeout(() => this.load(), 50);
+            };
+            this.app.vault.on('modify', this.modifyHandler);
+        }
         console.log('Variable Links: registry loaded with', this.data.size, 'entries');
     }
     unload() {
@@ -167,80 +227,162 @@ class Registry {
         var _a;
         return (_a = this.data.get(name)) !== null && _a !== void 0 ? _a : null;
     }
-    /** Persist a registry mapping while preserving any Markdown body below its frontmatter. */
-    async saveVariable(name, definition) {
-        var _a, _b, _c, _d, _e;
+    createGuid() {
+        var _a;
+        if (typeof ((_a = globalThis.crypto) === null || _a === void 0 ? void 0 : _a.randomUUID) === 'function')
+            return globalThis.crypto.randomUUID();
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
+            const random = Math.random() * 16 | 0;
+            return (character === 'x' ? random : (random & 0x3 | 0x8)).toString(16);
+        });
+    }
+    async mutateRegistryLinks(mutator) {
+        var _a;
+        const file = this.registryFile;
+        const adapter = this.app.vault.adapter;
+        const path = this.registryPath;
+        const lowerPath = path.toLowerCase();
+        if ((lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx'))
+            && file && typeof ((_a = this.app.fileManager) === null || _a === void 0 ? void 0 : _a.processFrontMatter) === 'function') {
+            await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+                frontmatter['variable-links'] = frontmatter['variable-links'] || {};
+                mutator(frontmatter['variable-links']);
+            });
+            return;
+        }
+        const content = file ? await this.app.vault.read(file) : await adapter.read(path);
+        const registry = this.parseRegistryFromContent(content, path);
+        if (!registry || typeof registry !== 'object')
+            throw new Error('The registry must contain valid JSON or YAML.');
+        registry['variable-links'] = registry['variable-links'] || {};
+        mutator(registry['variable-links']);
+        let updatedContent;
+        if (lowerPath.endsWith('.json'))
+            updatedContent = JSON.stringify(registry, null, 2) + '\n';
+        else {
+            const yaml = obsidian.stringifyYaml(registry).trimEnd();
+            if (lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx')) {
+                const closing = content.indexOf('\n---', 3);
+                if (closing === -1)
+                    throw new Error('The registry frontmatter is not closed.');
+                const bodyStart = content.indexOf('\n', closing + 4);
+                const body = bodyStart === -1 ? '' : content.slice(bodyStart + 1);
+                updatedContent = `---\n${yaml}\n---${body ? `\n${body}` : '\n'}`;
+            }
+            else
+                updatedContent = yaml + '\n';
+        }
+        if (file)
+            await this.app.vault.modify(file, updatedContent);
+        else
+            await adapter.write(path, updatedContent);
+    }
+    /** Persist a mapping. A rename keeps the GUID and updates verified token references. */
+    async saveVariable(name, definition, previousName) {
+        var _a, _b, _c, _d;
         const variableName = name.trim();
+        const oldName = previousName === null || previousName === void 0 ? void 0 : previousName.trim();
         if (!variableName)
             throw new Error('Variable name is required.');
         if (!((_a = definition.file) === null || _a === void 0 ? void 0 : _a.trim()))
             throw new Error('A source note is required.');
         if (!((_b = definition.property) === null || _b === void 0 ? void 0 : _b.trim()))
             throw new Error('A property name is required.');
-        if (!this.registryFile)
+        if (!this.registryFile && !this.registryPath)
             throw new Error('The registry file is not loaded.');
-        const file = this.registryFile;
-        const content = await this.app.vault.read(file);
+        if (oldName && oldName !== variableName && this.data.has(variableName)) {
+            throw new Error(`A Variable Link named “${variableName}” already exists.`);
+        }
+        const existing = this.data.get(oldName || variableName);
+        const guid = (existing === null || existing === void 0 ? void 0 : existing.guid) || definition.guid || this.createGuid();
         const normalized = {
+            guid,
             file: definition.file.trim(),
             property: definition.property.trim()
         };
         if (Object.prototype.hasOwnProperty.call(definition, 'card'))
             normalized.card = definition.card;
-        const lowerPath = file.path.toLowerCase();
-        const mergeDefinition = (existing) => {
-            var _a;
-            const updated = { ...(existing || {}), ...normalized };
-            if ((_a = definition.display) === null || _a === void 0 ? void 0 : _a.trim())
-                updated.display = definition.display.trim();
-            else
-                delete updated.display;
-            if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card)
-                delete updated.card;
-            return updated;
-        };
-        // Let Obsidian update Markdown frontmatter instead of rewriting the note
-        // ourselves. This is the reliable save path for a Markdown registry.
-        if ((lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx'))
-            && typeof ((_c = this.app.fileManager) === null || _c === void 0 ? void 0 : _c.processFrontMatter) === 'function') {
-            await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-                frontmatter['variable-links'] = frontmatter['variable-links'] || {};
-                frontmatter['variable-links'][variableName] = mergeDefinition(frontmatter['variable-links'][variableName]);
+        const rename = !!oldName && oldName !== variableName;
+        const tokenCache = this.plugin.tokenCache;
+        if (rename && !tokenCache) {
+            throw new Error('The token cache is unavailable, so the rename was cancelled.');
+        }
+        const renamePlan = rename && tokenCache ? await tokenCache.prepareRename(guid, oldName, variableName) : null;
+        if (renamePlan)
+            await renamePlan.apply();
+        try {
+            await this.mutateRegistryLinks((links) => {
+                var _a;
+                const stored = links[oldName || variableName] || {};
+                const updated = { ...stored, ...normalized };
+                if ((_a = definition.display) === null || _a === void 0 ? void 0 : _a.trim())
+                    updated.display = definition.display.trim();
+                else
+                    delete updated.display;
+                if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card)
+                    delete updated.card;
+                links[variableName] = updated;
+                if (rename)
+                    delete links[oldName];
             });
+        }
+        catch (error) {
+            if (renamePlan)
+                await renamePlan.rollback();
+            throw error;
+        }
+        // Once the registry write succeeds, the rename is authoritative. Derived
+        // indexes may be rebuilt, but must never roll note text back independently.
+        try {
             await this.load();
-            await ((_d = this.plugin.indexer) === null || _d === void 0 ? void 0 : _d.build());
+        }
+        catch (error) {
+            console.error('Variable Links: the registry was saved but could not be refreshed', error);
+            new obsidian.Notice('Variable Links: the rename was saved, but the registry view could not be refreshed. Reload Obsidian.');
             return;
         }
-        if (lowerPath.endsWith('.json')) {
-            const registry = JSON.parse(content || '{}');
-            registry['variable-links'] = registry['variable-links'] || {};
-            registry['variable-links'][variableName] = mergeDefinition(registry['variable-links'][variableName]);
-            await this.app.vault.modify(file, JSON.stringify(registry, null, 2) + '\n');
+        try {
+            await ((_c = this.plugin.indexer) === null || _c === void 0 ? void 0 : _c.build());
         }
-        else {
-            const registry = this.parseRegistryFromContent(content, file.path);
-            if (!registry || typeof registry !== 'object') {
-                throw new Error('The registry must contain valid YAML or JSON.');
+        catch (error) {
+            console.error('Variable Links: registry saved but the property index could not be rebuilt', error);
+        }
+        if (renamePlan) {
+            try {
+                await renamePlan.commit();
             }
-            registry['variable-links'] = registry['variable-links'] || {};
-            registry['variable-links'][variableName] = mergeDefinition(registry['variable-links'][variableName]);
-            const yaml = obsidian.stringifyYaml(registry).trimEnd();
-            if (lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx')) {
-                if (!content.startsWith('---'))
-                    throw new Error('The Markdown registry needs a YAML frontmatter block.');
-                const closing = content.indexOf('\n---', 3);
-                if (closing === -1)
-                    throw new Error('The registry frontmatter is not closed.');
-                const bodyStart = content.indexOf('\n', closing + 4);
-                const body = bodyStart === -1 ? '' : content.slice(bodyStart + 1);
-                await this.app.vault.modify(file, `---\n${yaml}\n---${body ? `\n${body}` : '\n'}`);
-            }
-            else {
-                await this.app.vault.modify(file, yaml + '\n');
+            catch (error) {
+                console.error('Variable Links: rename succeeded but the token cache could not be committed; rebuilding', error);
+                try {
+                    await tokenCache.rebuild();
+                }
+                catch (rebuildError) {
+                    console.error('Variable Links: token cache rebuild failed after rename', rebuildError);
+                }
             }
         }
+        else if (!existing && tokenCache) {
+            try {
+                await tokenCache.rebuild();
+            }
+            catch (error) {
+                console.error('Variable Links: token cache rebuild failed after creating a link', error);
+            }
+        }
+        (_d = this.plugin.livePreviewRenderer) === null || _d === void 0 ? void 0 : _d.refresh();
+    }
+    async deleteVariable(name) {
+        var _a, _b, _c, _d;
+        const variableName = name.trim();
+        if (!variableName)
+            return;
+        const guid = (_a = this.data.get(variableName)) === null || _a === void 0 ? void 0 : _a.guid;
+        await this.mutateRegistryLinks((links) => delete links[variableName]);
         await this.load();
-        await ((_e = this.plugin.indexer) === null || _e === void 0 ? void 0 : _e.build());
+        await ((_b = this.plugin.indexer) === null || _b === void 0 ? void 0 : _b.build());
+        if (guid)
+            await ((_c = this.plugin.tokenCache) === null || _c === void 0 ? void 0 : _c.removeGuid(guid));
+        (_d = this.plugin.livePreviewRenderer) === null || _d === void 0 ? void 0 : _d.refresh();
     }
     extractFrontmatter(content) {
         // find the leading YAML frontmatter block
@@ -678,9 +820,6 @@ class Renderer {
     }
     async processElement(el) {
         var _a;
-        // Avoid processing the same element multiple times
-        if (el.hasAttribute && el.hasAttribute('data-variable-links-processed'))
-            return;
         // Walk text nodes and replace {{variable}} occurrences
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
         const nodes = [];
@@ -690,7 +829,9 @@ class Renderer {
             const parent = n.parentElement;
             if (!parent)
                 continue;
-            if (parent.closest('code, pre, .cm-s'))
+            // Skipping our own rendered spans makes this processor idempotent without
+            // storing a marker on Obsidian's reusable Reading View section elements.
+            if (parent.closest('code, pre, .cm-s, .variable-links-token'))
                 continue;
             if ((n.nodeValue || '').includes('{{'))
                 nodes.push(n);
@@ -777,10 +918,6 @@ class Renderer {
                 frag.appendChild(document.createTextNode(rest));
             (_a = textNode.parentNode) === null || _a === void 0 ? void 0 : _a.replaceChild(frag, textNode);
         }
-        try {
-            el.setAttribute && el.setAttribute('data-variable-links-processed', '1');
-        }
-        catch (e) { }
     }
 }
 
@@ -873,6 +1010,7 @@ class VariableSuggest extends obsidian.EditorSuggest {
 }
 
 const TOKEN_REGEX = /\{\{\s*([^\}\s]+)\s*\}\}/g;
+const refreshVariableLinks = state.StateEffect.define();
 /**
  * Uses CodeMirror's native replacement decorations rather than positioned DOM
  * overlays. The original token remains in the document and is restored while
@@ -880,17 +1018,72 @@ const TOKEN_REGEX = /\{\{\s*([^\}\s]+)\s*\}\}/g;
  */
 class LivePreviewRenderer {
     constructor(app, resolver) {
+        this.revision = 0;
         this.app = app;
         this.resolver = resolver;
+    }
+    /** Force open Markdown panes to resolve their variables again. */
+    refresh() {
+        var _a, _b, _c, _d, _e, _f, _g;
+        this.revision++;
+        const leaves = [];
+        if (typeof ((_a = this.app.workspace) === null || _a === void 0 ? void 0 : _a.iterateAllLeaves) === 'function') {
+            this.app.workspace.iterateAllLeaves((leaf) => {
+                var _a, _b;
+                if (((_b = (_a = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _a === void 0 ? void 0 : _a.getViewType) === null || _b === void 0 ? void 0 : _b.call(_a)) === 'markdown')
+                    leaves.push(leaf);
+            });
+        }
+        else
+            leaves.push(...(((_c = (_b = this.app.workspace) === null || _b === void 0 ? void 0 : _b.getLeavesOfType) === null || _c === void 0 ? void 0 : _c.call(_b, 'markdown')) || []));
+        for (const leaf of leaves) {
+            const editorView = (_e = (_d = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _d === void 0 ? void 0 : _d.editor) === null || _e === void 0 ? void 0 : _e.cm;
+            if (typeof (editorView === null || editorView === void 0 ? void 0 : editorView.dispatch) === 'function') {
+                try {
+                    editorView.dispatch({ effects: refreshVariableLinks.of(undefined) });
+                }
+                catch (error) {
+                    console.warn('Variable Links: failed to refresh an open editor', error);
+                }
+            }
+            const previewMode = (_f = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _f === void 0 ? void 0 : _f.previewMode;
+            try {
+                if (typeof (previewMode === null || previewMode === void 0 ? void 0 : previewMode.rerender) === 'function')
+                    previewMode.rerender(true);
+                else if (typeof ((_g = previewMode === null || previewMode === void 0 ? void 0 : previewMode.renderer) === null || _g === void 0 ? void 0 : _g.rerender) === 'function')
+                    previewMode.renderer.rerender(true);
+            }
+            catch (error) {
+                console.warn('Variable Links: failed to refresh an open Reading View', error);
+            }
+        }
+        // File-change rendering can be queued just after a vault write. Run a
+        // second Reading View pass once that queue has settled.
+        setTimeout(() => {
+            var _a, _b;
+            for (const leaf of leaves) {
+                const previewMode = (_a = leaf === null || leaf === void 0 ? void 0 : leaf.view) === null || _a === void 0 ? void 0 : _a.previewMode;
+                try {
+                    if (typeof (previewMode === null || previewMode === void 0 ? void 0 : previewMode.rerender) === 'function')
+                        previewMode.rerender(true);
+                    else if (typeof ((_b = previewMode === null || previewMode === void 0 ? void 0 : previewMode.renderer) === null || _b === void 0 ? void 0 : _b.rerender) === 'function')
+                        previewMode.renderer.rerender(true);
+                }
+                catch (error) {
+                    console.warn('Variable Links: delayed Reading View refresh failed', error);
+                }
+            }
+        }, 50);
     }
     createExtension() {
         const renderer = this;
         class VariableWidget extends view.WidgetType {
-            constructor(name) {
+            constructor(name, revision) {
                 super();
                 this.name = name;
+                this.revision = revision;
             }
-            eq(other) { return other.name === this.name; }
+            eq(other) { return other.name === this.name && other.revision === this.revision; }
             toDOM() {
                 const el = document.createElement('span');
                 el.className = 'variable-links-token variable-links-token-live-preview';
@@ -926,18 +1119,298 @@ class LivePreviewRenderer {
                 // Do not replace the token while the caret or selection touches it.
                 if (selection.from <= to && selection.to >= from)
                     continue;
-                builder.add(from, to, view.Decoration.replace({ widget: new VariableWidget(match[1].trim()) }));
+                builder.add(from, to, view.Decoration.replace({ widget: new VariableWidget(match[1].trim(), renderer.revision) }));
             }
             return builder.finish();
         };
         return view.ViewPlugin.fromClass(class {
             constructor(view) { this.decorations = buildDecorations(view); }
             update(update) {
-                if (update.docChanged || update.selectionSet || update.viewportChanged) {
+                const refreshRequested = update.transactions.some((transaction) => transaction.effects.some((effect) => effect.is(refreshVariableLinks)));
+                if (update.docChanged || update.selectionSet || update.viewportChanged || refreshRequested) {
                     this.decorations = buildDecorations(update.view);
                 }
             }
         }, { decorations: (value) => value.decorations });
+    }
+}
+
+class TokenCache {
+    constructor(app, plugin, registry) {
+        var _a;
+        this.data = { version: 1, files: {}, tokens: {} };
+        this.listeners = [];
+        this.timers = new Map();
+        this.app = app;
+        this.plugin = plugin;
+        this.registry = registry;
+        const configDir = app.vault.configDir || '.obsidian';
+        const pluginId = ((_a = plugin.manifest) === null || _a === void 0 ? void 0 : _a.id) || 'variable-links';
+        this.cachePath = `${configDir}/plugins/${pluginId}/token-cache.json`;
+    }
+    async initialize() {
+        const adapter = this.app.vault.adapter;
+        try {
+            if (await adapter.exists(this.cachePath)) {
+                const parsed = JSON.parse(await adapter.read(this.cachePath));
+                if ((parsed === null || parsed === void 0 ? void 0 : parsed.version) === 1 && parsed.files && parsed.tokens)
+                    this.data = parsed;
+            }
+        }
+        catch (error) {
+            console.warn('Variable Links: token cache could not be read; rebuilding', error);
+            this.data = { version: 1, files: {}, tokens: {} };
+        }
+        await this.synchronize();
+        this.attach();
+    }
+    stop() {
+        const vault = this.app.vault;
+        for (const listener of this.listeners)
+            vault.off(listener.event, listener.callback);
+        this.listeners = [];
+        for (const timer of this.timers.values())
+            clearTimeout(timer);
+        this.timers.clear();
+    }
+    async rebuild() {
+        this.data = { version: 1, files: {}, tokens: {} };
+        await this.synchronize(true);
+    }
+    async synchronize(force = false) {
+        var _a, _b;
+        const files = ((_b = (_a = this.app.vault).getMarkdownFiles) === null || _b === void 0 ? void 0 : _b.call(_a)) || [];
+        const currentPaths = new Set(files.map((file) => file.path));
+        for (const path of Object.keys(this.data.files)) {
+            if (!currentPaths.has(path))
+                this.removeFile(path);
+        }
+        for (const file of files) {
+            const stat = file.stat || {};
+            const cached = this.data.files[file.path];
+            if (force || !cached || cached.mtime !== stat.mtime || cached.size !== stat.size)
+                await this.indexFile(file);
+        }
+        this.syncTokenNames();
+        await this.persist();
+    }
+    async removeGuid(guid) {
+        delete this.data.tokens[guid];
+        await this.persist();
+    }
+    async prepareRename(guid, oldName, newName) {
+        var _a, _b, _c;
+        await this.synchronize();
+        if (!this.data.tokens[guid])
+            await this.rebuild();
+        let paths = Array.from(new Set((((_a = this.data.tokens[guid]) === null || _a === void 0 ? void 0 : _a.locations) || []).map((location) => location.file)));
+        if (!paths.length)
+            paths = (((_c = (_b = this.app.vault).getMarkdownFiles) === null || _c === void 0 ? void 0 : _c.call(_b)) || []).map((file) => file.path);
+        const files = paths
+            .map((path) => this.app.vault.getAbstractFileByPath(path))
+            .filter((file) => file instanceof obsidian.TFile);
+        const applied = [];
+        const cache = this;
+        const rollback = async () => {
+            for (const change of [...applied].reverse()) {
+                try {
+                    await cache.app.vault.process(change.file, (current) => current === change.updated ? change.original : current);
+                }
+                catch (error) {
+                    console.error('Variable Links: failed to roll back token rename in ' + change.file.path, error);
+                }
+            }
+            applied.length = 0;
+            await cache.rebuild();
+        };
+        return {
+            apply: async () => {
+                try {
+                    for (const file of files) {
+                        const preview = await cache.app.vault.read(file);
+                        if (cache.replaceToken(preview, oldName, newName) === preview)
+                            continue;
+                        let original = '';
+                        let updated = '';
+                        await cache.app.vault.process(file, (current) => {
+                            original = current;
+                            updated = cache.replaceToken(current, oldName, newName);
+                            return updated;
+                        });
+                        if (updated !== original)
+                            applied.push({ file, original, updated });
+                    }
+                }
+                catch (error) {
+                    await rollback();
+                    throw error;
+                }
+            },
+            rollback,
+            commit: async () => {
+                for (const change of applied)
+                    await cache.indexFile(change.file);
+                if (!cache.data.tokens[guid])
+                    cache.data.tokens[guid] = { guid, name: newName, locations: [] };
+                cache.data.tokens[guid].name = newName;
+                cache.syncTokenNames();
+                await cache.persist();
+            }
+        };
+    }
+    attach() {
+        const vault = this.app.vault;
+        const add = (event, callback) => {
+            vault.on(event, callback);
+            this.listeners.push({ event, callback });
+        };
+        add('modify', (file) => this.schedule(file));
+        add('create', (file) => this.schedule(file));
+        add('delete', (file) => {
+            if (!this.isMarkdown(file))
+                return;
+            this.removeFile(file.path);
+            void this.persist();
+        });
+        add('rename', (file, oldPath) => {
+            this.removeFile(oldPath);
+            this.schedule(file);
+        });
+    }
+    schedule(file) {
+        if (!this.isMarkdown(file))
+            return;
+        const prior = this.timers.get(file.path);
+        if (prior)
+            clearTimeout(prior);
+        this.timers.set(file.path, setTimeout(async () => {
+            this.timers.delete(file.path);
+            try {
+                await this.indexFile(file);
+                await this.persist();
+            }
+            catch (error) {
+                console.error('Variable Links: failed to update token cache for ' + file.path, error);
+            }
+        }, 150));
+    }
+    isMarkdown(file) {
+        return file instanceof obsidian.TFile && /\.md$/i.test(file.path);
+    }
+    async indexFile(file) {
+        this.removeFile(file.path);
+        const content = await this.app.vault.read(file);
+        for (const occurrence of this.findTokens(content)) {
+            const definition = this.registry.getVariable(occurrence.name);
+            if (!(definition === null || definition === void 0 ? void 0 : definition.guid))
+                continue;
+            const token = this.data.tokens[definition.guid] || {
+                guid: definition.guid,
+                name: occurrence.name,
+                locations: []
+            };
+            token.name = occurrence.name;
+            token.locations.push({ file: file.path, line: occurrence.line, ch: occurrence.ch });
+            this.data.tokens[definition.guid] = token;
+        }
+        const stat = file.stat || {};
+        this.data.files[file.path] = { mtime: stat.mtime || 0, size: stat.size || content.length };
+    }
+    removeFile(path) {
+        delete this.data.files[path];
+        for (const token of Object.values(this.data.tokens)) {
+            token.locations = token.locations.filter((location) => location.file !== path);
+        }
+    }
+    syncTokenNames() {
+        const validGuids = new Set();
+        for (const [name, definition] of this.registry.data) {
+            if (!definition.guid)
+                continue;
+            validGuids.add(definition.guid);
+            const token = this.data.tokens[definition.guid] || { guid: definition.guid, name, locations: [] };
+            token.name = name;
+            this.data.tokens[definition.guid] = token;
+        }
+        for (const guid of Object.keys(this.data.tokens))
+            if (!validGuids.has(guid))
+                delete this.data.tokens[guid];
+    }
+    replaceToken(content, oldName, newName) {
+        const occurrences = this.findTokens(content).filter((occurrence) => occurrence.name === oldName);
+        let updated = content;
+        for (const occurrence of occurrences.reverse()) {
+            updated = updated.slice(0, occurrence.start) + `{{${newName}}}` + updated.slice(occurrence.end);
+        }
+        return updated;
+    }
+    findTokens(content) {
+        const occurrences = [];
+        const linePattern = /[^\r\n]*(?:\r\n|\n|\r|$)/g;
+        let offset = 0;
+        let lineNumber = 1;
+        let fence = null;
+        let fenceLength = 0;
+        let lineMatch;
+        while ((lineMatch = linePattern.exec(content)) !== null) {
+            const raw = lineMatch[0];
+            if (!raw && linePattern.lastIndex >= content.length)
+                break;
+            const line = raw.replace(/\r\n$|\n$|\r$/, '');
+            const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
+            if (fenceMatch) {
+                const marker = fenceMatch[1][0];
+                if (!fence) {
+                    fence = marker;
+                    fenceLength = fenceMatch[1].length;
+                }
+                else if (fence === marker && fenceMatch[1].length >= fenceLength) {
+                    fence = null;
+                    fenceLength = 0;
+                }
+            }
+            else if (!fence) {
+                const tokenPattern = /\{\{\s*([^}\s]+)\s*\}\}/g;
+                let tokenMatch;
+                while ((tokenMatch = tokenPattern.exec(line)) !== null) {
+                    if (this.isInsideInlineCode(line, tokenMatch.index))
+                        continue;
+                    occurrences.push({
+                        name: tokenMatch[1].trim(),
+                        start: offset + tokenMatch.index,
+                        end: offset + tokenPattern.lastIndex,
+                        line: lineNumber,
+                        ch: tokenMatch.index + 1
+                    });
+                }
+            }
+            offset += raw.length;
+            lineNumber++;
+        }
+        return occurrences;
+    }
+    isInsideInlineCode(line, index) {
+        let openLength = 0;
+        for (let position = 0; position < index;) {
+            if (line[position] !== '`') {
+                position++;
+                continue;
+            }
+            let end = position;
+            while (end < index && line[end] === '`')
+                end++;
+            const length = end - position;
+            if (!openLength)
+                openLength = length;
+            else if (length === openLength)
+                openLength = 0;
+            position = end;
+        }
+        return openLength > 0;
+    }
+    async persist() {
+        const adapter = this.app.vault.adapter;
+        await adapter.write(this.cachePath, JSON.stringify(this.data, null, 2) + '\n');
     }
 }
 
@@ -948,6 +1421,8 @@ class VariableLinksPlugin extends obsidian.Plugin {
         this.indexer = null;
         this.resolver = null;
         this.renderer = null;
+        this.livePreviewRenderer = null;
+        this.tokenCache = null;
         this.suggest = null;
     }
     async onload() {
@@ -978,6 +1453,14 @@ class VariableLinksPlugin extends obsidian.Plugin {
             }
             catch (e) {
                 console.error('Variable Links: indexer failed', e);
+            }
+            try {
+                this.tokenCache = new TokenCache(this.app, this, this.registry);
+                await this.tokenCache.initialize();
+                console.log('Variable Links: token cache initialized');
+            }
+            catch (e) {
+                console.error('Variable Links: token cache failed to initialize', e);
             }
             try {
                 this.resolver = new Resolver(this.app, this.registry);
@@ -1019,9 +1502,13 @@ class VariableLinksPlugin extends obsidian.Plugin {
             try {
                 if (typeof this.registerEditorExtension !== 'function')
                     throw new Error('registerEditorExtension is unavailable.');
-                const livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver);
-                this.registerEditorExtension(livePreviewRenderer.createExtension());
-                this.livePreviewRenderer = livePreviewRenderer;
+                this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver);
+                this.registerEditorExtension(this.livePreviewRenderer.createExtension());
+                const refreshOpenViews = () => { var _a; return (_a = this.livePreviewRenderer) === null || _a === void 0 ? void 0 : _a.refresh(); };
+                if (typeof this.app.workspace.onLayoutReady === 'function') {
+                    this.app.workspace.onLayoutReady(refreshOpenViews);
+                }
+                setTimeout(refreshOpenViews, 0);
                 console.log('Variable Links: live preview renderer attached');
             }
             catch (e) {
@@ -1192,12 +1679,18 @@ class VariableLinksPlugin extends obsidian.Plugin {
         }
     }
     onunload() {
-        var _a;
-        (_a = this.registry) === null || _a === void 0 ? void 0 : _a.unload();
+        var _a, _b;
+        (_a = this.tokenCache) === null || _a === void 0 ? void 0 : _a.stop();
+        (_b = this.registry) === null || _b === void 0 ? void 0 : _b.unload();
         console.log('Variable Links unloaded');
     }
     async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        var _a;
+        const saved = await this.loadData() || {};
+        const configDir = this.app.vault.configDir || '.obsidian';
+        const pluginId = ((_a = this.manifest) === null || _a === void 0 ? void 0 : _a.id) || 'variable-links';
+        const defaultRegistryPath = `${configDir}/plugins/${pluginId}/registry.json`;
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, { registryFilePath: defaultRegistryPath }, saved);
     }
     async saveSettings() {
         await this.saveData(this.settings);
@@ -1210,6 +1703,7 @@ class VariablePropertiesView extends obsidian.ItemView {
     constructor(leaf, plugin) {
         super(leaf);
         this.contentEl = null;
+        this.selectedVariableName = null;
         this.plugin = plugin;
     }
     getViewType() { return VIEW_TYPE_VARIABLE_PANEL; }
@@ -1223,38 +1717,83 @@ class VariablePropertiesView extends obsidian.ItemView {
     }
     async onClose() { this.contentEl = null; }
     async refresh() {
-        var _a, _b;
+        var _a, _b, _c;
         if (!this.contentEl)
             return;
         this.contentEl.empty();
+        const registry = this.plugin.registry;
+        const last = (_a = this.plugin.caretTracker) === null || _a === void 0 ? void 0 : _a.lastTouched;
+        const names = Array.from(((_c = (_b = registry === null || registry === void 0 ? void 0 : registry.data) === null || _b === void 0 ? void 0 : _b.keys) === null || _c === void 0 ? void 0 : _c.call(_b)) || []).sort((a, b) => a.localeCompare(b));
+        if (this.selectedVariableName && !(registry === null || registry === void 0 ? void 0 : registry.getVariable(this.selectedVariableName)))
+            this.selectedVariableName = null;
+        const activeName = this.selectedVariableName || (last === null || last === void 0 ? void 0 : last.name) || '';
+        const definition = activeName ? (registry === null || registry === void 0 ? void 0 : registry.getVariable(activeName)) || {} : {};
+        const toolbar = this.contentEl.createDiv('variable-links-panel-toolbar');
+        const select = toolbar.createEl('select');
+        select.add(new Option(activeName && !definition.file ? `[New] ${activeName}` : 'Select a Variable Link…', ''));
+        for (const name of names)
+            select.add(new Option(name, name));
+        select.value = definition.file ? activeName : '';
+        select.addEventListener('change', () => {
+            this.selectedVariableName = select.value || null;
+            void this.refresh();
+        });
+        const setButton = toolbar.createEl('button', { text: 'Set token' });
+        setButton.disabled = !activeName || !definition.file || !(last === null || last === void 0 ? void 0 : last.editor) || !(last === null || last === void 0 ? void 0 : last.from) || !(last === null || last === void 0 ? void 0 : last.to);
+        setButton.addEventListener('click', () => {
+            if (setButton.disabled)
+                return;
+            last.editor.replaceRange(`{{${activeName}}}`, last.from, last.to);
+            last.name = activeName;
+            last.def = definition;
+            new obsidian.Notice(`Variable Links: token set to {{${activeName}}}`);
+        });
+        const deleteButton = toolbar.createEl('button', { text: 'Delete' });
+        deleteButton.disabled = !activeName || !definition.file;
+        deleteButton.addEventListener('click', async () => {
+            if (deleteButton.disabled || !window.confirm(`Delete Variable Link “${activeName}”?`))
+                return;
+            try {
+                await registry.deleteVariable(activeName);
+                if ((last === null || last === void 0 ? void 0 : last.name) === activeName) {
+                    last.def = null;
+                    last.value = undefined;
+                }
+                this.selectedVariableName = null;
+                new obsidian.Notice(`Variable Links: deleted {{${activeName}}}`);
+                await this.refresh();
+            }
+            catch (error) {
+                new obsidian.Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        });
         const layout = this.contentEl.createDiv('variable-links-panel-split');
         const propertiesPane = layout.createDiv('variable-links-panel-pane variable-links-panel-properties');
         const cardPane = layout.createDiv('variable-links-panel-pane variable-links-panel-infocard');
-        const last = (_a = this.plugin.caretTracker) === null || _a === void 0 ? void 0 : _a.lastTouched;
         propertiesPane.createEl('h4', { text: 'Variable properties' });
         cardPane.createEl('h4', { text: 'Info card' });
-        if (!last) {
+        if (!activeName) {
             propertiesPane.createEl('p', { text: 'No variable selected. Add a variable below or place the caret in a {{token}}.' });
             this.renderVariableForm(propertiesPane, '', {}, 'Add a variable');
             cardPane.createEl('p', { text: 'Select or create a variable to configure its info card.' });
             return;
         }
-        // CaretTracker only resolves when the caret moves, so after a save it can
-        // still hold an older definition. Always render the current registry value.
-        const definition = ((_b = this.plugin.registry) === null || _b === void 0 ? void 0 : _b.getVariable(last.name)) || last.def || {};
-        last.def = definition;
-        propertiesPane.createEl('h5', { text: `{{${last.name}}}` });
-        const valueText = last.value === undefined ? '[Missing]' : String(last.value);
+        const result = definition.file ? await this.plugin.resolver.resolve(activeName) : null;
+        propertiesPane.createEl('h5', { text: `{{${activeName}}}` });
+        const valueText = (result === null || result === void 0 ? void 0 : result.ok) ? String(result.value) : '[Missing]';
         const valueEl = propertiesPane.createDiv('variable-links-panel-value');
         await obsidian.MarkdownRenderer.renderMarkdown(valueText, valueEl, '', this.plugin);
         const actions = propertiesPane.createDiv('variable-links-panel-actions');
         actions.createEl('button', { text: 'Open source' }).addEventListener('click', async () => {
-            if (last.sourceFile)
-                await this.app.workspace.openLinkText(last.sourceFile.path.replace(/\.md$/i, ''), '', false);
+            if (result === null || result === void 0 ? void 0 : result.sourceFile)
+                await this.app.workspace.openLinkText(result.sourceFile.path.replace(/\.md$/i, ''), '', false);
         });
         actions.createEl('button', { text: 'Copy value' }).addEventListener('click', () => { var _a; return void ((_a = navigator.clipboard) === null || _a === void 0 ? void 0 : _a.writeText(valueText)); });
-        this.renderVariableForm(propertiesPane, last.name, definition, definition.file ? 'Edit mapping' : 'Set up this variable');
-        this.renderInfoCardForm(cardPane, last.name, definition);
+        this.renderVariableForm(propertiesPane, activeName, definition, definition.file ? 'Edit mapping' : 'Set up this variable');
+        if (definition.file)
+            this.renderInfoCardForm(cardPane, activeName, definition);
+        else
+            cardPane.createEl('p', { text: 'Save the variable mapping before configuring its info card.' });
     }
     renderVariableForm(parent, name, definition, title) {
         const section = parent.createEl('details', { cls: 'variable-links-panel-editor' });
@@ -1266,12 +1805,20 @@ class VariablePropertiesView extends obsidian.ItemView {
         const propertyInput = this.addInput(form, 'Property', definition.property || '', 'e.g. company');
         const displayInput = this.addInput(form, 'Display name (optional)', definition.display || '', 'e.g. John Smith');
         this.addSaveButton(form, name ? 'Save properties' : 'Add variable', async () => {
-            await this.plugin.registry.saveVariable(nameInput.value, {
+            var _a;
+            const newName = nameInput.value.trim();
+            await this.plugin.registry.saveVariable(newName, {
                 file: fileInput.value,
                 property: propertyInput.value,
                 display: displayInput.value
-            });
-            new obsidian.Notice(`Variable Links: saved {{${nameInput.value.trim()}}}`);
+            }, definition.file ? name : undefined);
+            const touched = (_a = this.plugin.caretTracker) === null || _a === void 0 ? void 0 : _a.lastTouched;
+            if ((touched === null || touched === void 0 ? void 0 : touched.name) === name && newName !== name) {
+                touched.name = newName;
+                touched.def = this.plugin.registry.getVariable(newName);
+            }
+            this.selectedVariableName = newName;
+            new obsidian.Notice(`Variable Links: saved {{${newName}}}`);
             await this.refresh();
         });
     }
@@ -1497,7 +2044,7 @@ class CaretTracker {
         const token = this.findTokenAtIndex(text, caretIndex);
         if (!token)
             return;
-        const varName = token;
+        const varName = token.name;
         // resolve and set lastTouched
         const res = await this.resolver.resolve(varName);
         const def = this.registry.getVariable(varName);
@@ -1507,6 +2054,9 @@ class CaretTracker {
             type: res.type,
             sourceFile: res.sourceFile || null,
             def,
+            editor,
+            from: this.positionAtIndex(editor, text, token.start),
+            to: this.positionAtIndex(editor, text, token.end),
             timestamp: Date.now(),
         };
         // debug log when variable detected (use console.log to ensure visibility)
@@ -1538,7 +2088,15 @@ class CaretTracker {
             return null;
         if (/\s/.test(inner))
             return null;
-        return inner;
+        return { name: inner, start, end: end + 2 };
+    }
+    positionAtIndex(editor, text, index) {
+        if (typeof editor.offsetToPos === 'function')
+            return editor.offsetToPos(index);
+        if (typeof editor.posFromIndex === 'function')
+            return editor.posFromIndex(index);
+        const before = text.slice(0, index).split(/\r?\n/);
+        return { line: before.length - 1, ch: before[before.length - 1].length };
     }
 }
 

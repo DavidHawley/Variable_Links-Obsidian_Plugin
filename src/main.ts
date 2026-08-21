@@ -6,6 +6,7 @@ import Resolver from './resolver';
 import Renderer from './renderer';
 import VariableSuggest from './suggest';
 import LivePreviewRenderer from './livePreviewRenderer';
+import TokenCache from './tokenCache';
 
 export default class VariableLinksPlugin extends Plugin {
   settings!: VariableLinksSettings;
@@ -13,6 +14,8 @@ export default class VariableLinksPlugin extends Plugin {
   indexer: Indexer | null = null;
   resolver: Resolver | null = null;
   renderer: Renderer | null = null;
+  livePreviewRenderer: LivePreviewRenderer | null = null;
+  tokenCache: TokenCache | null = null;
   suggest: any = null;
 
   async onload() {
@@ -38,6 +41,14 @@ export default class VariableLinksPlugin extends Plugin {
         console.log('Variable Links: index built');
       } catch (e) {
         console.error('Variable Links: indexer failed', e);
+      }
+
+      try {
+        this.tokenCache = new TokenCache(this.app, this, this.registry!);
+        await this.tokenCache.initialize();
+        console.log('Variable Links: token cache initialized');
+      } catch (e) {
+        console.error('Variable Links: token cache failed to initialize', e);
       }
 
       try {
@@ -67,9 +78,13 @@ export default class VariableLinksPlugin extends Plugin {
       // overlays, they replace the text in the editor's normal layout.
       try {
         if (typeof (this as any).registerEditorExtension !== 'function') throw new Error('registerEditorExtension is unavailable.');
-        const livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver!);
-        (this as any).registerEditorExtension(livePreviewRenderer.createExtension());
-        (this as any).livePreviewRenderer = livePreviewRenderer;
+        this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver!);
+        (this as any).registerEditorExtension(this.livePreviewRenderer.createExtension());
+        const refreshOpenViews = () => this.livePreviewRenderer?.refresh();
+        if (typeof (this.app.workspace as any).onLayoutReady === 'function') {
+          (this.app.workspace as any).onLayoutReady(refreshOpenViews);
+        }
+        setTimeout(refreshOpenViews, 0);
         console.log('Variable Links: live preview renderer attached');
       } catch (e) {
         console.warn('Variable Links: failed to attach live preview renderer', e);
@@ -198,12 +213,17 @@ export default class VariableLinksPlugin extends Plugin {
   }
 
   onunload() {
+    this.tokenCache?.stop();
     this.registry?.unload();
     console.log('Variable Links unloaded');
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const saved = await this.loadData() || {};
+    const configDir = (this.app.vault as any).configDir || '.obsidian';
+    const pluginId = (this as any).manifest?.id || 'variable-links';
+    const defaultRegistryPath = `${configDir}/plugins/${pluginId}/registry.json`;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, { registryFilePath: defaultRegistryPath }, saved);
   }
 
   async saveSettings() {

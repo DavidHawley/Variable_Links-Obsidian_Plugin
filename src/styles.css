@@ -93,7 +93,7 @@
 .variable-links-panel-split {
   display: grid;
   grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-  height: 100%;
+  flex: 1 1 auto;
   min-height: 0;
 }
 
@@ -101,6 +101,24 @@
 .variable-links-panel-inner {
   height: 100%;
   min-height: 0;
+}
+
+.variable-links-panel-inner {
+  display: flex;
+  flex-direction: column;
+}
+
+.variable-links-panel-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.variable-links-panel-toolbar select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .variable-links-panel-pane {

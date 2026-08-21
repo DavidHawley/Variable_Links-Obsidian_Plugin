@@ -8,6 +8,9 @@ export type LastTouched = {
   type?: string;
   sourceFile?: TFile | null;
   def?: any;
+  editor?: any;
+  from?: any;
+  to?: any;
   timestamp: number;
 };
 
@@ -87,7 +90,7 @@ export default class CaretTracker {
     const token = this.findTokenAtIndex(text, caretIndex);
     if (!token) return;
 
-    const varName = token;
+    const varName = token.name;
     // resolve and set lastTouched
     const res = await this.resolver.resolve(varName);
     const def = this.registry.getVariable(varName);
@@ -97,6 +100,9 @@ export default class CaretTracker {
       type: res.type,
       sourceFile: res.sourceFile || null,
       def,
+      editor,
+      from: this.positionAtIndex(editor, text, token.start),
+      to: this.positionAtIndex(editor, text, token.end),
       timestamp: Date.now(),
     };
 
@@ -107,7 +113,7 @@ export default class CaretTracker {
     try { if (this.plugin && typeof this.plugin.onCaretVariableChanged === 'function') this.plugin.onCaretVariableChanged(this.lastTouched); } catch (e) {}
   }
 
-  findTokenAtIndex(text: string, index: number): string | null {
+  findTokenAtIndex(text: string, index: number): { name: string; start: number; end: number } | null {
     if (!text || index < 0 || index > text.length) return null;
     // search backwards for '{{'
     const start = text.lastIndexOf('{{', index);
@@ -119,6 +125,13 @@ export default class CaretTracker {
     // validate simple token name (no spaces, not empty)
     if (!inner) return null;
     if (/\s/.test(inner)) return null;
-    return inner;
+    return { name: inner, start, end: end + 2 };
+  }
+
+  private positionAtIndex(editor: any, text: string, index: number) {
+    if (typeof editor.offsetToPos === 'function') return editor.offsetToPos(index);
+    if (typeof editor.posFromIndex === 'function') return editor.posFromIndex(index);
+    const before = text.slice(0, index).split(/\r?\n/);
+    return { line: before.length - 1, ch: before[before.length - 1].length };
   }
 }
