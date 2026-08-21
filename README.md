@@ -183,6 +183,10 @@ Info Card fields are displayed in a full-width bordered table.
 
 Variable Links was made almost completely with AI-generated code and documentation, guided, tested, and iteratively reviewed through human direction and feedback.
 
+## License
+
+Variable Links is fully open-source software released under the [MIT License](LICENSE).
+
 ## Development
 
 Install dependencies and build:

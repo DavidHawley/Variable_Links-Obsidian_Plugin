@@ -2,6 +2,7 @@
   "name": "variable-links",
   "version": "1.0.0",
   "description": "Obsidian plugin Variable Links",
+  "license": "MIT",
   "main": "dist/main.js",
   "scripts": {
     "build": "rollup -c"

@@ -65,6 +65,11 @@ When upgrading, replace only the distributed plugin files. Do not delete `regist
 - `main.js` — compiled plugin code.
 - `styles.css` — plugin styling.
 - `README.md` — this installation and usage guide.
+- `LICENSE` — the MIT open-source license.
+
+## License
+
+Variable Links is fully open-source software distributed under the MIT License. See `LICENSE` for the complete terms.
 
 ## Version
 

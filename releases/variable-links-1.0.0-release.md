@@ -37,9 +37,14 @@ Replace `manifest.json`, `main.js`, and `styles.css` with the files from the arc
 - `main.js`
 - `styles.css`
 - `README.md`
+- `LICENSE`
 
 ## Notes
 
 - The Variable Links context submenu is available in Source Mode and Live Preview through Obsidian's editor context menu.
 - Tokens inside inline code and fenced code blocks are not changed during a rename.
 - The token cache is derived data. The plugin rebuilds it when necessary.
+
+## License
+
+Variable Links is fully open-source software released under the MIT License. The complete license is included with every packaged release.
