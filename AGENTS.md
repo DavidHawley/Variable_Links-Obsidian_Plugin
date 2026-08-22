@@ -9,6 +9,9 @@ These instructions apply to the entire repository.
 - Use `fixes/<patch-version>` for bug fixes, such as `fixes/1.1.1`.
 - Use `features/<minor-version>` for new features, such as `features/1.2.0`.
 - Keep fixes and new features in their respective branches. Do not combine them unless the user explicitly requests it.
+- After the user confirms the smoke test for an individual fix, commit and push that fix to the active version branch.
+- Keep the version branch open for additional work. Do not propose a pull request until the user confirms that the version is complete.
+- If a fix is urgent, flag it immediately and ask whether to move directly to release preparation.
 - When a patch release reaches `main`, merge the updated `main` into the active feature branch.
 - Delete version branches after their release is merged and published.
 
@@ -19,6 +22,7 @@ These instructions apply to the entire repository.
   - Minor releases contain backward-compatible features.
   - Major releases contain breaking changes.
 - Use release tags in `x.y.z` format without a `v` prefix.
+- Do not bump release metadata for each individual fix. Bump it when the user confirms that the version branch is ready for release.
 - Keep the version synchronized in `manifest.json`, `package.json`, the root and package entries in `package-lock.json`, and `versions.json`.
 - Record the correct minimum supported Obsidian version in `versions.json` for every release.
 
@@ -42,6 +46,12 @@ Before a pull request or release:
 6. Install the build in the test vault and complete a smoke test when the change affects plugin behavior.
 
 Do not treat a successful build as a substitute for the smoke test.
+
+## Plans and Presentations
+
+- When the user asks for a plan or presentation, provide it directly in the chat using only plain text or Markdown.
+- Do not create PowerPoint files, slide decks, PDFs, documents, images, visualizations, or other separate presentation artifacts.
+- Do not use an external presentation format unless the user explicitly changes this rule.
 
 ## Pull Requests and Releases
 

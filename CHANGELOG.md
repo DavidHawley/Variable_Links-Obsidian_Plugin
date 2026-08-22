@@ -8,7 +8,11 @@ This section is reserved for new backward-compatible features.
 
 ## 1.1.1 - Unreleased
 
-This section is reserved for backward-compatible fixes to 1.1.0.
+### Fixed
+
+- Info Cards now close reliably when the pointer leaves them, the user clicks elsewhere, or Obsidian loses focus.
+- Reading View Info Cards now wait half a second before opening to reduce accidental popups.
+- Insert and Insert favorite are now disabled when the context menu is opened inside an existing Variable Link token.
 
 ## 1.1.0 - 2026-08-22
 

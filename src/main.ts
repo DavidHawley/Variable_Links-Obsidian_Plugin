@@ -244,6 +244,7 @@ export default class VariableLinksPlugin extends Plugin {
       this.clearContextMenuResources();
       const variableName = this.getContextVariableName(editor);
       const insertionPosition = this.getContextEditorPosition(editor);
+      const insideVariableToken = variableName !== null;
       const definition = variableName ? this.registry?.getVariable(variableName) : null;
       const favorites = Array.from(this.registry?.data.entries() ?? [])
         .filter(([, item]) => item.favorite)
@@ -275,8 +276,24 @@ export default class VariableLinksPlugin extends Plugin {
           }
         });
         submenu.addSeparator();
-        this.addInsertMenu(submenu, 'Insert favorite', 'star', favorites, editor, insertionPosition);
-        this.addInsertMenu(submenu, 'Insert', 'text-cursor-input', allLinks, editor, insertionPosition);
+        this.addInsertMenu(
+          submenu,
+          'Insert favorite',
+          'star',
+          favorites,
+          editor,
+          insertionPosition,
+          insideVariableToken,
+        );
+        this.addInsertMenu(
+          submenu,
+          'Insert',
+          'text-cursor-input',
+          allLinks,
+          editor,
+          insertionPosition,
+          insideVariableToken,
+        );
       });
     }));
   }
@@ -288,10 +305,11 @@ export default class VariableLinksPlugin extends Plugin {
     names: string[],
     editor: Editor,
     position: EditorPosition | null,
+    disabled: boolean,
   ): void {
     menu.addItem((item) => {
-      item.setTitle(title).setIcon(icon).setDisabled(names.length === 0);
-      if (!names.length || !this.hasSubmenu(item)) return;
+      item.setTitle(title).setIcon(icon).setDisabled(disabled || names.length === 0);
+      if (disabled || !names.length || !this.hasSubmenu(item)) return;
       const submenu = item.setSubmenu();
       this.enableNestedSubmenuSwitch(menu, item, submenu);
       for (const name of names) {

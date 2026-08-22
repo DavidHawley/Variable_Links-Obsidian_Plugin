@@ -7,7 +7,7 @@ import { filePathFromLink } from './linkSyntax';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 
 const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
-const READING_VIEW_CARD_DELAY = 200;
+const READING_VIEW_CARD_DELAY = 500;
 
 interface PreviewMode {
   rerender?: (force: boolean) => void;
