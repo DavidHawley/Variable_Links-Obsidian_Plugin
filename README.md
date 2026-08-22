@@ -15,6 +15,10 @@ A token such as `{{customer}}` can point to a property in another note. Wherever
 - Mark frequently used variables as favorites.
 - Insert variables using suggestions after typing `{{`.
 
+## AI development disclosure
+
+Variable Links was made almost entirely with AI-generated code and documentation, guided, tested, and reviewed through human direction and feedback.
+
 ## Getting started
 
 Suppose `People/John Smith.md` contains:
