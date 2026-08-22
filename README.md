@@ -1,210 +1,186 @@
 # Variable Links
 
-Variable Links is an Obsidian plugin for displaying frontmatter properties from other notes as reusable variables.
+Variable Links is an Obsidian plugin for creating reusable pointers to properties in your notes.
 
-Write a token such as `{{customer}}` in any note. The plugin looks up `customer` in a central registry, reads the configured property from its source note, and displays the current value.
+A token such as `{{customer}}` can point to a property in another note. Wherever the token appears, it displays the property's current value. Change the source property once, and every use of the variable reflects the new value.
 
-## Features
+## Main features
 
-- Resolves reusable `{{variable}}` tokens from note frontmatter.
-- Displays resolved values in Reading View and Live Preview.
-- Reveals the original token while its text is selected in Live Preview.
-- Suggests existing Variable Links after typing `{{`.
-- Suggests frontmatter properties found across the vault.
-- Automatically creates a unique Variable Link when an unmapped property suggestion is selected, such as `Due_01`, `Due_02`, and so on.
-- Keeps a stable GUID for every Variable Link and updates its tokens throughout the vault when it is renamed.
-- Provides an editable Variable Properties sidebar.
-- Shows configurable hover Info Cards in Reading View.
-- Supports custom field labels and fields from other notes.
+- Create named pointers to properties in your notes.
+- Display the current property value in Reading View and Live Preview.
+- Link a variable to its source note.
+- Show customizable Info Cards when hovering over variables.
+- Access variables and actions from the editor’s right-click menu.
+- Rename variables while automatically updating their tokens throughout the vault.
+- Mark frequently used variables as favorites.
+- Insert variables using suggestions after typing `{{`.
 
-## Installation
+## Getting started
 
-Copy these files into your vault's `.obsidian/plugins/variable-links/` directory:
+Suppose `People/John Smith.md` contains:
 
-- `manifest.json`
-- `main.js`
-- `styles.css`
-
-Reload Obsidian, then enable **Variable Links** under **Settings → Community plugins**.
-
-## Registry
-
-On first load, the plugin automatically creates a hidden JSON registry at:
-
-```text
-.obsidian/plugins/variable-links/registry.json
+```yaml
+---
+company: Acme Corporation
+email: john@example.com
+phone: 555-0100
+---
 ```
 
-Because it lives inside Obsidian's configuration folder, it does not appear as a note in the vault. If the configured registry is missing, the plugin creates a new empty registry at that location. Existing Markdown, YAML, and JSON registries remain supported and can be selected in the plugin settings.
+Create a Variable Link named `customer` that points to the `company` property in this note.
 
-The default JSON registry uses this structure:
-
-```json
-{
-  "variable-links": {
-    "customer": {
-      "guid": "7b4c5882-2a82-4ab2-a920-0f7f2e3eb44f",
-      "file": "[[People/John Smith]]",
-      "property": "company",
-      "display": "John Smith",
-      "favorite": true,
-      "card": {
-        "title": "Customer details",
-        "note": "Primary contact for this account.",
-        "fields": [
-          "email:Email Address",
-          "phone:Phone Number",
-          "[[Projects/Launch Plan]]#due:Project Due Date"
-        ],
-        "showSourceLink": true
-      }
-    }
-  }
-}
-```
-
-Each variable definition supports:
-
-| Setting | Description |
-| --- | --- |
-| `guid` | Stable internal ID used to track this Variable Link across renames. Generated automatically. |
-| `file` | Source note as a vault path or wiki-link. |
-| `property` | Frontmatter property whose value the token displays. |
-| `display` | Optional descriptive name used in suggestions. |
-| `favorite` | Optional favorite status. Favorited links appear in the Insert Favorite context submenu. |
-| `card` | Optional Info Card configuration. |
-
-## Using variables
-
-Given the registry example above, write:
+You can then write:
 
 ```markdown
 Customer: {{customer}}
 ```
 
-In Reading View and Live Preview, the token is replaced with the current value of `company` from `People/John Smith.md`.
+The displayed result will be:
 
-In Live Preview, move the caret into the token to reveal and edit its original `{{customer}}` text. Live Preview values are display text rather than navigation links.
+```text
+Customer: Acme Corporation
+```
 
-## Suggestions
+If the `company` property changes, the displayed value updates without requiring you to replace the token.
 
-Type `{{` to open suggestions. The menu contains:
+## Creating and inserting variables
 
-- Variable Links already defined in the registry.
-- Unmapped frontmatter properties from Markdown notes in the vault.
+Type `{{` in the editor to open suggestions.
 
-Selecting an existing variable inserts its token. Selecting an unmapped property creates a registry entry targeting that file and property, then inserts a unique generated token. For example, selecting `Due` creates `{{Due_01}}`; if that name exists, the plugin tries `Due_02`.
+The suggestion menu includes:
 
-Property names containing spaces are converted to underscores in generated token names.
+- Existing Variable Links.
+- Frontmatter properties found in notes across your vault.
+
+Selecting an existing variable inserts its token. Selecting an unlinked property creates a new Variable Link and inserts it automatically.
+
+Generated variable names use a unique number when needed, such as:
+
+```text
+{{Due_01}}
+{{Due_02}}
+```
 
 ## Variable Properties panel
 
-Run **Variable Links: Open Variable Properties** from the Command Palette.
+Open the Command Palette and run:
 
-The panel is split into two independently scrollable sections:
+**Variable Links: Open Variable Properties**
 
-1. **Variable properties** — edit the variable name, source note, property, and display name.
-2. **Info card** — edit the card title, Markdown note, fields, and source-link option.
+The panel lets you manage:
 
-The toolbar at the top of the panel lets you:
+- Variable name
+- Source note
+- Frontmatter property
+- Display name
+- Favorite status
+- Info Card settings
 
-- Select any existing Variable Link from the registry.
-- Use **Set token** to replace the token currently under the editor caret with the selected Variable Link.
-- Use **Delete** to remove the selected registry entry.
+If your cursor is inside an unknown token, such as `{{new_variable}}`, opening the panel creates a prefilled form for setting it up.
 
-In the Markdown editor or Live Preview, the **Variable Links** right-click submenu provides:
+## Right-click menu
 
-- **Properties** — opens the right-clicked token directly in the panel. It is disabled when the right-click is not on a token.
-- **Favorite** or **Unfavorite** — changes the saved favorite status of the right-clicked configured link.
-- **Insert Favorite** — lists favorite links and inserts the selected token at the original right-click position.
-- **Insert** — lists every configured Variable Link alphabetically and inserts the selected token at the original right-click position.
+Right-click in the Markdown editor to open the **Variable Links** submenu.
 
-Favorite status can also be changed with the **Favorite** checkbox in the Variable Properties form.
+Available actions include:
 
-Changing a variable name and saving renames the existing registry entry and replaces that link's tokens in Markdown notes throughout the vault. It does not leave the old entry behind, and it will not overwrite another existing Variable Link with the same name. Tokens inside inline code or fenced code blocks are not changed.
+- **Properties** — open the selected variable in the Variable Properties panel.
+- **Favorite / Unfavorite** — change whether the variable appears in your favorites.
+- **Insert Favorite** — insert one of your favorite variables.
+- **Insert** — browse and insert any configured variable.
 
-Placing the caret inside an unknown token such as `{{new_variable}}` opens a prefilled setup form for that variable.
+Variables are inserted at the position where you opened the context menu.
 
-## Token cache
+## Renaming variables
 
-The plugin creates a derived cache at:
+You can rename a variable from the Variable Properties panel.
+
+For example, renaming:
 
 ```text
-.obsidian/plugins/variable-links/token-cache.json
+{{customer}}
 ```
 
-The cache records each Variable Link's GUID, current token name, and the file, line, and character position of its known occurrences. It is updated when Markdown notes are created, edited, renamed, or deleted. Before a rename changes a note, the plugin reads the current file and verifies the exact old token is still present at a parsed token location.
+to:
 
-The cache is an index, not the source of truth. It can be deleted while Obsidian is closed; the plugin rebuilds it from the registry and Markdown notes the next time it loads.
+```text
+{{client}}
+```
+
+updates that variable’s known tokens throughout your Markdown notes. The link keeps its internal identity, source note, property, and Info Card configuration.
+
+Tokens inside inline code and fenced code blocks are left unchanged.
 
 ## Info Cards
 
-When Info Cards are enabled, hovering over a rendered variable in Reading View shows its configured card. Saved card changes are read from the registry on each hover, so reopening the note is not required.
+Info Cards display additional information when you hover over a variable in Reading View.
 
-### Fields from the variable's source note
+A card can include:
 
-Enter a property name by itself:
+- A custom title
+- A Markdown note or description
+- Properties from the variable’s source note
+- Properties from other notes
+- Custom labels
+- A link to the source note
+
+### Source-note fields
+
+Enter a property name:
 
 ```text
 email
 ```
 
-Property names are displayed with their first character capitalized.
+### Custom labels
 
-### Custom field labels
-
-Use `property:Display Name`:
+Use `property:Label`:
 
 ```text
 email:Email Address
+phone:Phone Number
 ```
-
-The plugin reads the `email` property but displays **Email Address** in the card table.
 
 ### Fields from another note
 
-Use `[[File]]#property`:
+Use `[[Note]]#property`:
 
 ```text
 [[Projects/Launch Plan]]#due
 ```
 
-Custom labels also work with cross-file fields:
+You can also provide a custom label:
 
 ```text
 [[Projects/Launch Plan]]#due:Project Due Date
 ```
 
-The Fields editor provides property suggestions from Markdown files across the vault. Use Up/Down to navigate, Enter to select, and Escape to close the menu.
+The field editor suggests properties found across your vault.
 
-Info Card fields are displayed in a full-width bordered table.
+## Live Preview
 
-## AI development disclosure
+Variable Links display their current values in Live Preview. Move the cursor into a variable to reveal and edit its original token:
 
-Variable Links was made almost completely with AI-generated code and documentation, guided, tested, and iteratively reviewed through human direction and feedback.
+```text
+{{customer}}
+```
+
+## Installation
+
+Copy the following files into:
+
+```text
+.obsidian/plugins/variable-links/
+```
+
+Required files:
+
+- `main.js`
+- `manifest.json`
+- `styles.css`
+
+Reload Obsidian, then enable **Variable Links** under **Settings → Community plugins**.
 
 ## License
 
-Variable Links is fully open-source software released under the [MIT License](LICENSE).
-
-## Development
-
-Install dependencies and build:
-
-```powershell
-npm install
-npm run build
-```
-
-The installable plugin consists of `manifest.json`, `main.js`, and `styles.css`. Packaged releases also include an install-focused `README.md`.
-
-## Releasing
-
-The GitHub release workflow creates a draft release when a semantic-version tag is pushed. The tag must exactly match the version in `manifest.json` and must not have a `v` prefix.
-
-1. For the initial `1.0.0` release, create the tag after the release-preparation commit is on `main`: `git tag -a 1.0.0 -m "1.0.0"`. For later releases, use `npm version patch`, `npm version minor`, or `npm version major`; this also updates `manifest.json` and `versions.json` and creates the correctly named tag.
-2. Push the version commit to `main` and wait for CI to pass.
-3. Push the tag, for example `git push origin 1.0.0`.
-4. Review the draft release and its attested `main.js`, `manifest.json`, and `styles.css` assets, add release notes, and publish it.
-
-Repository administrators must allow GitHub Actions to use read and write workflow permissions.
+Variable Links is open-source software released under the [MIT License](LICENSE).
