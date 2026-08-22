@@ -6,14 +6,6 @@ This document records planned improvements to Variable Links. Plans may change a
 
 > **Scope closed:** The planned feature set for 1.2.0 is complete. Do not add further features to this release. Changes that clarify, implement, test, or correct the items already listed may still be made. Record additional feature ideas for a later version.
 
-### Configurable Info Card delays
-
-- Add a separate hover-delay setting for Reading View.
-- Default the Reading View delay to 0.5 seconds.
-- Let the Live Preview delay increase in 0.25-second increments, starting at 1 second.
-- Keep the Live Preview default at 3 seconds.
-- Preserve compatible delay values already saved by users.
-
 ### Favorite control placement
 
 - Move the Favorite checkbox to the top right of the Link panel, beside the selected Variable Link name and above the mapping editor.

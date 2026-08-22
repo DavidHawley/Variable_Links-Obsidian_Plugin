@@ -4,7 +4,13 @@ All notable user-visible changes to Variable Links are recorded here.
 
 ## 1.2.0 - Unreleased
 
-This section is reserved for new backward-compatible features.
+### Added
+
+- Added a configurable Info Card hover delay for Reading View.
+
+### Changed
+
+- Live Preview Info Card delays can now be adjusted in quarter-second increments starting at one second.
 
 ## 1.1.1 - 2026-08-22
 

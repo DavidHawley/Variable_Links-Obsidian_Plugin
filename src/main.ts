@@ -22,6 +22,7 @@ import Resolver from './resolver';
 import {
   DEFAULT_SETTINGS,
   normalizeLivePreviewHoverDelay,
+  normalizeReadingViewHoverDelay,
   VariableLinksSettings,
   VariableLinksSettingTab,
 } from './settings';
@@ -160,6 +161,9 @@ export default class VariableLinksPlugin extends Plugin {
       enableInfoCards: typeof saved.enableInfoCards === 'boolean'
         ? saved.enableInfoCards
         : DEFAULT_SETTINGS.enableInfoCards,
+      readingViewHoverDelaySeconds: normalizeReadingViewHoverDelay(
+        saved.readingViewHoverDelaySeconds,
+      ),
       livePreviewHoverDelaySeconds: normalizeLivePreviewHoverDelay(
         saved.livePreviewHoverDelaySeconds,
       ),

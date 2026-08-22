@@ -7,7 +7,6 @@ import { filePathFromLink } from './linkSyntax';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 
 const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
-const READING_VIEW_CARD_DELAY = 500;
 
 interface PreviewMode {
   rerender?: (force: boolean) => void;
@@ -200,7 +199,7 @@ export class Renderer {
     this.clearHoverState();
     const delay = livePreview
       ? this.registry.plugin.settings.livePreviewHoverDelaySeconds * 1000
-      : READING_VIEW_CARD_DELAY;
+      : this.registry.plugin.settings.readingViewHoverDelaySeconds * 1000;
     const state: HoverState = {
       name,
       token,

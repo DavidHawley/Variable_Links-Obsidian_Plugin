@@ -10,6 +10,7 @@ import VariableLinksPlugin from './main';
 export interface VariableLinksSettings {
   registryFilePath: string;
   enableInfoCards: boolean;
+  readingViewHoverDelaySeconds: number;
   livePreviewHoverDelaySeconds: number;
   disableLivePreviewHover: boolean;
   defaultAppearanceBold: boolean;
@@ -29,6 +30,7 @@ type SettingKey = keyof VariableLinksSettings;
 export const DEFAULT_SETTINGS: VariableLinksSettings = {
   registryFilePath: '',
   enableInfoCards: true,
+  readingViewHoverDelaySeconds: 0.5,
   livePreviewHoverDelaySeconds: 3,
   disableLivePreviewHover: false,
   defaultAppearanceBold: false,
@@ -43,11 +45,27 @@ export const DEFAULT_SETTINGS: VariableLinksSettings = {
   defaultDateFormat: 'YYYY-MM-DD',
 };
 
-export function normalizeLivePreviewHoverDelay(value: unknown): number {
+function normalizeQuarterSecondDelay(value: unknown, fallback: number, minimum: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return DEFAULT_SETTINGS.livePreviewHoverDelaySeconds;
+    return fallback;
   }
-  return Math.min(30, Math.max(1, Math.round(value)));
+  return Math.min(30, Math.max(minimum, Math.round(value * 4) / 4));
+}
+
+export function normalizeReadingViewHoverDelay(value: unknown): number {
+  return normalizeQuarterSecondDelay(
+    value,
+    DEFAULT_SETTINGS.readingViewHoverDelaySeconds,
+    0,
+  );
+}
+
+export function normalizeLivePreviewHoverDelay(value: unknown): number {
+  return normalizeQuarterSecondDelay(
+    value,
+    DEFAULT_SETTINGS.livePreviewHoverDelaySeconds,
+    1,
+  );
 }
 
 export class VariableLinksSettingTab extends PluginSettingTab {
@@ -138,6 +156,17 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         control: { type: 'toggle', key: 'enableInfoCards' },
       },
       {
+        name: 'Reading View hover delay',
+        desc: 'Seconds to hover over a rendered variable before its info card appears in Reading View.',
+        control: {
+          type: 'number',
+          key: 'readingViewHoverDelaySeconds',
+          min: 0,
+          max: 30,
+          step: 0.25,
+        },
+      },
+      {
         name: 'Live Preview hover delay',
         desc: 'Seconds to hover over a rendered variable before its info card appears in Live Preview.',
         control: {
@@ -145,7 +174,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
           key: 'livePreviewHoverDelaySeconds',
           min: 1,
           max: 30,
-          step: 1,
+          step: 0.25,
         },
       },
       {
@@ -186,6 +215,8 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     if (key === 'registryFilePath' || key === 'defaultDateFormat') {
       if (typeof value !== 'string') return;
       this.variableLinksPlugin.settings[key] = value.trim();
+    } else if (key === 'readingViewHoverDelaySeconds') {
+      this.variableLinksPlugin.settings[key] = normalizeReadingViewHoverDelay(value);
     } else if (key === 'livePreviewHoverDelaySeconds') {
       this.variableLinksPlugin.settings[key] = normalizeLivePreviewHoverDelay(value);
     } else if (key === 'defaultAppearanceOpacity') {
