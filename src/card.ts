@@ -20,6 +20,7 @@ export class InfoCard {
   private hideTimeout: number | null = null;
   private animationFrame: number | null = null;
   private renderChild: MarkdownRenderChild | null = null;
+  private dismissCleanup: (() => void) | null = null;
   private generation = 0;
   private destroyed = false;
 
@@ -116,6 +117,7 @@ export class InfoCard {
 
     container.addEventListener('mouseenter', () => this.clearHideTimeout());
     container.addEventListener('mouseleave', () => this.hideWithDelay(150));
+    this.trackDismissal(targetEl, container, generation);
 
     for (const render of hydrate) {
       await render();
@@ -168,9 +170,55 @@ export class InfoCard {
     this.hideTimeout = null;
   }
 
+  private trackDismissal(
+    targetEl: HTMLElement,
+    container: HTMLElement,
+    generation: number,
+  ): void {
+    this.dismissCleanup?.();
+    const ownerDocument = container.ownerDocument;
+    const activeWindow = ownerDocument.defaultView ?? window;
+    const isInsideCardOrTarget = (target: EventTarget | null): boolean => (
+      target instanceof activeWindow.Node && (container.contains(target) || targetEl.contains(target))
+    );
+    const onMouseMove = (event: MouseEvent): void => {
+      if (!this.isCurrent(container, generation)) return;
+      if (isInsideCardOrTarget(event.target)) {
+        this.clearHideTimeout();
+      } else if (this.hideTimeout === null) {
+        this.hideWithDelay(150);
+      }
+    };
+    const onMouseDown = (event: MouseEvent): void => {
+      if (!this.isCurrent(container, generation) || isInsideCardOrTarget(event.target)) return;
+      this.hideImmediate();
+    };
+    const onMouseOut = (event: MouseEvent): void => {
+      if (event.relatedTarget === null && this.isCurrent(container, generation)) {
+        this.hideImmediate();
+      }
+    };
+    const onWindowBlur = (): void => {
+      if (this.isCurrent(container, generation)) this.hideImmediate();
+    };
+
+    ownerDocument.addEventListener('mousemove', onMouseMove, true);
+    ownerDocument.addEventListener('mousedown', onMouseDown, true);
+    ownerDocument.addEventListener('mouseout', onMouseOut, true);
+    activeWindow.addEventListener('blur', onWindowBlur);
+    this.dismissCleanup = () => {
+      ownerDocument.removeEventListener('mousemove', onMouseMove, true);
+      ownerDocument.removeEventListener('mousedown', onMouseDown, true);
+      ownerDocument.removeEventListener('mouseout', onMouseOut, true);
+      activeWindow.removeEventListener('blur', onWindowBlur);
+    };
+  }
+
   hideImmediate(): void {
     this.generation++;
     this.clearHideTimeout();
+    this.dismissCleanup?.();
+    this.dismissCleanup = null;
     if (this.animationFrame !== null) {
       const activeWindow = this.el?.ownerDocument.defaultView ?? window;
       activeWindow.cancelAnimationFrame(this.animationFrame);
