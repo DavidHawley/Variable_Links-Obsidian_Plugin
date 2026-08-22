@@ -4,6 +4,8 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.2.0
 
+> **Scope closed:** The planned feature set for 1.2.0 is complete. Do not add further features to this release. Changes that clarify, implement, test, or correct the items already listed may still be made. Record additional feature ideas for a later version.
+
 ### Configurable Info Card delays
 
 - Add a separate hover-delay setting for Reading View.
@@ -74,3 +76,40 @@ This document records planned improvements to Variable Links. Plans may change a
 - Keep submenu entries limited to variable names so the menu remains compact and stable.
 - Consider adding Search all and a Switch Variable Link token command after the basic submenu is proven usable with large registries.
 - Test Source Mode, Live Preview, keyboard navigation, missing variables, multiple tokens on one line, line boundaries, favorites ordering, insertion disabling, caret placement, and Undo.
+
+### Fixed and property value variables
+
+- Support two user-facing variable types: **Fixed value** and **Property value**.
+- Treat existing variables without a stored type as Property value variables so existing registries continue to work without manual migration.
+- Add **New fixed value** and **New property value** actions to the Variable Link selector dropdown.
+- Do not create or save a new variable until the user completes its form and confirms the normal save action.
+
+#### Fixed value
+
+- Let the user enter a value directly instead of reading it from a note property.
+- Allow an optional file link; a fixed variable without one should display normally and do nothing when clicked.
+- Support the existing display name, Favorite, appearance, card, rename, insertion, and token-switching features.
+- Preserve text exactly as entered rather than automatically converting numbers, dates, checkboxes, or other value types.
+- Allow an intentionally empty fixed value.
+
+#### Property value
+
+- Keep the current behavior of resolving the variable value from a property in a linked note.
+- Continue to require a valid property reference before a Property value variable can be saved.
+- Keep existing display name, Favorite, appearance, card, rename, insertion, and token-switching behavior.
+
+#### Changing types safely
+
+- Add a Variable type dropdown to the properties panel for existing variables.
+- Show a confirmation dialog before changing the type, explain the effect of the change, and change nothing if the user cancels.
+- Treat a confirmed type selection as an unsaved form change; do not update the registry or rendered tokens until the user saves the form.
+- When changing from Property value to Fixed value, default to copying the currently resolved property value when no previous fixed value exists.
+- When changing from Fixed value to Property value, restore its previous property settings or show blank required property fields if none were previously saved.
+
+#### Data preservation and compatibility
+
+- Store an explicit variable type while retaining the fields for both types in the registry.
+- Hide inactive fields in the panel without deleting their saved values, allowing users to switch back without re-entering their previous information.
+- Keep the variable name, stable identifier, display name, Favorite state, appearance, card settings, and optional link data intact when its type changes.
+- Ensure only the active type's value source affects rendering and resolution.
+- Test new and existing registries, repeated type changes, canceled confirmations, unsaved changes, empty fixed values, optional file links, renamed variables, Favorites, Insert, Switch token, Source Mode, Live Preview, Reading View, and Info Cards.
