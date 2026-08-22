@@ -113,11 +113,17 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
 
     const line = context.editor.getLine(context.end.line);
     const hasAutoCloser = line.slice(context.end.ch, context.end.ch + 2) === '}}';
+    const token = `{{${variableName}}}`;
     context.editor.replaceRange(
-      hasAutoCloser ? `{{${variableName}` : `{{${variableName}}}`,
+      hasAutoCloser ? token.slice(0, -2) : token,
       context.start,
       context.end,
     );
+    context.editor.setCursor({
+      line: context.start.line,
+      ch: context.start.ch + token.length,
+    });
+    context.editor.focus();
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {

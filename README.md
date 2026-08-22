@@ -8,8 +8,9 @@ A token such as `{{customer}}` can point to a property in another note. Wherever
 
 - Create named pointers to properties in your notes.
 - Display the current property value in Reading View and Live Preview.
-- Link a variable to its source note.
+- Link a variable to any note in your vault.
 - Show customizable Info Cards when hovering over variables.
+- Set variable values to bold, italic, underlined, highlighted, or undecorated with an optional custom color and opacity.
 - Access variables and actions from the editor’s right-click menu.
 - Rename variables while automatically updating their tokens throughout the vault.
 - Mark frequently used variables as favorites.
@@ -74,11 +75,16 @@ Open the Command Palette and run:
 The panel lets you manage:
 
 - Variable name
-- Source note
-- Frontmatter property
+- Property link, such as `[[People/John Smith]]#company`
+- File link opened when the variable is clicked
 - Display name
 - Favorite status
+- Default appearance
 - Info Card settings
+
+Use the **Link** and **Card** tabs beneath the **Variable Link Properties** header to switch between mapping and Info Card settings.
+
+Set a default variable appearance in the plugin settings, including bold, italic, decoration, and color. Individual variables can override that appearance or return to the current defaults. A reusable six-color palette makes saved colors available from every variable’s appearance controls.
 
 If your cursor is inside an unknown token, such as `{{new_variable}}`, opening the panel creates a prefilled form for setting it up.
 
@@ -111,13 +117,13 @@ to:
 {{client}}
 ```
 
-updates that variable’s known tokens throughout your Markdown notes. The link keeps its internal identity, source note, property, and Info Card configuration.
+updates that variable’s known tokens throughout your Markdown notes. The link keeps its internal identity, property link, file link, and Info Card configuration.
 
 Tokens inside inline code and fenced code blocks are left unchanged.
 
 ## Info Cards
 
-Info Cards display additional information when you hover over a variable in Reading View.
+Info Cards display additional information when you hover over a variable in Reading View or Live Preview. The Live Preview delay defaults to three seconds and can be changed in the plugin settings. Live Preview hover can also be disabled globally or for individual cards without affecting Reading View.
 
 A card can include:
 

@@ -9,6 +9,7 @@ import {
   WidgetType,
 } from '@codemirror/view';
 import Resolver from './resolver';
+import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 
 const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
 const refreshVariableLinks = StateEffect.define<void>();
@@ -140,6 +141,13 @@ export default class LivePreviewRenderer {
   }
 
   private async resolveInto(name: string, el: HTMLElement): Promise<void> {
+    applyVariableAppearance(
+      el,
+      getEffectiveVariableAppearance(
+        this.resolver.registry.getVariable(name)?.appearance,
+        this.resolver.registry.plugin.settings,
+      ),
+    );
     try {
       const result = await this.resolver.resolve(name);
       if (!this.active) return;
