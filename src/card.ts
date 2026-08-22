@@ -5,9 +5,15 @@ export interface CardConfig {
   note?: string;
   fields?: string[];
   showSourceLink?: boolean;
+  disableLivePreviewHover?: boolean;
 }
 
 type Frontmatter = Record<string, unknown>;
+
+export interface CardPointerPosition {
+  clientX: number;
+  clientY: number;
+}
 
 export class InfoCard {
   private el: HTMLElement | null = null;
@@ -19,15 +25,22 @@ export class InfoCard {
 
   constructor(private readonly app: App) {}
 
-  async showFor(targetEl: HTMLElement, sourceFilePath: string, cardConfig: CardConfig): Promise<void> {
+  async showFor(
+    targetEl: HTMLElement,
+    sourceFilePath: string,
+    cardConfig: CardConfig,
+    pointer: CardPointerPosition,
+  ): Promise<void> {
     if (this.destroyed) return;
     this.hideImmediate();
     const generation = this.generation;
 
     const container = createDiv({ cls: 'variable-links-card' });
     this.el = container;
-    this.renderChild = new MarkdownRenderChild(container);
-    this.renderChild.load();
+    const renderChild = new MarkdownRenderChild(container);
+    this.renderChild = renderChild;
+    renderChild.load();
+    const hydrate: Array<() => Promise<void>> = [];
 
     if (cardConfig.title) {
       container.createDiv({ cls: 'variable-links-card-title', text: cardConfig.title });
@@ -35,9 +48,12 @@ export class InfoCard {
 
     if (cardConfig.note) {
       const noteEl = createDiv({ cls: 'variable-links-card-note' });
-      await MarkdownRenderer.render(this.app, cardConfig.note, noteEl, sourceFilePath, this.renderChild);
-      if (!this.isCurrent(container, generation)) return;
+      noteEl.textContent = '…';
       container.appendChild(noteEl);
+      hydrate.push(async () => {
+        noteEl.replaceChildren();
+        await MarkdownRenderer.render(this.app, cardConfig.note ?? '', noteEl, sourceFilePath, renderChild);
+      });
     }
 
     if (cardConfig.fields?.length) {
@@ -50,8 +66,6 @@ export class InfoCard {
         const field = (external?.[2] ?? (separator === -1 ? fieldConfig : fieldConfig.slice(0, separator))).trim();
         const customLabel = (external?.[3] ?? (separator === -1 ? '' : fieldConfig.slice(separator + 1))).trim();
         const fieldSourcePath = external?.[1] ?? sourceFilePath;
-        const frontmatter = await this.getFrontmatter(fieldSourcePath);
-        if (!this.isCurrent(container, generation)) return;
 
         const row = createEl('tr');
         const name = createEl('th', {
@@ -59,25 +73,29 @@ export class InfoCard {
           text: customLabel || this.toSentenceCase(field),
         });
         name.scope = 'row';
-        const value = createEl('td', { cls: 'variable-links-card-field-value' });
-        const fieldValue = frontmatter?.[field];
-        if (fieldValue === undefined) {
-          value.textContent = '(Missing)';
-        } else if (Array.isArray(fieldValue)) {
-          value.textContent = fieldValue.map(String).join(', ');
-        } else if (typeof fieldValue === 'string') {
-          await MarkdownRenderer.render(this.app, fieldValue, value, fieldSourcePath, this.renderChild);
-          if (!this.isCurrent(container, generation)) return;
-        } else if (fieldValue === null
-          || typeof fieldValue === 'boolean'
-          || typeof fieldValue === 'number'
-          || typeof fieldValue === 'bigint') {
-          value.textContent = String(fieldValue);
-        } else {
-          value.textContent = JSON.stringify(fieldValue);
-        }
+        const value = createEl('td', { cls: 'variable-links-card-field-value', text: '…' });
         row.append(name, value);
         tbody.appendChild(row);
+        hydrate.push(async () => {
+          const frontmatter = await this.getFrontmatter(fieldSourcePath);
+          if (!this.isCurrent(container, generation)) return;
+          const fieldValue = frontmatter?.[field];
+          if (fieldValue === undefined) {
+            value.textContent = '(Missing)';
+          } else if (Array.isArray(fieldValue)) {
+            value.textContent = fieldValue.map(String).join(', ');
+          } else if (typeof fieldValue === 'string') {
+            value.replaceChildren();
+            await MarkdownRenderer.render(this.app, fieldValue, value, fieldSourcePath, renderChild);
+          } else if (fieldValue === null
+            || typeof fieldValue === 'boolean'
+            || typeof fieldValue === 'number'
+            || typeof fieldValue === 'bigint') {
+            value.textContent = String(fieldValue);
+          } else {
+            value.textContent = JSON.stringify(fieldValue);
+          }
+        });
       }
       table.appendChild(tbody);
       container.appendChild(table);
@@ -94,26 +112,48 @@ export class InfoCard {
 
     if (!this.isCurrent(container, generation)) return;
     targetEl.ownerDocument.body.appendChild(container);
-    const activeWindow = targetEl.ownerDocument.defaultView ?? window;
-    this.animationFrame = window.requestAnimationFrame(() => {
-      this.animationFrame = null;
-      if (!this.isCurrent(container, generation) || !targetEl.isConnected) return;
-      const rect = targetEl.getBoundingClientRect();
-      const margin = 12;
-      const top = rect.bottom + activeWindow.scrollY + 6;
-      let left = rect.left + activeWindow.scrollX;
-      const cardWidth = container.offsetWidth || container.getBoundingClientRect().width;
-      const maxRight = activeWindow.scrollX + activeWindow.innerWidth - margin;
-      if (left + cardWidth > maxRight) {
-        left = Math.max(margin + activeWindow.scrollX, maxRight - cardWidth);
-      }
-      left = Math.max(left, margin + activeWindow.scrollX);
-      container.style.top = `${top}px`;
-      container.style.left = `${left}px`;
-    });
+    this.schedulePosition(targetEl, container, pointer, generation);
 
     container.addEventListener('mouseenter', () => this.clearHideTimeout());
     container.addEventListener('mouseleave', () => this.hideWithDelay(150));
+
+    for (const render of hydrate) {
+      await render();
+      if (!this.isCurrent(container, generation)) return;
+      this.schedulePosition(targetEl, container, pointer, generation);
+    }
+  }
+
+  private schedulePosition(
+    targetEl: HTMLElement,
+    container: HTMLElement,
+    pointer: CardPointerPosition,
+    generation: number,
+  ): void {
+    const activeWindow = targetEl.ownerDocument.defaultView ?? window;
+    if (this.animationFrame !== null) window.cancelAnimationFrame(this.animationFrame);
+    this.animationFrame = window.requestAnimationFrame(() => {
+      this.animationFrame = null;
+      if (!this.isCurrent(container, generation) || !targetEl.isConnected) return;
+      const margin = 12;
+      const offset = 14;
+      let top = pointer.clientY + activeWindow.scrollY + offset;
+      let left = pointer.clientX + activeWindow.scrollX + offset;
+      const cardWidth = container.offsetWidth || container.getBoundingClientRect().width;
+      const cardHeight = container.offsetHeight || container.getBoundingClientRect().height;
+      const maxRight = activeWindow.scrollX + activeWindow.innerWidth - margin;
+      if (left + cardWidth > maxRight) {
+        left = pointer.clientX + activeWindow.scrollX - cardWidth - offset;
+      }
+      const maxBottom = activeWindow.scrollY + activeWindow.innerHeight - margin;
+      if (top + cardHeight > maxBottom) {
+        top = pointer.clientY + activeWindow.scrollY - cardHeight - offset;
+      }
+      left = Math.max(left, margin + activeWindow.scrollX);
+      top = Math.max(top, margin + activeWindow.scrollY);
+      container.style.top = `${top}px`;
+      container.style.left = `${left}px`;
+    });
   }
 
   hideWithDelay(ms = 150): void {

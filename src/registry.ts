@@ -1,4 +1,8 @@
 import { App, EventRef, Notice, TFile, parseYaml, stringifyYaml } from 'obsidian';
+import {
+  normalizeVariableAppearance,
+  type VariableAppearance,
+} from './appearance';
 import type { CardConfig } from './card';
 import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
@@ -7,8 +11,10 @@ export interface VariableDefinition {
   guid?: string;
   file: string; // vault path or wiki-link raw
   property: string;
+  link?: string;
   display?: string;
   favorite?: boolean;
+  appearance?: VariableAppearance;
   card?: CardConfig;
   format?: string;
 }
@@ -123,8 +129,10 @@ export class Registry {
           guid,
           file: typeof raw.file === 'string' ? raw.file : '',
           property: typeof raw.property === 'string' ? raw.property : '',
+          link: typeof raw.link === 'string' ? raw.link : undefined,
           display: typeof raw.display === 'string' ? raw.display : undefined,
           favorite: raw.favorite === true,
+          appearance: normalizeVariableAppearance(raw.appearance),
           card: this.toCardConfig(raw.card),
           format: typeof raw.format === 'string' ? raw.format : undefined,
         };
@@ -244,7 +252,13 @@ export class Registry {
       file: definition.file.trim(),
       property: definition.property.trim()
     };
+    if (Object.prototype.hasOwnProperty.call(definition, 'link')) {
+      normalized.link = definition.link?.trim() || undefined;
+    }
     if (Object.prototype.hasOwnProperty.call(definition, 'card')) normalized.card = definition.card;
+    if (Object.prototype.hasOwnProperty.call(definition, 'appearance')) {
+      normalized.appearance = normalizeVariableAppearance(definition.appearance);
+    }
     if (Object.prototype.hasOwnProperty.call(definition, 'favorite')) normalized.favorite = definition.favorite === true;
     const rename = !!oldName && oldName !== variableName;
     const tokenCache = this.plugin.tokenCache;
@@ -261,8 +275,14 @@ export class Registry {
         const updated: Record<string, unknown> = { ...stored, ...normalized };
         if (definition.display?.trim()) updated.display = definition.display.trim();
         else delete updated.display;
+        if (Object.prototype.hasOwnProperty.call(definition, 'link') && !definition.link?.trim()) {
+          delete updated.link;
+        }
         if (Object.prototype.hasOwnProperty.call(definition, 'favorite') && !definition.favorite) delete updated.favorite;
         if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card) delete updated.card;
+        if (Object.prototype.hasOwnProperty.call(definition, 'appearance') && !normalized.appearance) {
+          delete updated.appearance;
+        }
         links[variableName] = updated;
         if (rename) delete links[oldName];
       });
@@ -434,6 +454,7 @@ export class Registry {
       note: typeof value.note === 'string' ? value.note : undefined,
       fields,
       showSourceLink: value.showSourceLink === true,
+      disableLivePreviewHover: value.disableLivePreviewHover === true,
     };
   }
 }

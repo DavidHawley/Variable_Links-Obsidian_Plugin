@@ -9,6 +9,11 @@ import {
   WorkspaceLeaf,
 } from 'obsidian';
 import CaretTracker, { LastTouched } from './caretTracker';
+import {
+  normalizeAppearanceColor,
+  normalizeAppearanceColors,
+  normalizeAppearanceOpacity,
+} from './appearance';
 import Indexer from './indexer';
 import LivePreviewRenderer from './livePreviewRenderer';
 import { Registry } from './registry';
@@ -16,6 +21,7 @@ import Renderer from './renderer';
 import Resolver from './resolver';
 import {
   DEFAULT_SETTINGS,
+  normalizeLivePreviewHoverDelay,
   VariableLinksSettings,
   VariableLinksSettingTab,
 } from './settings';
@@ -154,6 +160,31 @@ export default class VariableLinksPlugin extends Plugin {
       enableInfoCards: typeof saved.enableInfoCards === 'boolean'
         ? saved.enableInfoCards
         : DEFAULT_SETTINGS.enableInfoCards,
+      livePreviewHoverDelaySeconds: normalizeLivePreviewHoverDelay(
+        saved.livePreviewHoverDelaySeconds,
+      ),
+      disableLivePreviewHover: typeof saved.disableLivePreviewHover === 'boolean'
+        ? saved.disableLivePreviewHover
+        : DEFAULT_SETTINGS.disableLivePreviewHover,
+      defaultAppearanceBold: typeof saved.defaultAppearanceBold === 'boolean'
+        ? saved.defaultAppearanceBold
+        : DEFAULT_SETTINGS.defaultAppearanceBold,
+      defaultAppearanceItalic: typeof saved.defaultAppearanceItalic === 'boolean'
+        ? saved.defaultAppearanceItalic
+        : DEFAULT_SETTINGS.defaultAppearanceItalic,
+      defaultAppearanceDecoration: saved.defaultAppearanceDecoration === 'highlight'
+        || saved.defaultAppearanceDecoration === 'none'
+        ? saved.defaultAppearanceDecoration
+        : DEFAULT_SETTINGS.defaultAppearanceDecoration,
+      defaultAppearanceUseCustomColor: typeof saved.defaultAppearanceUseCustomColor === 'boolean'
+        ? saved.defaultAppearanceUseCustomColor
+        : DEFAULT_SETTINGS.defaultAppearanceUseCustomColor,
+      defaultAppearanceColor: normalizeAppearanceColor(
+        saved.defaultAppearanceColor,
+        DEFAULT_SETTINGS.defaultAppearanceColor,
+      ),
+      defaultAppearanceOpacity: normalizeAppearanceOpacity(saved.defaultAppearanceOpacity),
+      savedAppearanceColors: normalizeAppearanceColors(saved.savedAppearanceColors),
       openInNewPane: typeof saved.openInNewPane === 'boolean'
         ? saved.openInNewPane
         : DEFAULT_SETTINGS.openInNewPane,
@@ -305,7 +336,10 @@ export default class VariableLinksPlugin extends Plugin {
       new Notice('Insertion position unavailable.');
       return;
     }
-    editor.replaceRange(`{{${variableName}}}`, position);
+    const token = `{{${variableName}}}`;
+    editor.replaceRange(token, position);
+    editor.setCursor({ line: position.line, ch: position.ch + token.length });
+    editor.focus();
   }
 
   private getRecentContextClick(): ContextClick | null {

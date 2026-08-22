@@ -1,7 +1,39 @@
 .variable-links-token {
   color: var(--text-normal);
-  border-bottom: 1px dashed var(--interactive-accent);
   cursor: pointer;
+}
+
+.variable-links-token.is-underlined {
+  border-bottom: 1px dashed color-mix(
+    in srgb,
+    var(--variable-links-decoration-color, var(--interactive-accent))
+      var(--variable-links-decoration-opacity, 100%),
+    transparent
+  );
+}
+
+.variable-links-token.is-highlighted {
+  border-bottom: 0;
+  border-radius: 2px;
+  background-color: color-mix(
+    in srgb,
+    var(--variable-links-decoration-color, var(--text-highlight-bg))
+      var(--variable-links-decoration-opacity, 100%),
+    transparent
+  );
+}
+
+.variable-links-token.has-no-decoration {
+  border-bottom: 0;
+  background-color: transparent;
+}
+
+.variable-links-token.is-bold {
+  font-weight: var(--font-bold);
+}
+
+.variable-links-token.is-italic {
+  font-style: italic;
 }
 
 .variable-links-token.missing {
@@ -102,11 +134,8 @@
   width: 100%;
 }
 
-.variable-links-panel-split {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-  flex: 1 1 auto;
-  min-height: 0;
+.variable-links-panel-field select {
+  width: 100%;
 }
 
 .variable-links-panel,
@@ -118,6 +147,50 @@
 .variable-links-panel-inner {
   display: flex;
   flex-direction: column;
+}
+
+.variable-links-panel-header {
+  flex: 0 0 auto;
+  padding: 12px 12px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.variable-links-panel-header h2 {
+  margin: 0;
+  font-size: var(--font-ui-medium);
+  text-transform: capitalize;
+}
+
+.variable-links-panel-tabs {
+  display: grid;
+  grid-template-columns:
+    minmax(64px, min(25%, 110px))
+    minmax(64px, min(25%, 110px))
+    minmax(0, 1fr);
+  gap: 3px;
+  margin-top: 10px;
+}
+
+.variable-links-panel-tab {
+  width: 100%;
+  margin-bottom: -1px;
+  padding: 6px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.variable-links-panel-tab:hover {
+  background: transparent;
+  color: var(--text-normal);
+}
+
+.variable-links-panel-tab.is-active {
+  border-bottom-color: var(--interactive-accent);
+  color: var(--text-normal);
 }
 
 .variable-links-panel-toolbar {
@@ -133,18 +206,18 @@
   min-width: 0;
 }
 
+.variable-links-panel-tab-content {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .variable-links-panel-pane {
+  height: 100%;
   min-height: 0;
   overflow: auto;
-  padding: 0 12px 12px;
+  padding: 12px;
 }
 
-.variable-links-panel-pane + .variable-links-panel-pane {
-  border-top: 1px solid var(--background-modifier-border);
-  padding-top: 12px;
-}
-
-.variable-links-panel-pane h4,
 .variable-links-panel-pane h5 {
   margin-top: 0;
 }
@@ -159,6 +232,76 @@
   align-items: center;
   gap: 6px;
   margin: 10px 0;
+}
+
+.variable-links-panel-appearance-options,
+.variable-links-panel-decoration-color {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 10px 0;
+}
+
+.variable-links-panel-appearance-defaults {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.variable-links-panel-inline-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.variable-links-panel-decoration-color input[type='color'] {
+  width: 42px;
+  height: 28px;
+  padding: 2px;
+}
+
+.variable-links-panel-opacity {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(90px, 2fr) 44px;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.variable-links-panel-opacity output {
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.variable-links-panel-color-swatches,
+.variable-links-settings-color-palette {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.variable-links-panel-color-swatch {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border-hover);
+  border-radius: 50%;
+}
+
+.variable-links-panel-theme-color {
+  min-width: 0;
+  padding: 3px 8px;
+}
+
+.variable-links-settings-color-palette input[type='color'] {
+  width: 34px;
+  height: 28px;
+  padding: 2px;
 }
 
 .variable-links-field-suggestions {
