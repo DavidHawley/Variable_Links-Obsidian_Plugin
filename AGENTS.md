@@ -47,6 +47,12 @@ Before a pull request or release:
 
 Do not treat a successful build as a substitute for the smoke test.
 
+## Plans and Presentations
+
+- When the user asks for a plan or presentation, provide it directly in the chat using only plain text or Markdown.
+- Do not create PowerPoint files, slide decks, PDFs, documents, images, visualizations, or other separate presentation artifacts.
+- Do not use an external presentation format unless the user explicitly changes this rule.
+
 ## Pull Requests and Releases
 
 - Do not create or open pull requests. When a branch is ready, tell the user that a pull request is needed.
