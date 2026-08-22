@@ -19,3 +19,42 @@ This document records planned improvements to Variable Links. Plans may change a
 - Keep a Favorite option available while creating a new variable.
 - Preserve the current Favorite state when a mapping is edited or renamed.
 - Keep the variable name and Favorite control usable when the sidebar is narrow.
+
+### Info Card layout and style editor
+
+- Add a larger Info Card editor opened from the Card tab.
+- Build cards from movable Title, Note, referenced Property, Property table, Divider, and Source link blocks.
+- Allow multiple independent Markdown Note blocks.
+- Make every referenced property independently movable and preserve its property link while it is rearranged.
+- Allow referenced properties to be reordered, moved between rows and columns, displayed independently, or grouped into a Property table.
+- Let users customize a property's displayed label, label placement, alignment, and width without changing its reference.
+- Provide accessible Move up, Move down, and Move to column controls in addition to drag and drop.
+
+#### Layout modes
+
+- Add a Stack mode that displays each block on its own row.
+- Add a Grid mode with one to four columns, automatic rows, adjustable spacing, and full, half, third, or quarter-width block spans.
+- Make grid layouts collapse to one column when the card is narrow.
+- Add a Property table mode with an adjustable column count, automatic or fixed rows, and movable property cells.
+- Begin with equal table-column widths and consider individually adjustable widths after the basic editor is proven usable.
+- Avoid absolute positioning so cards remain readable across window sizes and devices.
+
+#### Styling
+
+- Add card-level controls for background, border, corner radius, shadow, maximum width, spacing, and text alignment.
+- Add limited block-level controls for background tone, padding, divider or border, alignment, label visibility, and column span.
+- Prefer theme-aware colors and reusable presets.
+- Keep optional advanced CSS card-level rather than attaching raw CSS to every block.
+
+#### Compatibility and safety
+
+- Automatically migrate the existing title, note, fields, and source link into the new block layout without changing how existing cards initially appear.
+- Preserve existing field order during migration.
+- Add live preview, undo, Restore original layout, and Restore defaults controls.
+- Test Reading View, Live Preview, narrow cards, mobile layouts, themes, keyboard operation, renamed variables, missing properties, and existing saved cards.
+
+#### Suggested implementation order
+
+1. Add the block-based card format, multiple notes, movable property items, migration, and non-drag movement controls.
+2. Add drag-and-drop ordering, Stack and Grid layouts, column spans, Property tables, live preview, and undo.
+3. Add card and block styling, starter layouts, restore controls, and accessibility and compatibility testing.
