@@ -1,4 +1,4 @@
-import { App, TFile } from 'obsidian';
+import { App, EventRef, Plugin, TAbstractFile, TFile } from 'obsidian';
 import Registry from './registry';
 
 type TokenLocation = { file: string; line: number; ch: number };
@@ -12,33 +12,31 @@ type Occurrence = { name: string; start: number; end: number; line: number; ch: 
 
 export default class TokenCache {
   private app: App;
-  private plugin: any;
   private registry: Registry;
   private cachePath: string;
   private data: CacheData = { version: 1, files: {}, tokens: {} };
-  private listeners: Array<{ event: string; callback: any }> = [];
-  private timers = new Map<string, any>();
+  private listeners: EventRef[] = [];
+  private timers = new Map<string, number>();
   private active = true;
   private generation = 0;
 
-  constructor(app: App, plugin: any, registry: Registry) {
+  constructor(app: App, plugin: Plugin, registry: Registry) {
     this.app = app;
-    this.plugin = plugin;
     this.registry = registry;
     const configDir = app.vault.configDir;
-    const pluginId = plugin.manifest?.id || 'variable-links';
+    const pluginId = plugin.manifest.id || 'variable-links';
     this.cachePath = `${configDir}/plugins/${pluginId}/token-cache.json`;
   }
 
   async initialize() {
     const generation = this.generation;
-    const adapter = (this.app.vault as any).adapter;
+    const adapter = this.app.vault.adapter;
     try {
       if (await adapter.exists(this.cachePath)) {
-        const parsed = JSON.parse(await adapter.read(this.cachePath));
-        if (parsed?.version === 1 && parsed.files && parsed.tokens) this.data = parsed;
+        const parsed: unknown = JSON.parse(await adapter.read(this.cachePath));
+        if (this.isCacheData(parsed)) this.data = parsed;
       }
-    } catch (error) {
+    } catch {
       this.data = { version: 1, files: {}, tokens: {} };
     }
     if (!this.isCurrent(generation)) return;
@@ -50,10 +48,9 @@ export default class TokenCache {
     if (!this.active) return;
     this.active = false;
     this.generation++;
-    const vault: any = this.app.vault;
-    for (const listener of this.listeners) vault.off(listener.event, listener.callback);
+    for (const listener of this.listeners) this.app.vault.offref(listener);
     this.listeners = [];
-    for (const timer of this.timers.values()) clearTimeout(timer);
+    for (const timer of this.timers.values()) window.clearTimeout(timer);
     this.timers.clear();
   }
 
@@ -66,14 +63,14 @@ export default class TokenCache {
   async synchronize(force = false) {
     if (!this.active) return;
     const generation = this.generation;
-    const files: TFile[] = (this.app.vault as any).getMarkdownFiles?.() || [];
+    const files = this.app.vault.getMarkdownFiles();
     const currentPaths = new Set(files.map((file) => file.path));
     for (const path of Object.keys(this.data.files)) {
       if (!currentPaths.has(path)) this.removeFile(path);
     }
     for (const file of files) {
       if (!this.isCurrent(generation)) return;
-      const stat = (file as any).stat || {};
+      const stat = file.stat;
       const cached = this.data.files[file.path];
       if (force || !cached || cached.mtime !== stat.mtime || cached.size !== stat.size) await this.indexFile(file);
     }
@@ -93,36 +90,36 @@ export default class TokenCache {
     await this.synchronize();
     if (!this.data.tokens[guid]) await this.rebuild();
     let paths = Array.from(new Set((this.data.tokens[guid]?.locations || []).map((location) => location.file)));
-    if (!paths.length) paths = ((this.app.vault as any).getMarkdownFiles?.() || []).map((file: TFile) => file.path);
+    if (!paths.length) paths = this.app.vault.getMarkdownFiles().map((file) => file.path);
     const files = paths
       .map((path) => this.app.vault.getAbstractFileByPath(path))
       .filter((file): file is TFile => file instanceof TFile);
     const applied: Array<{ file: TFile; original: string; updated: string }> = [];
-    const cache = this;
-
     const rollback = async () => {
       for (const change of [...applied].reverse()) {
         try {
-          await (cache.app.vault as any).process(change.file, (current: string) =>
+          await this.app.vault.process(change.file, (current) =>
             current === change.updated ? change.original : current
           );
-        } catch (error) {}
+        } catch {
+          // Continue rolling back the remaining files.
+        }
       }
       applied.length = 0;
-      await cache.rebuild();
+      await this.rebuild();
     };
 
     return {
       apply: async () => {
         try {
           for (const file of files) {
-            const preview = await cache.app.vault.read(file);
-            if (cache.replaceToken(preview, oldName, newName) === preview) continue;
+            const preview = await this.app.vault.read(file);
+            if (this.replaceToken(preview, oldName, newName) === preview) continue;
             let original = '';
             let updated = '';
-            await (cache.app.vault as any).process(file, (current: string) => {
+            await this.app.vault.process(file, (current) => {
               original = current;
-              updated = cache.replaceToken(current, oldName, newName);
+              updated = this.replaceToken(current, oldName, newName);
               return updated;
             });
             if (updated !== original) applied.push({ file, original, updated });
@@ -134,51 +131,44 @@ export default class TokenCache {
       },
       rollback,
       commit: async () => {
-        for (const change of applied) await cache.indexFile(change.file);
-        if (!cache.data.tokens[guid]) cache.data.tokens[guid] = { guid, name: newName, locations: [] };
-        cache.data.tokens[guid].name = newName;
-        cache.syncTokenNames();
-        await cache.persist();
+        for (const change of applied) await this.indexFile(change.file);
+        if (!this.data.tokens[guid]) this.data.tokens[guid] = { guid, name: newName, locations: [] };
+        this.data.tokens[guid].name = newName;
+        this.syncTokenNames();
+        await this.persist();
       }
     };
   }
 
   private attach() {
     if (!this.active || this.listeners.length) return;
-    const vault: any = this.app.vault;
-    const add = (event: string, callback: any) => {
-      if (!this.active) return;
-      vault.on(event, callback);
-      this.listeners.push({ event, callback });
-    };
-    add('modify', (file: TFile) => this.schedule(file));
-    add('create', (file: TFile) => this.schedule(file));
-    add('delete', (file: TFile) => {
+    this.listeners.push(this.app.vault.on('modify', (file) => this.schedule(file)));
+    this.listeners.push(this.app.vault.on('create', (file) => this.schedule(file)));
+    this.listeners.push(this.app.vault.on('delete', (file) => {
       if (!this.active) return;
       if (!this.isMarkdown(file)) return;
       this.removeFile(file.path);
       void this.persist();
-    });
-    add('rename', (file: TFile, oldPath: string) => {
+    }));
+    this.listeners.push(this.app.vault.on('rename', (file, oldPath) => {
       if (!this.active) return;
       this.removeFile(oldPath);
       this.schedule(file);
-    });
+    }));
   }
 
-  private schedule(file: TFile) {
+  private schedule(file: TAbstractFile): void {
     if (!this.active || !this.isMarkdown(file)) return;
     const prior = this.timers.get(file.path);
-    if (prior) clearTimeout(prior);
-    this.timers.set(file.path, setTimeout(async () => {
+    if (prior) window.clearTimeout(prior);
+    this.timers.set(file.path, window.setTimeout(() => {
       this.timers.delete(file.path);
       if (!this.active) return;
-      try { await this.indexFile(file); await this.persist(); }
-      catch (error) {}
+      void this.reindexScheduled(file);
     }, 150));
   }
 
-  private isMarkdown(file: any) {
+  private isMarkdown(file: TAbstractFile): file is TFile {
     return file instanceof TFile && /\.md$/i.test(file.path);
   }
 
@@ -200,7 +190,7 @@ export default class TokenCache {
       token.locations.push({ file: file.path, line: occurrence.line, ch: occurrence.ch });
       this.data.tokens[definition.guid] = token;
     }
-    const stat = (file as any).stat || {};
+    const stat = file.stat;
     this.data.files[file.path] = { mtime: stat.mtime || 0, size: stat.size || content.length };
   }
 
@@ -285,8 +275,26 @@ export default class TokenCache {
 
   private async persist() {
     if (!this.active) return;
-    const adapter = (this.app.vault as any).adapter;
-    await adapter.write(this.cachePath, JSON.stringify(this.data, null, 2) + '\n');
+    await this.app.vault.adapter.write(this.cachePath, JSON.stringify(this.data, null, 2) + '\n');
+  }
+
+  private async reindexScheduled(file: TFile): Promise<void> {
+    try {
+      await this.indexFile(file);
+      await this.persist();
+    } catch {
+      // The next vault event or manual rebuild will retry the cache update.
+    }
+  }
+
+  private isCacheData(value: unknown): value is CacheData {
+    if (typeof value !== 'object' || value === null) return false;
+    const candidate = value as Partial<CacheData>;
+    return candidate.version === 1
+      && typeof candidate.files === 'object'
+      && candidate.files !== null
+      && typeof candidate.tokens === 'object'
+      && candidate.tokens !== null;
   }
 
   private isCurrent(generation: number) {

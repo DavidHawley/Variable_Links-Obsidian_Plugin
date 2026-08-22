@@ -1,99 +1,79 @@
-import { App, TFile } from 'obsidian';
+import { App, Editor, EditorPosition, MarkdownView, TFile } from 'obsidian';
+import type VariableLinksPlugin from './main';
+import Registry, { VariableDefinition } from './registry';
 import Resolver from './resolver';
-import Registry from './registry';
 
-export type LastTouched = {
+export interface LastTouched {
   name: string;
-  value?: any;
+  value?: unknown;
   type?: string;
-  sourceFile?: TFile | null;
-  def?: any;
-  editor?: any;
-  from?: any;
-  to?: any;
+  sourceFile: TFile | null;
+  def: VariableDefinition | null;
+  editor: Editor;
+  from: EditorPosition;
+  to: EditorPosition;
   timestamp: number;
-};
+}
 
 export default class CaretTracker {
-  app: App;
-  registry: Registry;
-  resolver: Resolver;
-  plugin: any;
-  pollMs: number = 200;
-  timer: any = null;
-  running: boolean = false;
-  generation: number = 0;
-  lastIndex: number = -1;
   lastTouched: LastTouched | null = null;
+  private timer: number | null = null;
+  private running = false;
+  private generation = 0;
+  private lastIndex = -1;
 
-  constructor(app: App, plugin: any, registry: Registry, resolver: Resolver, pollMs = 200) {
-    this.app = app;
-    this.plugin = plugin;
-    this.registry = registry;
-    this.resolver = resolver;
-    this.pollMs = pollMs;
-  }
+  constructor(
+    private readonly app: App,
+    private readonly plugin: VariableLinksPlugin,
+    private readonly registry: Registry,
+    private readonly resolver: Resolver,
+    private readonly pollMs = 200,
+  ) {}
 
-  start() {
+  start(): void {
     if (this.running) return;
     this.running = true;
     const generation = ++this.generation;
-    const loop = async () => {
-      try {
-        await this.checkCaret();
-      } catch (e) {}
-      if (!this.running || this.generation !== generation) return;
-      this.timer = setTimeout(loop, this.pollMs);
-    };
-    loop();
+    void this.runLoop(generation);
   }
 
-  stop() {
+  stop(): void {
     this.running = false;
     this.generation++;
-    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    if (this.timer !== null) window.clearTimeout(this.timer);
+    this.timer = null;
     this.lastIndex = -1;
     this.lastTouched = null;
   }
 
-  async checkCaret() {
+  findTokenAtIndex(text: string, index: number): { name: string; start: number; end: number } | null {
+    if (!text || index < 0 || index > text.length) return null;
+    const start = text.lastIndexOf('{{', index);
+    if (start === -1) return null;
+    const end = text.indexOf('}}', index);
+    if (end === -1) return null;
+    const inner = text.slice(start + 2, end).trim();
+    if (!inner || /\s/.test(inner)) return null;
+    return { name: inner, start, end: end + 2 };
+  }
+
+  private async runLoop(generation: number): Promise<void> {
+    try {
+      await this.checkCaret();
+    } catch {
+      // A transient editor state will be checked again on the next poll.
+    }
+    if (!this.running || this.generation !== generation) return;
+    this.timer = window.setTimeout(() => void this.runLoop(generation), this.pollMs);
+  }
+
+  private async checkCaret(): Promise<void> {
     if (!this.running) return;
     const generation = this.generation;
-    const leaf = this.app.workspace.activeLeaf;
-    if (!leaf) return;
-    const view: any = leaf.view;
-    if (!view || view.getViewType?.() !== 'markdown') return;
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view) return;
     const editor = view.editor;
-    if (!editor || typeof editor.getValue !== 'function') return;
-
-    // determine caret index
-    let caretIndex: number | null = null;
-    try {
-      const cm = editor.cm;
-      // CM6 path (head position)
-      if (cm && cm.viewState && cm.viewState.state && cm.viewState.state.selection && cm.viewState.state.selection.main) {
-        caretIndex = cm.viewState.state.selection.main.head;
-      }
-    } catch (e) { }
-
-    // CM5/other fallback: compute index from cursor line/ch
-    try {
-      if (caretIndex === null && typeof editor.getCursor === 'function') {
-        const cur = editor.getCursor();
-        if (cur && typeof cur.line === 'number' && typeof cur.ch === 'number') {
-          const textForIndex = editor.getValue();
-          const lines = textForIndex.split(/\r?\n/);
-          let idx = 0;
-          for (let i = 0; i < cur.line; i++) idx += (lines[i]?.length ?? 0) + 1;
-          idx += cur.ch;
-          caretIndex = idx;
-        }
-      }
-    } catch (e) { }
-
-    // If still null, give up
-    if (caretIndex === null) return;
-
+    const caretIndex = editor.posToOffset(editor.getCursor('head'));
     if (caretIndex === this.lastIndex) return;
     this.lastIndex = caretIndex;
 
@@ -101,46 +81,19 @@ export default class CaretTracker {
     const token = this.findTokenAtIndex(text, caretIndex);
     if (!token) return;
 
-    const varName = token.name;
-    // resolve and set lastTouched
-    const res = await this.resolver.resolve(varName);
+    const result = await this.resolver.resolve(token.name);
     if (!this.running || this.generation !== generation) return;
-    const def = this.registry.getVariable(varName);
     this.lastTouched = {
-      name: varName,
-      value: res.ok ? res.value : undefined,
-      type: res.type,
-      sourceFile: res.sourceFile || null,
-      def,
+      name: token.name,
+      value: result.ok ? result.value : undefined,
+      type: result.type,
+      sourceFile: result.sourceFile ?? null,
+      def: this.registry.getVariable(token.name),
       editor,
-      from: this.positionAtIndex(editor, text, token.start),
-      to: this.positionAtIndex(editor, text, token.end),
+      from: editor.offsetToPos(token.start),
+      to: editor.offsetToPos(token.end),
       timestamp: Date.now(),
     };
-
-    // notify plugin/view
-    try { if (this.plugin && typeof this.plugin.onCaretVariableChanged === 'function') this.plugin.onCaretVariableChanged(this.lastTouched); } catch (e) {}
-  }
-
-  findTokenAtIndex(text: string, index: number): { name: string; start: number; end: number } | null {
-    if (!text || index < 0 || index > text.length) return null;
-    // search backwards for '{{'
-    const start = text.lastIndexOf('{{', index);
-    if (start === -1) return null;
-    const end = text.indexOf('}}', index);
-    if (end === -1) return null;
-    // extract between
-    const inner = text.slice(start + 2, end).trim();
-    // validate simple token name (no spaces, not empty)
-    if (!inner) return null;
-    if (/\s/.test(inner)) return null;
-    return { name: inner, start, end: end + 2 };
-  }
-
-  private positionAtIndex(editor: any, text: string, index: number) {
-    if (typeof editor.offsetToPos === 'function') return editor.offsetToPos(index);
-    if (typeof editor.posFromIndex === 'function') return editor.posFromIndex(index);
-    const before = text.slice(0, index).split(/\r?\n/);
-    return { line: before.length - 1, ch: before[before.length - 1].length };
+    this.plugin.onCaretVariableChanged(this.lastTouched);
   }
 }

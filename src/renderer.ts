@@ -1,10 +1,15 @@
-import { App } from 'obsidian';
+import { App, MarkdownView } from 'obsidian';
 import Registry from './registry';
 import Resolver from './resolver';
 import Indexer from './indexer';
 import InfoCard from './card';
 
-const TOKEN_REGEX = /\{\{\s*([^\}\s]+)\s*\}\}/g;
+const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
+
+interface PreviewMode {
+  rerender?: (force: boolean) => void;
+  renderer?: { rerender?: (force: boolean) => void };
+}
 
 export class Renderer {
   app: App;
@@ -13,7 +18,7 @@ export class Renderer {
   indexer: Indexer;
   enabled: boolean = true;
   infoCard: InfoCard;
-  private hoverTimer: ReturnType<typeof setTimeout> | null = null;
+  private hoverTimer: number | null = null;
   private clickHandler: (event: MouseEvent) => void;
   private mouseOverHandler: (event: MouseEvent) => void;
   private mouseOutHandler: (event: MouseEvent) => void;
@@ -32,10 +37,10 @@ export class Renderer {
     document.addEventListener('mouseout', this.mouseOutHandler);
   }
 
-  async processElement(el: HTMLElement) {
+  async processElement(el: HTMLElement): Promise<void> {
     if (!this.enabled) return;
     // Walk text nodes and replace {{variable}} occurrences
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null as any);
+    const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     const nodes: Text[] = [];
     let n: Node | null;
     while ((n = walker.nextNode())) {
@@ -52,7 +57,7 @@ export class Renderer {
       const text = textNode.nodeValue || '';
       let match: RegExpExecArray | null;
       let lastIndex = 0;
-      const frag = document.createDocumentFragment();
+      const frag = createFragment();
       TOKEN_REGEX.lastIndex = 0;
       let any = false;
       while ((match = TOKEN_REGEX.exec(text)) !== null) {
@@ -60,27 +65,14 @@ export class Renderer {
         const before = text.slice(lastIndex, match.index);
         if (before) frag.appendChild(document.createTextNode(before));
         const varName = match[1].trim();
-        const placeholder = document.createElement('span');
+        const placeholder = createSpan();
         placeholder.className = 'variable-links-token variable-links-token-reading';
         placeholder.textContent = '…';
         placeholder.dataset.var = varName;
         frag.appendChild(placeholder);
 
         // resolve async and then update placeholder
-        this.resolver.resolve(varName).then(res => {
-          if (!this.enabled) return;
-          if (!res.ok) {
-            placeholder.textContent = `[Missing: ${varName}]`;
-            placeholder.classList.add('missing');
-            placeholder.setAttribute('title', res.error || 'Unknown error');
-            return;
-          }
-          // render value
-          let display = '';
-          if (res.type === 'array') display = (res.value as any[]).join(', ');
-          else display = String(res.value);
-          placeholder.textContent = display;
-        }).catch(() => {});
+        void this.resolvePlaceholder(varName, placeholder);
 
         lastIndex = TOKEN_REGEX.lastIndex;
       }
@@ -92,21 +84,24 @@ export class Renderer {
 
   }
 
-  unload() {
+  unload(): void {
     if (!this.enabled) return;
     this.enabled = false;
-    if (this.hoverTimer) clearTimeout(this.hoverTimer);
+    if (this.hoverTimer) window.clearTimeout(this.hoverTimer);
     this.hoverTimer = null;
     document.removeEventListener('click', this.clickHandler);
     document.removeEventListener('mouseover', this.mouseOverHandler);
     document.removeEventListener('mouseout', this.mouseOutHandler);
     this.infoCard.destroy();
-    for (const leaf of (this.app.workspace as any).getLeavesOfType?.('markdown') || []) {
-      const previewMode = leaf?.view?.previewMode;
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      if (!(leaf.view instanceof MarkdownView)) continue;
+      const view = leaf.view as MarkdownView & { previewMode?: PreviewMode };
       try {
-        if (typeof previewMode?.rerender === 'function') previewMode.rerender(true);
-        else if (typeof previewMode?.renderer?.rerender === 'function') previewMode.renderer.rerender(true);
-      } catch (error) {}
+        if (typeof view.previewMode?.rerender === 'function') view.previewMode.rerender(true);
+        else view.previewMode?.renderer?.rerender?.(true);
+      } catch {
+        // Reading View may be changing files during plugin unload.
+      }
     }
   }
 
@@ -115,7 +110,7 @@ export class Renderer {
     return target?.closest?.('.variable-links-token-reading[data-var]') as HTMLElement | null;
   }
 
-  private async onClick(event: MouseEvent) {
+  private async onClick(event: MouseEvent): Promise<void> {
     if (!this.enabled) return;
     const token = this.tokenFromEvent(event);
     const name = token?.dataset.var?.trim();
@@ -124,38 +119,62 @@ export class Renderer {
     if (!this.enabled || !result?.ok || !result.sourceFile) return;
     try {
       await this.app.workspace.openLinkText(result.sourceFile.path.replace(/\.md$/i, ''), '', false);
-    } catch (error) {
+    } catch {
       await this.app.workspace.getLeaf(false).openFile(result.sourceFile);
     }
     event.stopPropagation();
   }
 
-  private onMouseOver(event: MouseEvent) {
-    if (!this.enabled || (this.registry.plugin as any)?.settings?.enableInfoCards === false) return;
+  private onMouseOver(event: MouseEvent): void {
+    if (!this.enabled || !this.registry.plugin.settings.enableInfoCards) return;
     const token = this.tokenFromEvent(event);
     const name = token?.dataset.var?.trim();
     if (!token || !name) return;
     if (event.relatedTarget instanceof Node && token.contains(event.relatedTarget)) return;
-    if (this.hoverTimer) clearTimeout(this.hoverTimer);
-    this.hoverTimer = setTimeout(async () => {
+    if (this.hoverTimer) window.clearTimeout(this.hoverTimer);
+    this.hoverTimer = window.setTimeout(() => {
       this.hoverTimer = null;
-      if (!this.enabled || !token.isConnected || !token.matches(':hover')) return;
-      const definition = this.registry.getVariable(name);
-      if (!definition?.card) return;
-      const result = await this.resolver.resolve(name).catch(() => null);
-      if (!this.enabled || !token.isConnected || !token.matches(':hover')) return;
-      const sourcePath = result?.sourceFile?.path ?? definition.file ?? '';
-      void this.infoCard.showFor(token, sourcePath, definition.card);
+      void this.showInfoCard(token, name);
     }, 200);
   }
 
-  private onMouseOut(event: MouseEvent) {
+  private onMouseOut(event: MouseEvent): void {
     const token = this.tokenFromEvent(event);
     if (!token) return;
     if (event.relatedTarget instanceof Node && token.contains(event.relatedTarget)) return;
-    if (this.hoverTimer) clearTimeout(this.hoverTimer);
+    if (this.hoverTimer) window.clearTimeout(this.hoverTimer);
     this.hoverTimer = null;
     this.infoCard.hideWithDelay(100);
+  }
+
+  private async resolvePlaceholder(variableName: string, placeholder: HTMLElement): Promise<void> {
+    try {
+      const result = await this.resolver.resolve(variableName);
+      if (!this.enabled) return;
+      if (!result.ok) {
+        placeholder.textContent = `[Missing: ${variableName}]`;
+        placeholder.classList.add('missing');
+        placeholder.title = result.error ?? 'Unknown error';
+        return;
+      }
+      placeholder.textContent = Array.isArray(result.value)
+        ? result.value.map(String).join(', ')
+        : String(result.value);
+    } catch {
+      if (!this.enabled) return;
+      placeholder.textContent = `[Missing: ${variableName}]`;
+      placeholder.classList.add('missing');
+    }
+  }
+
+  private async showInfoCard(token: HTMLElement, name: string): Promise<void> {
+    if (!this.enabled || !token.isConnected || !token.matches(':hover')) return;
+    const definition = this.registry.getVariable(name);
+    if (!definition?.card) return;
+    const result = await this.resolver.resolve(name).catch(() => null);
+    if (!this.enabled || !token.isConnected || !token.matches(':hover')) return;
+    const sourcePath = result?.sourceFile?.path ?? definition.file;
+    await this.infoCard.showFor(token, sourcePath, definition.card);
   }
 }
 

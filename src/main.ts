@@ -1,204 +1,134 @@
-import { App, Notice, Plugin, WorkspaceLeaf } from 'obsidian';
-import { VariableLinksSettingTab, VariableLinksSettings, DEFAULT_SETTINGS } from './settings';
-import { Registry } from './registry';
+import {
+  Editor,
+  EditorPosition,
+  Menu,
+  MenuItem,
+  Notice,
+  Plugin,
+  TFile,
+  WorkspaceLeaf,
+} from 'obsidian';
+import CaretTracker, { LastTouched } from './caretTracker';
 import Indexer from './indexer';
-import Resolver from './resolver';
-import Renderer from './renderer';
-import VariableSuggest from './suggest';
 import LivePreviewRenderer from './livePreviewRenderer';
+import { Registry } from './registry';
+import Renderer from './renderer';
+import Resolver from './resolver';
+import {
+  DEFAULT_SETTINGS,
+  VariableLinksSettings,
+  VariableLinksSettingTab,
+} from './settings';
+import VariableSuggest from './suggest';
 import TokenCache from './tokenCache';
 
+interface EditorWithCoordinates extends Editor {
+  cm?: {
+    posAtCoords?: (coordinates: { x: number; y: number }) => number | null;
+  };
+}
+
+interface MenuItemWithSubmenu extends MenuItem {
+  setSubmenu(): Menu;
+  dom?: HTMLElement;
+}
+
+interface MenuWithSubmenuState extends Menu {
+  currentSubmenu?: Menu;
+  closeSubmenu?: () => void;
+}
+
+interface ContextClick {
+  x: number;
+  y: number;
+  target: Element | null;
+  time: number;
+}
+
 export default class VariableLinksPlugin extends Plugin {
-  settings!: VariableLinksSettings;
+  settings: VariableLinksSettings = { ...DEFAULT_SETTINGS };
   registry: Registry | null = null;
   indexer: Indexer | null = null;
   resolver: Resolver | null = null;
   renderer: Renderer | null = null;
   livePreviewRenderer: LivePreviewRenderer | null = null;
   tokenCache: TokenCache | null = null;
-  suggest: any = null;
-  caretTracker: any = null;
-  private settingTab: VariableLinksSettingTab | null = null;
-  private active = false;
-  private timers = new Set<ReturnType<typeof setTimeout>>();
-  private contextMenuCleanups: Array<() => void> = [];
-  private vaultModifyHandler: ((file: any) => void) | null = null;
-  private editorMenuHandler: ((menu: any, editor: any) => void) | null = null;
-  private contextMenuHandler: ((event: MouseEvent) => void) | null = null;
-  private lastContextClick: { x: number; y: number; target: any; time: number } | null = null;
+  suggest: VariableSuggest | null = null;
+  caretTracker: CaretTracker | null = null;
 
-  async onload() {
+  private active = false;
+  private timers = new Set<number>();
+  private contextMenuCleanups: Array<() => void> = [];
+  private lastContextClick: ContextClick | null = null;
+
+  async onload(): Promise<void> {
     this.active = true;
     try {
       await this.loadSettings();
       if (!this.active) return;
-      this.settingTab = new VariableLinksSettingTab(this.app, this);
-      this.addSettingTab(this.settingTab);
 
-      // Initialize registry/indexer/resolver/renderer with defensive try/catch so one failure doesn't break plugin
-      try {
-        this.registry = new Registry(this.app, this);
-        await this.registry.load();
-        if (!this.active) return;
-      } catch (e) {
-        try { const N = (globalThis as any).Notice; if (typeof N === 'function') new N('Variable Links: registry failed to load.'); } catch (e) { }
-      }
+      this.addSettingTab(new VariableLinksSettingTab(this.app, this));
+      this.registry = new Registry(this.app, this);
+      await this.registry.load();
+      if (!this.active) return;
 
-      try {
-        this.indexer = new Indexer(this.app, this.registry!);
-        await this.indexer.build();
-        if (!this.active) return;
-      } catch (e) {}
+      this.indexer = new Indexer(this.app, this.registry);
+      await this.indexer.build();
+      this.tokenCache = new TokenCache(this.app, this, this.registry);
+      await this.tokenCache.initialize();
+      if (!this.active) return;
 
-      try {
-        this.tokenCache = new TokenCache(this.app, this, this.registry!);
-        await this.tokenCache.initialize();
-        if (!this.active) return;
-      } catch (e) {}
+      this.resolver = new Resolver(this.app, this.registry);
+      this.renderer = new Renderer(this.app, this.registry, this.resolver, this.indexer);
+      this.registerMarkdownPostProcessor((element) => {
+        if (this.renderer) void this.renderer.processElement(element);
+      });
 
-      try {
-        this.resolver = new Resolver(this.app, this.registry!);
-      } catch (e) {}
+      this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver);
+      this.registerEditorExtension(this.livePreviewRenderer.createExtension());
+      this.schedule(() => this.livePreviewRenderer?.refresh(), 0);
 
-      try {
-        if (typeof this.registerMarkdownPostProcessor !== 'function') {
-          throw new Error('registerMarkdownPostProcessor is unavailable.');
+      const panelModule = await import('./panel');
+      if (!this.active) return;
+      this.registerView(
+        panelModule.VIEW_TYPE_VARIABLE_PANEL,
+        (leaf) => new panelModule.VariablePropertiesView(leaf, this),
+      );
+      this.addCommand({
+        id: 'open-variable-properties',
+        name: 'Open variable properties',
+        callback: () => void this.openVariableProperties(),
+      });
+
+      this.registerVariableContextMenu();
+      this.caretTracker = new CaretTracker(this.app, this, this.registry, this.resolver);
+      this.caretTracker.start();
+      this.suggest = new VariableSuggest(this.app, this.indexer, this.registry);
+      this.registerEditorSuggest(this.suggest);
+
+      this.registerEvent(this.app.vault.on('modify', (file) => {
+        if (!this.active || !(file instanceof TFile)) return;
+        if (file.path === this.registry?.registryFile?.path) {
+          this.schedule(() => void this.indexer?.build(), 100);
         }
-        this.renderer = new Renderer(this.app, this.registry!, this.resolver!, this.indexer!);
-        this.registerMarkdownPostProcessor((el: HTMLElement, ctx: any) => {
-          try { return this.renderer?.processElement(el); } catch (err) {}
-        });
-      } catch (e) {}
-
-      // Use native CodeMirror decorations in Live Preview. Unlike positioned
-      // overlays, they replace the text in the editor's normal layout.
-      try {
-        if (typeof (this as any).registerEditorExtension !== 'function') throw new Error('registerEditorExtension is unavailable.');
-        this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver!);
-        (this as any).registerEditorExtension(this.livePreviewRenderer.createExtension());
-        const refreshOpenViews = () => {
-          if (this.active) this.livePreviewRenderer?.refresh();
-        };
-        this.schedule(refreshOpenViews, 0);
-      } catch (e) {}
-
-      try {
-        // register view
-        const panelMod = await import('./panel');
-        if (!this.active) return;
-        (this as any).registerView(panelMod.VIEW_TYPE_VARIABLE_PANEL, (leaf: any) =>
-          new panelMod.VariablePropertiesView(leaf, this)
-        );
-        (this as any).addCommand({
-          id: 'open-variable-properties',
-          name: 'Open Variable Properties',
-          callback: () => this.openVariableProperties()
-        });
-        this.registerVariableContextMenu();
-
-        // start caret tracker
-        const CaretTracker = (await import('./caretTracker')).default;
-        if (!this.active) return;
-        const ct = new CaretTracker(this.app, this, this.registry!, this.resolver!);
-        ct.start();
-        this.caretTracker = ct;
-      } catch (e) {}
-
-      // register suggest if enabled
-      try {
-        if (this.settings) {
-          if ((this.settings as any).autocomplete !== false) {
-                this.suggest = new VariableSuggest(this.app, this.indexer!, this.registry!);
-                if (typeof this.registerEditorSuggest === 'function') {
-                  try { this.registerEditorSuggest(this.suggest); }
-                  catch (e) {}
-                }
-              }
-        }
-      } catch (e) {}
-
-      // watch registry reloads to rebuild index
-      const reloadIndex = async () => {
-        if (this.active && this.indexer) await this.indexer.build();
-      };
-      // listen to vault modify events so we can update index when registry changed
-      try {
-        this.vaultModifyHandler = (file: any) => {
-          if (!this.active) return;
-          try {
-            if (this.registry?.registryFile && file.path === this.registry.registryFile.path) {
-              this.schedule(() => void reloadIndex(), 100);
-            }
-          } catch (e) {}
-        };
-        const modifyRef = this.app.vault.on('modify', this.vaultModifyHandler);
-        if (typeof (this as any).registerEvent === 'function') (this as any).registerEvent(modifyRef);
-      } catch (e) {}
-
-      // expose helper for panel: when caret tracker notifies, refresh any open panel views
-      (this as any).onCaretVariableChanged = (last: any) => {
-        if (!this.active) return;
-        try {
-          import('./panel').then(async (mod) => {
-            if (!this.active) return;
-            try {
-              const leaves = this.app.workspace.getLeavesOfType(mod.VIEW_TYPE_VARIABLE_PANEL);
-              if (leaves && leaves.length > 0) {
-                for (let i = 0; i < leaves.length; i++) {
-                  if (!this.active) return;
-                  try {
-                    const view = (leaves[i] as any).view;
-                    if (view && typeof view.refresh === 'function') {
-                      await view.refresh();
-                    } else if (view && typeof view.renderContent === 'function') {
-                      await view.renderContent();
-                    }
-                  } catch (e) {}
-                }
-              }
-            } catch (e) {}
-          });
-        } catch (e) {}
-      };
-    } catch (e) {
-      try { const N = (globalThis as any).Notice; if (typeof N === 'function') new N('Variable Links failed to load: ' + String(e)); } catch {}
+      }));
+    } catch (error) {
+      new Notice(`Variable Links failed to load: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  onunload() {
+  onunload(): void {
     this.active = false;
-    if (this.vaultModifyHandler) {
-      try { this.app.vault.off('modify', this.vaultModifyHandler); } catch (error) {}
-      this.vaultModifyHandler = null;
-    }
-    if (this.editorMenuHandler) {
-      try { (this.app.workspace as any).off('editor-menu', this.editorMenuHandler); } catch (error) {}
-      this.editorMenuHandler = null;
-    }
-    if (this.contextMenuHandler) {
-      try { document.removeEventListener('contextmenu', this.contextMenuHandler, true); } catch (error) {}
-      this.contextMenuHandler = null;
-    }
-    for (const timer of this.timers) clearTimeout(timer);
+    for (const timer of this.timers) window.clearTimeout(timer);
     this.timers.clear();
     this.clearContextMenuResources();
-    this.settingTab?.dispose();
     this.lastContextClick = null;
-    try { this.suggest?.close?.(); } catch (error) {}
+    this.suggest?.close();
     this.caretTracker?.stop();
     this.tokenCache?.stop();
     this.registry?.unload();
     this.renderer?.unload();
     this.livePreviewRenderer?.unload();
-
-    // Explicitly close plugin-owned views. registerView removes the factory,
-    // while this removes already-created ItemView instances and their DOM.
-    try {
-      const viewType = 'variable-links-panel';
-      (this.app.workspace as any).detachLeavesOfType?.(viewType);
-    } catch (error) {}
-
-    (this as any).onCaretVariableChanged = undefined;
     this.caretTracker = null;
     this.tokenCache = null;
     this.registry = null;
@@ -207,12 +137,59 @@ export default class VariableLinksPlugin extends Plugin {
     this.resolver = null;
     this.indexer = null;
     this.suggest = null;
-    this.settingTab = null;
   }
 
-  private schedule(callback: () => void, delay: number) {
+  onCaretVariableChanged(_last: LastTouched): void {
+    if (this.active) void this.refreshPanelViews();
+  }
+
+  async loadSettings(): Promise<void> {
+    const loaded: unknown = await this.loadData();
+    const saved = this.isRecord(loaded) ? loaded : {};
+    const defaultRegistryPath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/registry.json`;
+    this.settings = {
+      registryFilePath: typeof saved.registryFilePath === 'string'
+        ? saved.registryFilePath
+        : defaultRegistryPath,
+      enableInfoCards: typeof saved.enableInfoCards === 'boolean'
+        ? saved.enableInfoCards
+        : DEFAULT_SETTINGS.enableInfoCards,
+      openInNewPane: typeof saved.openInNewPane === 'boolean'
+        ? saved.openInNewPane
+        : DEFAULT_SETTINGS.openInNewPane,
+      suggestionFuzzy: typeof saved.suggestionFuzzy === 'boolean'
+        ? saved.suggestionFuzzy
+        : DEFAULT_SETTINGS.suggestionFuzzy,
+      defaultDateFormat: typeof saved.defaultDateFormat === 'string'
+        ? saved.defaultDateFormat
+        : DEFAULT_SETTINGS.defaultDateFormat,
+    };
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
+  }
+
+  async openVariableProperties(variableName?: string): Promise<void> {
+    if (!this.active) return;
+    const panelModule = await import('./panel');
+    if (!this.active) return;
+    let leaf: WorkspaceLeaf | null = this.app.workspace
+      .getLeavesOfType(panelModule.VIEW_TYPE_VARIABLE_PANEL)[0] ?? null;
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false);
+      if (!leaf) throw new Error('A sidebar could not be opened.');
+      await leaf.setViewState({ type: panelModule.VIEW_TYPE_VARIABLE_PANEL });
+    }
+    if (variableName && leaf.view instanceof panelModule.VariablePropertiesView) {
+      await leaf.view.selectVariable(variableName);
+    }
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  private schedule(callback: () => void, delay: number): number | null {
     if (!this.active) return null;
-    const timer = setTimeout(() => {
+    const timer = window.setTimeout(() => {
       this.timers.delete(timer);
       if (this.active) callback();
     }, delay);
@@ -220,208 +197,183 @@ export default class VariableLinksPlugin extends Plugin {
     return timer;
   }
 
-  async loadSettings() {
-    const saved = await this.loadData() || {};
-    const configDir = this.app.vault.configDir;
-    const pluginId = (this as any).manifest?.id || 'variable-links';
-    const defaultRegistryPath = `${configDir}/plugins/${pluginId}/registry.json`;
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, { registryFilePath: defaultRegistryPath }, saved);
-  }
-
-  async saveSettings() {
-    await this.saveData(this.settings);
-  }
-
-  async openVariableProperties(variableName?: string) {
-    if (!this.active) return;
-    const panelMod = await import('./panel');
-    if (!this.active) return;
-    let leaf: WorkspaceLeaf | null = this.app.workspace.getLeavesOfType(panelMod.VIEW_TYPE_VARIABLE_PANEL)[0] ?? null;
-    if (!leaf) {
-      leaf = this.app.workspace.getRightLeaf(false);
-      if (!leaf) throw new Error('A sidebar could not be opened.');
-      await leaf.setViewState({ type: panelMod.VIEW_TYPE_VARIABLE_PANEL });
-    }
-    if (variableName && leaf.view instanceof panelMod.VariablePropertiesView) {
-      await leaf.view.selectVariable(variableName);
-    }
-    this.app.workspace.revealLeaf(leaf);
-  }
-
-  private registerVariableContextMenu() {
-    if (typeof (this as any).registerDomEvent === 'function') {
-      this.contextMenuHandler = (event: MouseEvent) => {
-        if (!this.active) return;
-        this.lastContextClick = {
-          x: event.clientX,
-          y: event.clientY,
-          target: event.target,
-          time: Date.now()
-        };
+  private registerVariableContextMenu(): void {
+    this.registerDomEvent(document, 'contextmenu', (event) => {
+      if (!this.active) return;
+      this.lastContextClick = {
+        x: event.clientX,
+        y: event.clientY,
+        target: event.target instanceof Element ? event.target : null,
+        time: Date.now(),
       };
-      (this as any).registerDomEvent(document, 'contextmenu', this.contextMenuHandler, true);
-    }
+    }, true);
 
-    this.editorMenuHandler = (menu: any, editor: any) => {
+    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor) => {
       if (!this.active) return;
       this.clearContextMenuResources();
       const variableName = this.getContextVariableName(editor);
       const insertionPosition = this.getContextEditorPosition(editor);
       const definition = variableName ? this.registry?.getVariable(variableName) : null;
-      const isFavorite = definition?.favorite === true;
-      const favorites = Array.from(this.registry?.data?.entries?.() || [])
-        .filter((entry: any) => entry[1]?.favorite === true)
-        .map((entry: any) => String(entry[0]))
-        .sort((a, b) => a.localeCompare(b));
-      const allLinks = Array.from(this.registry?.data?.keys?.() || [])
-        .map((name: any) => String(name))
-        .sort((a, b) => a.localeCompare(b));
-      menu.addItem((parentItem: any) => {
-        parentItem.setTitle('Variable Links').setIcon('braces');
-        if (typeof parentItem.setSubmenu === 'function') {
-          const submenu = parentItem.setSubmenu();
-          submenu.addItem((item: any) => {
-            item.setTitle('Properties').setIcon('list').setDisabled(!variableName);
-            if (variableName) item.onClick(() => void this.openVariableProperties(variableName));
-          });
-          submenu.addItem((item: any) => {
-            item
-              .setTitle(isFavorite ? 'Unfavorite' : 'Favorite')
-              .setIcon('star')
-              .setDisabled(!definition);
-            if (definition && variableName) {
-              item.onClick(() => void this.setVariableFavorite(variableName, !isFavorite));
-            }
-          });
-          if (typeof submenu.addSeparator === 'function') submenu.addSeparator();
-          submenu.addItem((insertItem: any) => {
-            insertItem.setTitle('Insert Favorite').setIcon('text-cursor-input').setDisabled(!favorites.length);
-            if (!favorites.length || typeof insertItem.setSubmenu !== 'function') return;
-            const favoritesMenu = insertItem.setSubmenu();
-            this.enableNestedSubmenuSwitch(submenu, insertItem, favoritesMenu);
-            for (const favoriteName of favorites) {
-              favoritesMenu.addItem((item: any) => item
-                .setTitle(favoriteName)
-                .setIcon('star')
-                .onClick(() => this.insertVariable(editor, favoriteName, insertionPosition)));
-            }
-          });
-          submenu.addItem((insertItem: any) => {
-            insertItem.setTitle('Insert').setIcon('text-cursor-input').setDisabled(!allLinks.length);
-            if (!allLinks.length || typeof insertItem.setSubmenu !== 'function') return;
-            const linksMenu = insertItem.setSubmenu();
-            this.enableNestedSubmenuSwitch(submenu, insertItem, linksMenu);
-            for (const linkName of allLinks) {
-              linksMenu.addItem((item: any) => item
-                .setTitle(linkName)
-                .onClick(() => this.insertVariable(editor, linkName, insertionPosition)));
-            }
-          });
+      const favorites = Array.from(this.registry?.data.entries() ?? [])
+        .filter(([, item]) => item.favorite)
+        .map(([name]) => name)
+        .sort((left, right) => left.localeCompare(right));
+      const allLinks = Array.from(this.registry?.data.keys() ?? [])
+        .sort((left, right) => left.localeCompare(right));
+
+      menu.addItem((parentItem) => {
+        parentItem.setTitle('Variable links').setIcon('braces');
+        if (!this.hasSubmenu(parentItem)) {
+          parentItem.setTitle('Variable links: properties').setDisabled(!variableName);
+          if (variableName) {
+            parentItem.onClick(() => void this.openVariableProperties(variableName));
+          }
           return;
         }
 
-        // Older Obsidian versions do not expose nested menu items.
-        parentItem
-          .setTitle('Variable Links: Properties')
-          .setDisabled(!variableName);
-        if (variableName) parentItem.onClick(() => void this.openVariableProperties(variableName));
+        const submenu = parentItem.setSubmenu();
+        submenu.addItem((item) => {
+          item.setTitle('Properties').setIcon('list').setDisabled(!variableName);
+          if (variableName) item.onClick(() => void this.openVariableProperties(variableName));
+        });
+        submenu.addItem((item) => {
+          const favorite = definition?.favorite === true;
+          item.setTitle(favorite ? 'Unfavorite' : 'Favorite').setIcon('star').setDisabled(!definition);
+          if (definition && variableName) {
+            item.onClick(() => void this.setVariableFavorite(variableName, !favorite));
+          }
+        });
+        submenu.addSeparator();
+        this.addInsertMenu(submenu, 'Insert favorite', 'star', favorites, editor, insertionPosition);
+        this.addInsertMenu(submenu, 'Insert', 'text-cursor-input', allLinks, editor, insertionPosition);
       });
-    };
-    const eventRef = (this.app.workspace as any).on('editor-menu', this.editorMenuHandler);
-    if (typeof (this as any).registerEvent === 'function') (this as any).registerEvent(eventRef);
+    }));
   }
 
-  private getContextVariableName(editor: any): string | null {
-    const click = this.lastContextClick;
-    const recentClick = click && Date.now() - click.time < 1000 ? click : null;
-    if (recentClick) {
-      const tokenElement = recentClick.target?.closest?.('.variable-links-token[data-var]');
-      const renderedName = tokenElement?.dataset?.var?.trim();
-      if (renderedName) return renderedName;
-
-      return this.getVariableAtPosition(editor, this.getContextEditorPosition(editor));
-    }
-
-    return this.getVariableAtPosition(editor, editor?.getCursor?.());
+  private addInsertMenu(
+    menu: Menu,
+    title: string,
+    icon: string,
+    names: string[],
+    editor: Editor,
+    position: EditorPosition | null,
+  ): void {
+    menu.addItem((item) => {
+      item.setTitle(title).setIcon(icon).setDisabled(names.length === 0);
+      if (!names.length || !this.hasSubmenu(item)) return;
+      const submenu = item.setSubmenu();
+      this.enableNestedSubmenuSwitch(menu, item, submenu);
+      for (const name of names) {
+        submenu.addItem((linkItem) => {
+          linkItem.setTitle(name).onClick(() => this.insertVariable(editor, name, position));
+        });
+      }
+    });
   }
 
-  private getVariableAtPosition(editor: any, position: any): string | null {
-    if (!position || typeof position.line !== 'number' || typeof position.ch !== 'number') return null;
-    const line = editor?.getLine?.(position.line);
-    if (typeof line !== 'string') return null;
-    const pattern = /\{\{\s*([^\}\s]+)\s*\}\}/g;
+  private getContextVariableName(editor: Editor): string | null {
+    const click = this.getRecentContextClick();
+    const tokenElement = click?.target?.closest<HTMLElement>('.variable-links-token[data-var]');
+    const renderedName = tokenElement?.dataset.var?.trim();
+    if (renderedName) return renderedName;
+    return this.getVariableAtPosition(editor, this.getContextEditorPosition(editor));
+  }
+
+  private getVariableAtPosition(editor: Editor, position: EditorPosition | null): string | null {
+    if (!position) return null;
+    const line = editor.getLine(position.line);
+    const pattern = /\{\{\s*([^}\s]+)\s*}}/g;
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(line)) !== null) {
-      if (position.ch >= match.index && position.ch <= pattern.lastIndex) return match[1].trim();
+      const name = match[1];
+      if (name && position.ch >= match.index && position.ch <= pattern.lastIndex) return name.trim();
     }
     return null;
   }
 
-  private getContextEditorPosition(editor: any): any | null {
-    const click = this.lastContextClick;
-    const recentClick = click && Date.now() - click.time < 1000 ? click : null;
-    if (!recentClick) return editor?.getCursor?.() || null;
-    if (!recentClick.target?.closest?.('.cm-editor')) return null;
-    const offset = editor?.cm?.posAtCoords?.({ x: recentClick.x, y: recentClick.y });
-    if (typeof offset !== 'number') return null;
-    return typeof editor.offsetToPos === 'function'
-      ? editor.offsetToPos(offset)
-      : this.positionFromOffset(editor.getValue(), offset);
+  private getContextEditorPosition(editor: Editor): EditorPosition | null {
+    const click = this.getRecentContextClick();
+    if (!click) return editor.getCursor();
+    if (!click.target?.closest('.cm-editor')) return null;
+    const editorWithCoordinates = editor as EditorWithCoordinates;
+    const offset = editorWithCoordinates.cm?.posAtCoords?.({ x: click.x, y: click.y });
+    return typeof offset === 'number' ? editor.offsetToPos(offset) : editor.getCursor();
   }
 
-  private insertVariable(editor: any, variableName: string, contextPosition?: any) {
-    const position = contextPosition || editor?.getCursor?.();
-    if (!position || typeof editor?.replaceRange !== 'function') {
-      new Notice('Variable Links: the insertion position is unavailable.');
+  private insertVariable(editor: Editor, variableName: string, position: EditorPosition | null): void {
+    if (!position) {
+      new Notice('Insertion position unavailable.');
       return;
     }
     editor.replaceRange(`{{${variableName}}}`, position);
   }
 
-  /** Work around Obsidian retaining the first open sibling sub-submenu. */
-  private enableNestedSubmenuSwitch(parentMenu: any, item: any, itemSubmenu: any) {
-    const itemElement = item?.dom;
-    if (!itemElement?.addEventListener) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const onMouseEnter = () => {
-      const current = parentMenu?.currentSubmenu;
-      if (!current || current === itemSubmenu) return;
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = null;
-        if (!this.active || !itemElement.isConnected || !itemElement.matches?.(':hover')) return;
-        try {
-          if (typeof parentMenu.closeSubmenu === 'function') parentMenu.closeSubmenu();
-          else if (typeof current.hide === 'function') current.hide();
-          try { parentMenu.currentSubmenu = null; } catch (_) {}
+  private getRecentContextClick(): ContextClick | null {
+    return this.lastContextClick && Date.now() - this.lastContextClick.time < 1000
+      ? this.lastContextClick
+      : null;
+  }
 
-          const MouseEventCtor = itemElement.ownerDocument?.defaultView?.MouseEvent || MouseEvent;
-          itemElement.dispatchEvent(new MouseEventCtor('mouseover', { bubbles: true, cancelable: true }));
-        } catch (error) {}
-      }, 300);
+  private hasSubmenu(item: MenuItem): item is MenuItemWithSubmenu {
+    const candidate = item as Partial<MenuItemWithSubmenu>;
+    return typeof candidate.setSubmenu === 'function';
+  }
+
+  private enableNestedSubmenuSwitch(
+    parentMenu: Menu,
+    item: MenuItemWithSubmenu,
+    itemSubmenu: Menu,
+  ): void {
+    const itemElement = item.dom;
+    if (!itemElement) return;
+    const menuState = parentMenu as MenuWithSubmenuState;
+    let timer: number | null = null;
+    let cleaned = false;
+
+    const onMouseEnter = (): void => {
+      const current = menuState.currentSubmenu;
+      if (!current || current === itemSubmenu) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        if (!this.active || !itemElement.isConnected || !itemElement.matches(':hover')) return;
+        if (typeof menuState.closeSubmenu === 'function') menuState.closeSubmenu();
+        else current.hide();
+        menuState.currentSubmenu = undefined;
+
+        const MouseEventConstructor = itemElement.ownerDocument.defaultView?.MouseEvent ?? MouseEvent;
+        itemElement.dispatchEvent(new MouseEventConstructor('mouseover', {
+          bubbles: true,
+          cancelable: true,
+        }));
+      }, 100);
     };
-    const onMouseLeave = () => {
-      if (!timer) return;
-      clearTimeout(timer);
+    const onMouseLeave = (): void => {
+      if (timer === null) return;
+      window.clearTimeout(timer);
       timer = null;
     };
-    itemElement.addEventListener('mouseenter', onMouseEnter);
-    itemElement.addEventListener('mouseleave', onMouseLeave);
-    this.contextMenuCleanups.push(() => {
-      if (timer) clearTimeout(timer);
-      timer = null;
+    const cleanup = (): void => {
+      if (cleaned) return;
+      cleaned = true;
+      onMouseLeave();
       itemElement.removeEventListener('mouseenter', onMouseEnter);
       itemElement.removeEventListener('mouseleave', onMouseLeave);
-    });
+      const index = this.contextMenuCleanups.indexOf(cleanup);
+      if (index !== -1) this.contextMenuCleanups.splice(index, 1);
+    };
+
+    itemElement.addEventListener('mouseenter', onMouseEnter);
+    itemElement.addEventListener('mouseleave', onMouseLeave);
+    parentMenu.onHide(cleanup);
+    this.contextMenuCleanups.push(cleanup);
   }
 
-  private clearContextMenuResources() {
-    for (const cleanup of this.contextMenuCleanups.splice(0)) {
-      try { cleanup(); } catch (error) {}
-    }
+  private clearContextMenuResources(): void {
+    for (const cleanup of [...this.contextMenuCleanups]) cleanup();
   }
 
-  private async setVariableFavorite(variableName: string, favorite: boolean) {
+  private async setVariableFavorite(variableName: string, favorite: boolean): Promise<void> {
     const definition = this.registry?.getVariable(variableName);
     if (!definition || !this.registry) {
       new Notice(`Variable Links: {{${variableName}}} is not configured.`);
@@ -429,18 +381,24 @@ export default class VariableLinksPlugin extends Plugin {
     }
     try {
       await this.registry.saveVariable(variableName, { ...definition, favorite });
-      const panelMod = await import('./panel');
-      for (const leaf of this.app.workspace.getLeavesOfType(panelMod.VIEW_TYPE_VARIABLE_PANEL) || []) {
-        if (leaf.view instanceof panelMod.VariablePropertiesView) await leaf.view.refresh();
-      }
+      await this.refreshPanelViews();
       new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} {{${variableName}}}`);
     } catch (error) {
       new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  private positionFromOffset(text: string, offset: number) {
-    const before = text.slice(0, offset).split(/\r?\n/);
-    return { line: before.length - 1, ch: before[before.length - 1].length };
+  private async refreshPanelViews(): Promise<void> {
+    const panelModule = await import('./panel');
+    if (!this.active) return;
+    for (const leaf of this.app.workspace.getLeavesOfType(panelModule.VIEW_TYPE_VARIABLE_PANEL)) {
+      if (leaf.view instanceof panelModule.VariablePropertiesView) {
+        await leaf.view.refresh();
+      }
+    }
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 }

@@ -1,6 +1,7 @@
-import { App, TAbstractFile, TFile, parseYaml, stringifyYaml, Notice } from 'obsidian';
-import VariableLinksPlugin from './main';
-import { VariableLinksSettings } from './settings';
+import { App, EventRef, Notice, TFile, parseYaml, stringifyYaml } from 'obsidian';
+import type { CardConfig } from './card';
+import type VariableLinksPlugin from './main';
+import type { VariableLinksSettings } from './settings';
 
 export interface VariableDefinition {
   guid?: string;
@@ -8,8 +9,8 @@ export interface VariableDefinition {
   property: string;
   display?: string;
   favorite?: boolean;
-  card?: any;
-  format?: any;
+  card?: CardConfig;
+  format?: string;
 }
 
 export class Registry {
@@ -19,8 +20,8 @@ export class Registry {
   data: Map<string, VariableDefinition> = new Map();
   registryFile: TFile | null = null;
   registryPath: string = '';
-  modifyHandler: ((file: TAbstractFile) => void) | null = null;
-  private reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private modifyEvent: EventRef | null = null;
+  private reloadTimer: number | null = null;
   private active = true;
   private generation = 0;
 
@@ -38,7 +39,7 @@ export class Registry {
   }
 
   private async ensureAdapterFolders(path: string) {
-    const adapter = (this.app.vault as any).adapter;
+    const adapter = this.app.vault.adapter;
     const parts = path.split('/').slice(0, -1);
     let current = '';
     for (const part of parts) {
@@ -48,7 +49,7 @@ export class Registry {
   }
 
   private async createRegistry(path: string): Promise<TFile | null> {
-    const vault: any = this.app.vault;
+    const vault = this.app.vault;
     const configDir = vault.configDir;
     const hidden = path === configDir || path.startsWith(`${configDir}/`);
     const content = this.initialContent(path);
@@ -76,12 +77,12 @@ export class Registry {
     this.settings = this.plugin.settings;
     const path = this.settings.registryFilePath.replace(/\\/g, '/');
     if (!path) {
-      new Notice('Variable Links: registryFilePath not set');
+      new Notice('Registry file path is not set.');
       return;
     }
 
     this.registryPath = path;
-    const adapter = (this.app.vault as any).adapter;
+    const adapter = this.app.vault.adapter;
     let abstractFile = this.app.vault.getAbstractFileByPath(path);
     let file = abstractFile instanceof TFile ? abstractFile : null;
     if (!file && !await adapter.exists(path)) {
@@ -94,15 +95,15 @@ export class Registry {
 
     // Try to parse registry using intelligent handling based on extension and content
     const parsed = this.parseRegistryFromContent(content, path);
-    if (!parsed || typeof parsed !== 'object') {
+    if (!parsed) {
       new Notice('Variable Links: failed to parse registry from file: ' + path);
       this.data.clear();
       return;
     }
 
     const variableLinks = parsed['variable-links'];
-    if (!variableLinks || typeof variableLinks !== 'object') {
-      new Notice('Variable Links: no "variable-links" section in registry file');
+    if (!this.isRecord(variableLinks)) {
+      new Notice('Registry file has no "variable-links" section.');
       this.data.clear();
       return;
     }
@@ -111,8 +112,8 @@ export class Registry {
     const generatedGuids = new Map<string, string>();
     const usedGuids = new Set<string>();
     for (const [key, raw] of Object.entries(variableLinks)) {
-      if (typeof raw === 'object' && raw !== null) {
-        let guid = typeof (raw as any).guid === 'string' ? (raw as any).guid.trim() : '';
+      if (this.isRecord(raw)) {
+        let guid = typeof raw.guid === 'string' ? raw.guid.trim() : '';
         if (!guid || usedGuids.has(guid)) {
           do { guid = this.createGuid(); } while (usedGuids.has(guid));
           generatedGuids.set(String(key), guid);
@@ -120,12 +121,12 @@ export class Registry {
         usedGuids.add(guid);
         const def: VariableDefinition = {
           guid,
-          file: (raw as any).file,
-          property: (raw as any).property,
-          display: (raw as any).display,
-          favorite: (raw as any).favorite === true,
-          card: (raw as any).card,
-          format: (raw as any).format
+          file: typeof raw.file === 'string' ? raw.file : '',
+          property: typeof raw.property === 'string' ? raw.property : '',
+          display: typeof raw.display === 'string' ? raw.display : undefined,
+          favorite: raw.favorite === true,
+          card: this.toCardConfig(raw.card),
+          format: typeof raw.format === 'string' ? raw.format : undefined,
         };
         this.data.set(String(key), def);
       }
@@ -133,27 +134,27 @@ export class Registry {
     if (generatedGuids.size) {
       await this.mutateRegistryLinks((links) => {
         for (const [name, guid] of generatedGuids) {
-          if (links[name]) links[name].guid = guid;
+          const definition = links[name];
+          if (this.isRecord(definition)) definition.guid = guid;
         }
       });
       if (!this.isCurrent(generation)) return;
     }
 
     // register vault change listener to reload registry when the file is modified
-    if (this.modifyHandler) {
-      this.app.vault.off('modify', this.modifyHandler as any);
-      this.modifyHandler = null;
+    if (this.modifyEvent) {
+      this.app.vault.offref(this.modifyEvent);
+      this.modifyEvent = null;
     }
     if (file) {
-      this.modifyHandler = (f: TAbstractFile) => {
+      this.modifyEvent = this.app.vault.on('modify', (f) => {
         if (!this.active || !this.registryFile || f.path !== this.registryFile.path) return;
-        if (this.reloadTimer) clearTimeout(this.reloadTimer);
-        this.reloadTimer = setTimeout(() => {
+        if (this.reloadTimer) window.clearTimeout(this.reloadTimer);
+        this.reloadTimer = window.setTimeout(() => {
           this.reloadTimer = null;
           if (this.active) void this.load();
         }, 50);
-      };
-      this.app.vault.on('modify', this.modifyHandler);
+      });
     }
 
   }
@@ -162,12 +163,12 @@ export class Registry {
     this.active = false;
     this.generation++;
     if (this.reloadTimer) {
-      clearTimeout(this.reloadTimer);
+      window.clearTimeout(this.reloadTimer);
       this.reloadTimer = null;
     }
-    if (this.modifyHandler) {
-      this.app.vault.off('modify', this.modifyHandler as any);
-      this.modifyHandler = null;
+    if (this.modifyEvent) {
+      this.app.vault.offref(this.modifyEvent);
+      this.modifyEvent = null;
     }
   }
 
@@ -180,32 +181,34 @@ export class Registry {
   }
 
   private createGuid(): string {
-    if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+    if (typeof window.crypto?.randomUUID === 'function') return window.crypto.randomUUID();
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
       const random = Math.random() * 16 | 0;
       return (character === 'x' ? random : (random & 0x3 | 0x8)).toString(16);
     });
   }
 
-  private async mutateRegistryLinks(mutator: (links: any) => void) {
+  private async mutateRegistryLinks(mutator: (links: Record<string, unknown>) => void): Promise<void> {
     const file = this.registryFile;
-    const adapter = (this.app.vault as any).adapter;
+    const adapter = this.app.vault.adapter;
     const path = this.registryPath;
     const lowerPath = path.toLowerCase();
     if ((lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx'))
-      && file && typeof (this.app as any).fileManager?.processFrontMatter === 'function') {
-      await (this.app as any).fileManager.processFrontMatter(file, (frontmatter: any) => {
-        frontmatter['variable-links'] = frontmatter['variable-links'] || {};
-        mutator(frontmatter['variable-links']);
+      && file) {
+      await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+        const links = this.isRecord(frontmatter['variable-links']) ? frontmatter['variable-links'] : {};
+        frontmatter['variable-links'] = links;
+        mutator(links);
       });
       return;
     }
 
     const content = file ? await this.app.vault.read(file) : await adapter.read(path);
     const registry = this.parseRegistryFromContent(content, path);
-    if (!registry || typeof registry !== 'object') throw new Error('The registry must contain valid JSON or YAML.');
-    registry['variable-links'] = registry['variable-links'] || {};
-    mutator(registry['variable-links']);
+    if (!registry) throw new Error('The registry must contain valid JSON or YAML.');
+    const links = this.isRecord(registry['variable-links']) ? registry['variable-links'] : {};
+    registry['variable-links'] = links;
+    mutator(links);
     let updatedContent: string;
     if (lowerPath.endsWith('.json')) updatedContent = JSON.stringify(registry, null, 2) + '\n';
     else {
@@ -244,23 +247,24 @@ export class Registry {
     if (Object.prototype.hasOwnProperty.call(definition, 'card')) normalized.card = definition.card;
     if (Object.prototype.hasOwnProperty.call(definition, 'favorite')) normalized.favorite = definition.favorite === true;
     const rename = !!oldName && oldName !== variableName;
-    const tokenCache = (this.plugin as any).tokenCache;
+    const tokenCache = this.plugin.tokenCache;
     if (rename && !tokenCache) {
       throw new Error('The token cache is unavailable, so the rename was cancelled.');
     }
-    const renamePlan = rename && tokenCache ? await tokenCache.prepareRename(guid, oldName!, variableName) : null;
+    const renamePlan = rename && tokenCache ? await tokenCache.prepareRename(guid, oldName, variableName) : null;
 
     if (renamePlan) await renamePlan.apply();
     try {
       await this.mutateRegistryLinks((links) => {
-        const stored = links[oldName || variableName] || {};
-        const updated: any = { ...stored, ...normalized };
+        const current = links[oldName || variableName];
+        const stored: Record<string, unknown> = this.isRecord(current) ? current : {};
+        const updated: Record<string, unknown> = { ...stored, ...normalized };
         if (definition.display?.trim()) updated.display = definition.display.trim();
         else delete updated.display;
         if (Object.prototype.hasOwnProperty.call(definition, 'favorite') && !definition.favorite) delete updated.favorite;
         if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card) delete updated.card;
         links[variableName] = updated;
-        if (rename) delete links[oldName!];
+        if (rename) delete links[oldName];
       });
     } catch (error) {
       if (renamePlan) await renamePlan.rollback();
@@ -271,24 +275,30 @@ export class Registry {
     // indexes may be rebuilt, but must never roll note text back independently.
     try {
       await this.load();
-    } catch (error) {
-      new Notice('Variable Links: the rename was saved, but the registry view could not be refreshed. Reload Obsidian.');
+    } catch {
+      new Notice('The rename was saved, but the registry view could not be refreshed. Reload Obsidian.');
       return;
     }
     try {
-      await (this.plugin as any).indexer?.build();
-    } catch (error) {}
+      await this.plugin.indexer?.build();
+    } catch {
+      // The registry remains authoritative; derived indexes can rebuild later.
+    }
 
     if (renamePlan) {
       try {
         await renamePlan.commit();
-      } catch (error) {
-        try { await tokenCache.rebuild(); }
-        catch (rebuildError) {}
+      } catch {
+        try { await tokenCache?.rebuild(); }
+        catch {
+          // A later vault event will retry the cache rebuild.
+        }
       }
     } else if (!existing && tokenCache) {
       try { await tokenCache.rebuild(); }
-      catch (error) {}
+      catch {
+        // A later vault event will retry the cache rebuild.
+      }
     }
     this.plugin.livePreviewRenderer?.refresh();
   }
@@ -299,12 +309,12 @@ export class Registry {
     const guid = this.data.get(variableName)?.guid;
     await this.mutateRegistryLinks((links) => delete links[variableName]);
     await this.load();
-    await (this.plugin as any).indexer?.build();
-    if (guid) await (this.plugin as any).tokenCache?.removeGuid(guid);
+    await this.plugin.indexer?.build();
+    if (guid) await this.plugin.tokenCache?.removeGuid(guid);
     this.plugin.livePreviewRenderer?.refresh();
   }
 
-  extractFrontmatter(content: string): any | null {
+  extractFrontmatter(content: string): Record<string, unknown> | null {
     // find the leading YAML frontmatter block
     if (!content.startsWith('---')) return null;
     const parts = content.split(/\r?\n/);
@@ -316,23 +326,23 @@ export class Registry {
     if (end === -1) return null;
     const yamlLines = parts.slice(1, end).join('\n');
     try {
-      const parsed = parseYaml(yamlLines);
-      return parsed;
+      const parsed: unknown = parseYaml(yamlLines);
+      return this.isRecord(parsed) ? parsed : null;
     } catch (e) {
       new Notice('Variable Links: failed to parse registry YAML: ' + String(e));
       return null;
     }
   }
 
-  parseRegistryFromContent(content: string, filePath: string): any | null {
+  parseRegistryFromContent(content: string, filePath: string): Record<string, unknown> | null {
     // Determine by extension
     const lower = (filePath || '').toLowerCase();
     try {
       if (lower.endsWith('.json')) {
         // parse entire file as JSON
         try {
-          const obj = JSON.parse(content);
-          return obj;
+          const parsed: unknown = JSON.parse(content);
+          return this.isRecord(parsed) ? parsed : null;
         } catch (e) {
           new Notice('Variable Links: failed to parse JSON registry: ' + String(e));
           return null;
@@ -341,8 +351,8 @@ export class Registry {
 
       if (lower.endsWith('.yml') || lower.endsWith('.yaml')) {
         try {
-          const obj = parseYaml(content);
-          return obj;
+          const parsed: unknown = parseYaml(content);
+          return this.isRecord(parsed) ? parsed : null;
         } catch (e) {
           new Notice('Variable Links: failed to parse YAML registry: ' + String(e));
           return null;
@@ -362,13 +372,13 @@ export class Registry {
           const body = m[2];
           try {
             if (lang === 'json') {
-              const obj = JSON.parse(body);
-              if (obj && obj['variable-links']) return obj;
+              const parsed: unknown = JSON.parse(body);
+              if (this.isRegistryDocument(parsed)) return parsed;
             } else {
-              const obj = parseYaml(body);
-              if (obj && obj['variable-links']) return obj;
+              const parsed: unknown = parseYaml(body);
+              if (this.isRegistryDocument(parsed)) return parsed;
             }
-          } catch (e) {
+          } catch {
             // ignore parse errors here and keep looking
             continue;
           }
@@ -376,9 +386,9 @@ export class Registry {
 
         // As a last resort, try parsing entire file as YAML (some users may use pure YAML files saved as .md)
         try {
-          const obj = parseYaml(content);
-          if (obj && obj['variable-links']) return obj;
-        } catch (e) {
+          const parsed: unknown = parseYaml(content);
+          if (this.isRegistryDocument(parsed)) return parsed;
+        } catch {
           // ignore
         }
 
@@ -387,15 +397,15 @@ export class Registry {
 
       // Unknown extension — try YAML then JSON
       try {
-        const yamlObj = parseYaml(content);
-        if (yamlObj && yamlObj['variable-links']) return yamlObj;
-      } catch (e) {
+        const parsed: unknown = parseYaml(content);
+        if (this.isRegistryDocument(parsed)) return parsed;
+      } catch {
         // ignore
       }
       try {
-        const jsonObj = JSON.parse(content);
-        if (jsonObj && jsonObj['variable-links']) return jsonObj;
-      } catch (e) {
+        const parsed: unknown = JSON.parse(content);
+        if (this.isRegistryDocument(parsed)) return parsed;
+      } catch {
         // ignore
       }
 
@@ -404,6 +414,27 @@ export class Registry {
       new Notice('Variable Links: error parsing registry file: ' + String(e));
       return null;
     }
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private isRegistryDocument(value: unknown): value is Record<string, unknown> {
+    return this.isRecord(value) && this.isRecord(value['variable-links']);
+  }
+
+  private toCardConfig(value: unknown): CardConfig | undefined {
+    if (!this.isRecord(value)) return undefined;
+    const fields = Array.isArray(value.fields)
+      ? value.fields.filter((field): field is string => typeof field === 'string')
+      : undefined;
+    return {
+      title: typeof value.title === 'string' ? value.title : undefined,
+      note: typeof value.note === 'string' ? value.note : undefined,
+      fields,
+      showSourceLink: value.showSourceLink === true,
+    };
   }
 }
 

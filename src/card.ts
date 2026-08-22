@@ -1,4 +1,4 @@
-import { App, MarkdownRenderChild, MarkdownRenderer, parseYaml } from 'obsidian';
+import { App, MarkdownRenderChild, MarkdownRenderer, TFile, parseYaml } from 'obsidian';
 
 export interface CardConfig {
   title?: string;
@@ -7,188 +7,176 @@ export interface CardConfig {
   showSourceLink?: boolean;
 }
 
+type Frontmatter = Record<string, unknown>;
+
 export class InfoCard {
-  app: App;
-  el: HTMLElement | null = null;
-  hideTimeout: any = null;
+  private el: HTMLElement | null = null;
+  private hideTimeout: number | null = null;
   private animationFrame: number | null = null;
-  private renderChild: any = null;
+  private renderChild: MarkdownRenderChild | null = null;
   private generation = 0;
   private destroyed = false;
 
-  constructor(app: App) {
-    this.app = app;
-  }
+  constructor(private readonly app: App) {}
 
-  async showFor(targetEl: HTMLElement, sourceFilePath: string, cardConfig: CardConfig) {
+  async showFor(targetEl: HTMLElement, sourceFilePath: string, cardConfig: CardConfig): Promise<void> {
     if (this.destroyed) return;
     this.hideImmediate();
     const generation = this.generation;
 
-    // build container
-    const container = document.createElement('div');
-    container.className = 'variable-links-card';
+    const container = createDiv({ cls: 'variable-links-card' });
     this.el = container;
-    this.renderChild = new (MarkdownRenderChild as any)(container);
-    this.renderChild.load?.();
+    this.renderChild = new MarkdownRenderChild(container);
+    this.renderChild.load();
 
-    // Title
-    if (cardConfig?.title) {
-      const h = document.createElement('div');
-      h.className = 'variable-links-card-title';
-      h.textContent = cardConfig.title;
-      container.appendChild(h);
+    if (cardConfig.title) {
+      container.createDiv({ cls: 'variable-links-card-title', text: cardConfig.title });
     }
 
-    // Note
-    if (cardConfig?.note) {
-      const p = document.createElement('div');
-      p.className = 'variable-links-card-note';
-      // render as markdown for convenience
-      await MarkdownRenderer.renderMarkdown(cardConfig.note || '', p, '', this.renderChild);
+    if (cardConfig.note) {
+      const noteEl = createDiv({ cls: 'variable-links-card-note' });
+      await MarkdownRenderer.render(this.app, cardConfig.note, noteEl, sourceFilePath, this.renderChild);
       if (!this.isCurrent(container, generation)) return;
-      container.appendChild(p);
+      container.appendChild(noteEl);
     }
 
-    // Fields
-    if (cardConfig?.fields && cardConfig.fields.length > 0) {
-      const table = document.createElement('table');
-      table.className = 'variable-links-card-fields-table';
-      const tbody = document.createElement('tbody');
+    if (cardConfig.fields?.length) {
+      const table = createEl('table', { cls: 'variable-links-card-fields-table' });
+      const tbody = createEl('tbody');
 
       for (const fieldConfig of cardConfig.fields) {
         const external = fieldConfig.match(/^\[\[([^\]]+)\]\]#([^:]+)(?::([\s\S]*))?$/);
         const separator = external ? -1 : fieldConfig.indexOf(':');
-        const field = (external ? external[2] : separator === -1 ? fieldConfig : fieldConfig.slice(0, separator)).trim();
-        const customLabel = (external ? external[3] || '' : separator === -1 ? '' : fieldConfig.slice(separator + 1)).trim();
-        const fieldSourcePath = external ? external[1] : sourceFilePath;
-        const front = await this.getFrontmatter(fieldSourcePath);
+        const field = (external?.[2] ?? (separator === -1 ? fieldConfig : fieldConfig.slice(0, separator))).trim();
+        const customLabel = (external?.[3] ?? (separator === -1 ? '' : fieldConfig.slice(separator + 1))).trim();
+        const fieldSourcePath = external?.[1] ?? sourceFilePath;
+        const frontmatter = await this.getFrontmatter(fieldSourcePath);
         if (!this.isCurrent(container, generation)) return;
-        const row = document.createElement('tr');
-        const val = front?.[field];
-        const name = document.createElement('th');
-        name.className = 'variable-links-card-field-name';
+
+        const row = createEl('tr');
+        const name = createEl('th', {
+          cls: 'variable-links-card-field-name',
+          text: customLabel || this.toSentenceCase(field),
+        });
         name.scope = 'row';
-        name.textContent = customLabel || (field ? field.charAt(0).toUpperCase() + field.slice(1) : field);
-        const value = document.createElement('td');
-        value.className = 'variable-links-card-field-value';
-        if (typeof val === 'undefined') value.textContent = '(missing)';
-        else if (Array.isArray(val)) value.textContent = val.join(', ');
-        else if (typeof val === 'string') {
-          await MarkdownRenderer.renderMarkdown(val, value, '', this.renderChild);
+        const value = createEl('td', { cls: 'variable-links-card-field-value' });
+        const fieldValue = frontmatter?.[field];
+        if (fieldValue === undefined) {
+          value.textContent = '(Missing)';
+        } else if (Array.isArray(fieldValue)) {
+          value.textContent = fieldValue.map(String).join(', ');
+        } else if (typeof fieldValue === 'string') {
+          await MarkdownRenderer.render(this.app, fieldValue, value, fieldSourcePath, this.renderChild);
           if (!this.isCurrent(container, generation)) return;
+        } else if (fieldValue === null
+          || typeof fieldValue === 'boolean'
+          || typeof fieldValue === 'number'
+          || typeof fieldValue === 'bigint') {
+          value.textContent = String(fieldValue);
+        } else {
+          value.textContent = JSON.stringify(fieldValue);
         }
-        else value.textContent = String(val);
-        row.appendChild(name);
-        row.appendChild(value);
+        row.append(name, value);
         tbody.appendChild(row);
       }
       table.appendChild(tbody);
       container.appendChild(table);
     }
 
-    // Source link
-    if (cardConfig?.showSourceLink) {
-      const btn = document.createElement('div');
-      btn.className = 'variable-links-card-source';
-      const a = document.createElement('a');
-      a.href = '#';
-      a.textContent = 'Open source';
-      a.addEventListener('click', (e) => {
-        e.preventDefault();
-        try {
-          (this.app.workspace as any).openLinkText(sourceFilePath.replace(/\.md$/i, ''), '', false);
-        } catch (err) {
-          const file = (this.app.vault as any).getAbstractFileByPath(sourceFilePath);
-          if (file) (this.app.workspace as any).openFile(file);
-        }
+    if (cardConfig.showSourceLink) {
+      const source = container.createDiv({ cls: 'variable-links-card-source' });
+      const link = source.createEl('a', { text: 'Open source', href: '#' });
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        void this.app.workspace.openLinkText(sourceFilePath.replace(/\.md$/i, ''), '', false);
       });
-      btn.appendChild(a);
-      container.appendChild(btn);
     }
 
     if (!this.isCurrent(container, generation)) return;
-    document.body.appendChild(container);
-
-    // After element is in DOM, measure and position on next frame to allow proper layout
-    this.animationFrame = requestAnimationFrame(() => {
+    targetEl.ownerDocument.body.appendChild(container);
+    const activeWindow = targetEl.ownerDocument.defaultView ?? window;
+    this.animationFrame = window.requestAnimationFrame(() => {
       this.animationFrame = null;
       if (!this.isCurrent(container, generation) || !targetEl.isConnected) return;
-      // position near targetEl
       const rect = targetEl.getBoundingClientRect();
-      const top = rect.bottom + window.scrollY + 6;
-      // prefer aligning left with target, but ensure the card stays within viewport with an 12px margin
       const margin = 12;
-      let left = rect.left + window.scrollX;
-
-      // if card would overflow to the right, shift it left
+      const top = rect.bottom + activeWindow.scrollY + 6;
+      let left = rect.left + activeWindow.scrollX;
       const cardWidth = container.offsetWidth || container.getBoundingClientRect().width;
-      const maxRight = window.scrollX + window.innerWidth - margin;
+      const maxRight = activeWindow.scrollX + activeWindow.innerWidth - margin;
       if (left + cardWidth > maxRight) {
-        left = Math.max(margin + window.scrollX, maxRight - cardWidth);
+        left = Math.max(margin + activeWindow.scrollX, maxRight - cardWidth);
       }
-
-      // if card would overflow to the left, clamp
-      const minLeft = margin + window.scrollX;
-      if (left < minLeft) left = minLeft;
-
+      left = Math.max(left, margin + activeWindow.scrollX);
       container.style.top = `${top}px`;
       container.style.left = `${left}px`;
     });
 
-    // attach handlers to hide when mouse leaves
-    container.addEventListener('mouseenter', () => { this.clearHideTimeout(); });
-    container.addEventListener('mouseleave', () => { this.hideWithDelay(150); });
+    container.addEventListener('mouseenter', () => this.clearHideTimeout());
+    container.addEventListener('mouseleave', () => this.hideWithDelay(150));
   }
 
-  private async getFrontmatter(sourcePath: string): Promise<any> {
-    const linkPath = sourcePath.replace(/^\[\[|\]\]$/g, '').replace(/\.md$/i, '');
-    const cache = (this.app as any).metadataCache;
-    const file = cache?.getFirstLinkpathDest?.(linkPath, '')
-      || (this.app.vault as any).getAbstractFileByPath(/\.md$/i.test(sourcePath) ? sourcePath : `${sourcePath}.md`);
-    if (!file) return null;
-    const cached = cache?.getFileCache?.(file)?.frontmatter;
-    if (cached) return cached;
-    try {
-      const content = await (this.app.vault as any).read(file);
-      const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-      return match ? parseYaml(match[1]) : null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  hideWithDelay(ms = 150) {
+  hideWithDelay(ms = 150): void {
     if (this.destroyed) return;
     this.clearHideTimeout();
-    this.hideTimeout = setTimeout(() => this.hideImmediate(), ms);
+    this.hideTimeout = window.setTimeout(() => this.hideImmediate(), ms);
   }
-  clearHideTimeout() { if (this.hideTimeout) { clearTimeout(this.hideTimeout); this.hideTimeout = null; } }
 
-  hideImmediate() {
+  clearHideTimeout(): void {
+    if (this.hideTimeout === null) return;
+    window.clearTimeout(this.hideTimeout);
+    this.hideTimeout = null;
+  }
+
+  hideImmediate(): void {
     this.generation++;
     this.clearHideTimeout();
     if (this.animationFrame !== null) {
-      cancelAnimationFrame(this.animationFrame);
+      const activeWindow = this.el?.ownerDocument.defaultView ?? window;
+      activeWindow.cancelAnimationFrame(this.animationFrame);
       this.animationFrame = null;
     }
-    if (this.renderChild) {
-      try { this.renderChild.unload?.(); } catch (error) {}
-      this.renderChild = null;
-    }
-    if (this.el && this.el.parentElement) {
-      this.el.parentElement.removeChild(this.el);
-    }
+    this.renderChild?.unload();
+    this.renderChild = null;
+    this.el?.remove();
     this.el = null;
   }
 
-  destroy() {
+  destroy(): void {
     this.destroyed = true;
     this.hideImmediate();
   }
 
-  private isCurrent(container: HTMLElement, generation: number) {
+  private async getFrontmatter(sourcePath: string): Promise<Frontmatter | null> {
+    const linkPath = sourcePath.replace(/^\[\[|\]\]$/g, '').replace(/\.md$/i, '');
+    const directPath = /\.md$/i.test(sourcePath) ? sourcePath : `${sourcePath}.md`;
+    const file = this.app.metadataCache.getFirstLinkpathDest(linkPath, '')
+      ?? this.app.vault.getFileByPath(directPath);
+    if (!(file instanceof TFile)) return null;
+
+    const cached: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    if (this.isRecord(cached)) return cached;
+    try {
+      const content = await this.app.vault.read(file);
+      const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (!match?.[1]) return null;
+      const parsed: unknown = parseYaml(match[1]);
+      return this.isRecord(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private isCurrent(container: HTMLElement, generation: number): boolean {
     return !this.destroyed && this.el === container && this.generation === generation;
+  }
+
+  private isRecord(value: unknown): value is Frontmatter {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private toSentenceCase(value: string): string {
+    return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
   }
 }
 
