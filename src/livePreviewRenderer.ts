@@ -1,159 +1,188 @@
+import { App, Editor, MarkdownView } from 'obsidian';
+import { Extension, RangeSetBuilder, StateEffect } from '@codemirror/state';
+import {
+  Decoration,
+  DecorationSet,
+  EditorView,
+  ViewPlugin,
+  ViewUpdate,
+  WidgetType,
+} from '@codemirror/view';
 import Resolver from './resolver';
-import { Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
-import { RangeSetBuilder, StateEffect } from '@codemirror/state';
 
-const TOKEN_REGEX = /\{\{\s*([^\}\s]+)\s*\}\}/g;
+const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
 const refreshVariableLinks = StateEffect.define<void>();
 
-/**
- * Uses CodeMirror's native replacement decorations rather than positioned DOM
- * overlays. The original token remains in the document and is restored while
- * its range contains the editor selection.
- */
+interface EditorWithCodeMirror extends Editor {
+  cm?: EditorView;
+}
+
+interface PreviewMode {
+  rerender?: (force: boolean) => void;
+  renderer?: { rerender?: (force: boolean) => void };
+}
+
+type MarkdownViewInternals = MarkdownView & {
+  editor: EditorWithCodeMirror;
+  previewMode?: PreviewMode;
+};
+
 export default class LivePreviewRenderer {
-  private resolver: Resolver;
-  private app: any;
   private revision = 0;
   private active = true;
-  private timers = new Set<ReturnType<typeof setTimeout>>();
+  private timers = new Set<number>();
 
-  constructor(app: any, resolver: Resolver) {
-    this.app = app;
-    this.resolver = resolver;
-  }
+  constructor(
+    private readonly app: App,
+    private readonly resolver: Resolver,
+  ) {}
 
-  /** Force open Markdown panes to resolve their variables again. */
-  refresh() {
+  refresh(): void {
     if (!this.active) return;
     this.revision++;
-    const leaves = this.getMarkdownLeaves();
-
-    for (const leaf of leaves) {
-      const editorView = leaf?.view?.editor?.cm;
-      if (typeof editorView?.dispatch === 'function') {
-        try { editorView.dispatch({ effects: refreshVariableLinks.of(undefined) }); }
-        catch (error) {}
-      }
-
-      const previewMode = leaf?.view?.previewMode;
-      try {
-        if (typeof previewMode?.rerender === 'function') previewMode.rerender(true);
-        else if (typeof previewMode?.renderer?.rerender === 'function') previewMode.renderer.rerender(true);
-      } catch (error) {}
+    const views = this.getMarkdownViews();
+    for (const view of views) {
+      this.refreshEditor(view);
+      this.rerenderPreview(view);
     }
 
-    // File-change rendering can be queued just after a vault write. Run a
-    // second Reading View pass once that queue has settled.
-    const timer = setTimeout(() => {
+    const timer = window.setTimeout(() => {
       this.timers.delete(timer);
       if (!this.active) return;
-      for (const leaf of leaves) {
-        const previewMode = leaf?.view?.previewMode;
-        try {
-          if (typeof previewMode?.rerender === 'function') previewMode.rerender(true);
-          else if (typeof previewMode?.renderer?.rerender === 'function') previewMode.renderer.rerender(true);
-        } catch (error) {}
-      }
+      for (const view of views) this.rerenderPreview(view);
     }, 50);
     this.timers.add(timer);
   }
 
-  /** Cancel delayed work and remove this plugin's visible editor decorations. */
-  unload() {
+  unload(): void {
     if (!this.active) return;
     this.active = false;
     this.revision++;
-    for (const timer of this.timers) clearTimeout(timer);
+    for (const timer of this.timers) window.clearTimeout(timer);
     this.timers.clear();
-    for (const leaf of this.getMarkdownLeaves()) {
-      const editorView = leaf?.view?.editor?.cm;
-      try {
-        if (typeof editorView?.dispatch === 'function') {
-          editorView.dispatch({ effects: refreshVariableLinks.of(undefined) });
-        }
-      } catch (error) {}
-      const previewMode = leaf?.view?.previewMode;
-      try {
-        if (typeof previewMode?.rerender === 'function') previewMode.rerender(true);
-        else if (typeof previewMode?.renderer?.rerender === 'function') previewMode.renderer.rerender(true);
-      } catch (error) {}
+    for (const view of this.getMarkdownViews()) {
+      this.refreshEditor(view);
+      this.rerenderPreview(view);
     }
   }
 
-  private getMarkdownLeaves(): any[] {
-    const leaves: any[] = [];
-    if (typeof this.app.workspace?.iterateAllLeaves === 'function') {
-      this.app.workspace.iterateAllLeaves((leaf: any) => {
-        if (leaf?.view?.getViewType?.() === 'markdown') leaves.push(leaf);
-      });
-    } else leaves.push(...(this.app.workspace?.getLeavesOfType?.('markdown') || []));
-    return leaves;
-  }
-
-  createExtension(): any {
-    const renderer = this;
+  createExtension(): Extension {
+    const renderVariable = (name: string, el: HTMLElement): void => {
+      void this.resolveInto(name, el);
+    };
 
     class VariableWidget extends WidgetType {
-      constructor(private name: string, private revision: number) { super(); }
+      constructor(
+        private readonly name: string,
+        private readonly revision: number,
+        private readonly render: (name: string, el: HTMLElement) => void,
+      ) {
+        super();
+      }
 
-      eq(other: VariableWidget) { return other.name === this.name && other.revision === this.revision; }
+      eq(other: VariableWidget): boolean {
+        return other.name === this.name && other.revision === this.revision;
+      }
 
-      toDOM() {
-        const el = document.createElement('span');
-        el.className = 'variable-links-token variable-links-token-live-preview';
-        el.textContent = '…';
-        el.dataset.var = this.name;
-
-        void renderer.resolver.resolve(this.name).then((result: any) => {
-          if (!renderer.active) return;
-          if (!result.ok) {
-            el.textContent = `[Missing: ${this.name}]`;
-            el.classList.add('missing');
-            el.title = result.error || '';
-            return;
-          }
-          el.textContent = Array.isArray(result.value) ? result.value.join(', ') : String(result.value);
-        }).catch(() => {
-          if (!renderer.active) return;
-          el.textContent = `[Missing: ${this.name}]`;
-          el.classList.add('missing');
+      toDOM(): HTMLElement {
+        const el = createSpan({
+          cls: 'variable-links-token variable-links-token-live-preview',
+          text: '…',
         });
+        el.dataset.var = this.name;
+        this.render(this.name, el);
         return el;
       }
 
-      // Let CodeMirror process mouse and keyboard events, including moving the
-      // caret into this token so the source text becomes editable again.
-      ignoreEvent() { return false; }
+      ignoreEvent(): boolean {
+        return false;
+      }
     }
 
-    const buildDecorations = (view: any) => {
-      const builder = new RangeSetBuilder();
-      if (!renderer.active) return builder.finish();
+    const buildDecorations = (view: EditorView): DecorationSet => {
+      const builder = new RangeSetBuilder<Decoration>();
+      if (!this.active) return builder.finish();
       const text = view.state.doc.toString();
       const selection = view.state.selection.main;
       let match: RegExpExecArray | null;
       TOKEN_REGEX.lastIndex = 0;
       while ((match = TOKEN_REGEX.exec(text)) !== null) {
+        const name = match[1];
+        if (!name) continue;
         const from = match.index;
         const to = TOKEN_REGEX.lastIndex;
-        // Do not replace the token while the caret or selection touches it.
         if (selection.from <= to && selection.to >= from) continue;
-        builder.add(from, to, Decoration.replace({ widget: new VariableWidget(match[1].trim(), renderer.revision) }));
+        builder.add(from, to, Decoration.replace({
+          widget: new VariableWidget(name.trim(), this.revision, renderVariable),
+        }));
       }
       return builder.finish();
     };
 
     return ViewPlugin.fromClass(class {
-      decorations: any;
-      constructor(view: any) { this.decorations = buildDecorations(view); }
-      update(update: any) {
-        const refreshRequested = update.transactions.some((transaction: any) =>
-          transaction.effects.some((effect: any) => effect.is(refreshVariableLinks))
+      decorations: DecorationSet;
+
+      constructor(view: EditorView) {
+        this.decorations = buildDecorations(view);
+      }
+
+      update(update: ViewUpdate): void {
+        const refreshRequested = update.transactions.some((transaction) =>
+          transaction.effects.some((effect) => effect.is(refreshVariableLinks))
         );
         if (update.docChanged || update.selectionSet || update.viewportChanged || refreshRequested) {
           this.decorations = buildDecorations(update.view);
         }
       }
-    }, { decorations: (value: any) => value.decorations });
+    }, {
+      decorations: (value) => value.decorations,
+    });
+  }
+
+  private async resolveInto(name: string, el: HTMLElement): Promise<void> {
+    try {
+      const result = await this.resolver.resolve(name);
+      if (!this.active) return;
+      if (!result.ok) {
+        el.textContent = `[Missing: ${name}]`;
+        el.classList.add('missing');
+        el.title = result.error ?? '';
+        return;
+      }
+      el.textContent = Array.isArray(result.value)
+        ? result.value.map(String).join(', ')
+        : String(result.value);
+    } catch {
+      if (!this.active) return;
+      el.textContent = `[Missing: ${name}]`;
+      el.classList.add('missing');
+    }
+  }
+
+  private getMarkdownViews(): MarkdownViewInternals[] {
+    return this.app.workspace.getLeavesOfType('markdown')
+      .map((leaf) => leaf.view)
+      .filter((view): view is MarkdownView => view instanceof MarkdownView)
+      .map((view) => view as MarkdownViewInternals);
+  }
+
+  private refreshEditor(view: MarkdownViewInternals): void {
+    try {
+      view.editor.cm?.dispatch({ effects: refreshVariableLinks.of(undefined) });
+    } catch {
+      // The editor can disappear while a pane is being closed.
+    }
+  }
+
+  private rerenderPreview(view: MarkdownViewInternals): void {
+    try {
+      if (typeof view.previewMode?.rerender === 'function') {
+        view.previewMode.rerender(true);
+      } else {
+        view.previewMode?.renderer?.rerender?.(true);
+      }
+    } catch {
+      // Reading View may be transitioning between files.
+    }
   }
 }

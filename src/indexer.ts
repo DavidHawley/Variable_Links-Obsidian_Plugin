@@ -43,7 +43,7 @@ export class Indexer {
     }
   }
 
-  normalizeFile(raw: any): string | undefined {
+  normalizeFile(raw: unknown): string | undefined {
     if (!raw) return undefined;
     if (typeof raw !== 'string') return undefined;
     // already a wiki-link? strip [[ ]]

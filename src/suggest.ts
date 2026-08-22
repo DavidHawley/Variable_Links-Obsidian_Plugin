@@ -1,4 +1,13 @@
-import { App, EditorSuggest, Notice, TFile } from 'obsidian';
+import {
+  App,
+  Editor,
+  EditorPosition,
+  EditorSuggest,
+  EditorSuggestContext,
+  EditorSuggestTriggerInfo,
+  Notice,
+  TFile,
+} from 'obsidian';
 import Indexer from './indexer';
 import Registry from './registry';
 
@@ -10,20 +19,16 @@ interface SuggestItem {
   property?: string;
 }
 
-/** Suggest registry variables and unregistered frontmatter properties after {{. */
 export default class VariableSuggest extends EditorSuggest<SuggestItem> {
-  app: App;
-  indexer: Indexer;
-  registry: Registry;
-
-  constructor(app: App, indexer: Indexer, registry: Registry) {
+  constructor(
+    app: App,
+    private readonly indexer: Indexer,
+    private readonly registry: Registry,
+  ) {
     super(app);
-    this.app = app;
-    this.indexer = indexer;
-    this.registry = registry;
   }
 
-  onTrigger(cursor: any, editor: any, _file: TFile) {
+  onTrigger(cursor: EditorPosition, editor: Editor, _file: TFile | null): EditorSuggestTriggerInfo | null {
     const line = editor.getLine(cursor.line);
     const fromIndex = line.lastIndexOf('{{', cursor.ch - 1);
     if (fromIndex === -1) return null;
@@ -32,50 +37,58 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     return {
       start: { line: cursor.line, ch: fromIndex },
       end: { line: cursor.line, ch: cursor.ch },
-      query
+      query,
     };
   }
 
-  getSuggestions(context: { query: string }): SuggestItem[] {
-    const query = (context.query || '').toLowerCase();
-    const matches = (item: SuggestItem) => !query || [item.name, item.display, item.file, item.property]
-      .filter(Boolean).some((value) => String(value).toLowerCase().includes(query));
+  getSuggestions(context: EditorSuggestContext): SuggestItem[] {
+    const query = context.query.toLowerCase();
+    const matches = (item: SuggestItem): boolean => !query
+      || [item.name, item.display, item.file, item.property]
+        .filter((value): value is string => typeof value === 'string')
+        .some((value) => value.toLowerCase().includes(query));
     const variables: SuggestItem[] = Array.from(this.indexer.byName.values()).map((entry) => ({
-      name: entry.name, kind: 'variable', display: entry.def.display, file: entry.filePath, property: entry.def.property
+      name: entry.name,
+      kind: 'variable',
+      display: entry.def.display,
+      file: entry.filePath,
+      property: entry.def.property,
     }));
     const properties: SuggestItem[] = [];
-    const files = (this.app.vault as any).getMarkdownFiles?.() || [];
-    for (const file of files) {
-      const frontmatter = (this.app as any).metadataCache?.getFileCache?.(file)?.frontmatter;
-      if (!frontmatter) continue;
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const frontmatter: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (!this.isRecord(frontmatter)) continue;
       for (const property of Object.keys(frontmatter)) {
         const alreadyMapped = Array.from(this.indexer.byName.values()).some((entry) =>
           entry.filePath === file.path && entry.def.property === property
         );
-        if (alreadyMapped) continue;
-        properties.push({ name: property, kind: 'property', file: file.path, property });
+        if (!alreadyMapped) {
+          properties.push({ name: property, kind: 'property', file: file.path, property });
+        }
       }
     }
     return [...variables.filter(matches), ...properties.filter(matches)].slice(0, 100);
   }
 
-  renderSuggestion(item: SuggestItem, el: HTMLElement) {
-    const container = el as any;
-    container.createEl('div', { text: item.name });
+  renderSuggestion(item: SuggestItem, el: HTMLElement): void {
+    el.createDiv({ text: item.name });
     const detail = item.kind === 'variable'
-      ? `Variable · ${item.file || ''}${item.property ? ` • ${item.property}` : ''}`
-      : `Property · ${item.file || ''}`;
-    container.createEl('div', { text: detail, cls: 'suggest-meta' });
-    if (item.display) container.createEl('div', { text: String(item.display), cls: 'suggest-sub' });
+      ? `Variable · ${item.file ?? ''}${item.property ? ` • ${item.property}` : ''}`
+      : `Property · ${item.file ?? ''}`;
+    el.createDiv({ text: detail, cls: 'suggest-meta' });
+    if (item.display) el.createDiv({ text: item.display, cls: 'suggest-sub' });
   }
 
-  async selectSuggestion(item: SuggestItem, _event: MouseEvent | KeyboardEvent) {
-    const context = (this as any).context;
-    if (!context?.editor || !context?.start || !context?.end) return;
-    let variableName = item.name;
+  selectSuggestion(item: SuggestItem, _event: MouseEvent | KeyboardEvent): void {
+    const context = this.context;
+    if (!context) return;
+    void this.applySuggestion(item, context);
+  }
 
+  private async applySuggestion(item: SuggestItem, context: EditorSuggestContext): Promise<void> {
+    let variableName = item.name;
     if (item.kind === 'property') {
-      const base = (item.property || item.name)
+      const base = (item.property ?? item.name)
         .trim()
         .replace(/\s+/g, '_')
         .replace(/[{}]/g, '') || 'Variable';
@@ -87,12 +100,13 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
 
       try {
         await this.registry.saveVariable(variableName, {
-          file: item.file || '',
-          property: item.property || item.name,
-          display: item.property || item.name
+          file: item.file ?? '',
+          property: item.property ?? item.name,
+          display: item.property ?? item.name,
         });
       } catch (error) {
-        new Notice(`Variable Links: could not create ${variableName}: ${error instanceof Error ? error.message : String(error)}`);
+        const detail = error instanceof Error ? error.message : String(error);
+        new Notice(`Variable Links: could not create ${variableName}: ${detail}`);
         return;
       }
     }
@@ -102,7 +116,11 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     context.editor.replaceRange(
       hasAutoCloser ? `{{${variableName}` : `{{${variableName}}}`,
       context.start,
-      context.end
+      context.end,
     );
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 }

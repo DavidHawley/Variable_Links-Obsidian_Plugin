@@ -1,9 +1,9 @@
-import { App, TFile, parseYaml, Notice } from 'obsidian';
+import { App, TFile, parseYaml } from 'obsidian';
 import Registry from './registry';
 
 export interface ResolveResult {
   ok: boolean;
-  value?: any;
+  value?: unknown;
   type?: string;
   sourceFile?: TFile | null;
   property?: string;
@@ -25,7 +25,7 @@ export class Resolver {
       return { ok: false, error: `Variable '${variableName}' not found in registry` };
     }
 
-    let rawFile = def.file as string;
+    const rawFile = def.file;
     if (!rawFile) {
       return { ok: false, error: `Variable '${variableName}' has no file configured` };
     }
@@ -38,20 +38,20 @@ export class Resolver {
     }
     if (!/\.md$/i.test(path)) path = path + '.md';
 
-    const file = this.app.vault.getAbstractFileByPath(path) as TFile | null;
-    if (!file) {
+    const file = this.app.vault.getFileByPath(path);
+    if (!(file instanceof TFile)) {
       return { ok: false, error: `Source file not found: ${path}`, sourceFile: null };
     }
 
     // Prefer metadataCache
-    const cache = (this.app as any).metadataCache?.getFileCache?.(file) ?? null;
-    let front: any = cache?.frontmatter ?? null;
-    if (!front) {
+    const cached: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    let frontmatter = this.isRecord(cached) ? cached : null;
+    if (!frontmatter) {
       // fallback: read file and parse frontmatter
       try {
         const content = await this.app.vault.read(file);
         const fm = this.extractFrontmatter(content);
-        front = fm ?? {};
+        frontmatter = fm ?? {};
       } catch (e) {
         return { ok: false, error: `Failed to read source file: ${String(e)}`, sourceFile: file };
       }
@@ -62,7 +62,7 @@ export class Resolver {
       return { ok: false, error: `Variable '${variableName}' has no property configured`, sourceFile: file };
     }
 
-    const value = front?.[prop];
+    const value = frontmatter[prop];
     if (typeof value === 'undefined') {
       return { ok: false, error: `Property '${prop}' not found in ${path}`, sourceFile: file, property: prop };
     }
@@ -79,7 +79,7 @@ export class Resolver {
     return res;
   }
 
-  extractFrontmatter(content: string): any | null {
+  extractFrontmatter(content: string): Record<string, unknown> | null {
     if (!content.startsWith('---')) return null;
     const parts = content.split(/\r?\n/);
     let end = -1;
@@ -89,12 +89,15 @@ export class Resolver {
     if (end === -1) return null;
     const yamlLines = parts.slice(1, end).join('\n');
     try {
-      const parsed = parseYaml(yamlLines);
-      return parsed;
-    } catch (e) {
-      // parsing failure
+      const parsed: unknown = parseYaml(yamlLines);
+      return this.isRecord(parsed) ? parsed : null;
+    } catch {
       return null;
     }
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 }
 
