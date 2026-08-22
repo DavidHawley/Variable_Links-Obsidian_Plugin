@@ -6,7 +6,7 @@ All notable user-visible changes to Variable Links are recorded here.
 
 This section is reserved for new backward-compatible features.
 
-## 1.1.1 - Unreleased
+## 1.1.1 - 2026-08-22
 
 ### Fixed
 
