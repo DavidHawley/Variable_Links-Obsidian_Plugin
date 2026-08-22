@@ -45,8 +45,12 @@ Do not treat a successful build as a substitute for the smoke test.
 
 ## Pull Requests and Releases
 
-- Summarize user-visible changes and validation results in every pull request.
-- Prepare releases from `main` only after the corresponding branch is merged.
+- Do not create or open pull requests. When a branch is ready, tell the user that a pull request is needed.
+- Provide a suggested pull-request title and complete pull-request notes in a Markdown code block for the user to copy.
+- Include a summary of user-visible changes and validation results in the suggested pull-request notes.
+- Do not create or save draft releases. When a merged release is ready, tell the user that a release is needed.
+- Provide a suggested release title and complete end-user-facing release notes in a Markdown code block for the user to copy.
+- Prepare release notes for `main` only after the corresponding branch is merged.
 - Release assets are `main.js`, `manifest.json`, and `styles.css`.
-- The user performs the final pull-request merge and release publication unless they explicitly delegate those actions.
+- The user creates and merges pull requests and creates and publishes releases.
 - Never replace or delete an existing published release unless the user explicitly requests it.
