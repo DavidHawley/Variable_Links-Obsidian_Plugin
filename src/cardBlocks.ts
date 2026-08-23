@@ -19,6 +19,7 @@ export type CardBorderStyle = 'default' | 'none' | 'subtle' | 'accent';
 export type CardShadowStyle = 'none' | 'small' | 'medium' | 'large';
 export type CardBlockTone = 'none' | 'soft' | 'strong' | 'accent';
 export type CardBlockBorder = 'none' | 'outline' | 'divider';
+export type CardStackDirection = 'vertical' | 'horizontal';
 
 export interface CardStyleConfig {
   background?: CardBackgroundTone;
@@ -36,6 +37,14 @@ export interface CardBlockStyle {
   padding?: number;
   border?: CardBlockBorder;
   alignment?: CardTextAlignment;
+}
+
+export interface CardStackStyle {
+  tone?: CardBlockTone;
+  border?: 'outline';
+  padding?: number;
+  gap?: number;
+  radius?: number;
 }
 
 interface CardBlockBase {
@@ -76,12 +85,22 @@ export interface CardSourceBlock extends CardBlockBase {
   type: 'source';
 }
 
-export type CardBlock = CardTitleBlock
+export type CardContentBlock = CardTitleBlock
   | CardNoteBlock
   | CardPropertyBlock
   | CardPropertyTableBlock
   | CardDividerBlock
   | CardSourceBlock;
+
+export interface CardStackBlock extends CardBlockBase {
+  type: 'stack';
+  heading?: string;
+  direction?: CardStackDirection;
+  blocks: CardContentBlock[];
+  stackStyle?: CardStackStyle;
+}
+
+export type CardBlock = CardContentBlock | CardStackBlock;
 
 export interface LegacyCardFields {
   title?: string;
@@ -116,6 +135,7 @@ export function createCardBlock(type: CardBlock['type']): CardBlock {
   if (type === 'note') return { id, type, markdown: '' };
   if (type === 'property') return { id, type, property: createPropertyEntry() };
   if (type === 'property-table') return { id, type, properties: [] };
+  if (type === 'stack') return { id, type, blocks: [] };
   return { id, type };
 }
 
@@ -143,10 +163,11 @@ export function getActiveCardBlocks(card: CardLayoutFields): CardBlock[] {
 }
 
 export function deriveLegacyCardFields(blocks: CardBlock[]): LegacyCardFields {
-  const title = blocks.find((block): block is CardTitleBlock => block.type === 'title');
-  const note = blocks.find((block): block is CardNoteBlock => block.type === 'note');
+  const flattened = flattenCardBlocks(blocks);
+  const title = flattened.find((block): block is CardTitleBlock => block.type === 'title');
+  const note = flattened.find((block): block is CardNoteBlock => block.type === 'note');
   const fields: string[] = [];
-  for (const block of blocks) {
+  for (const block of flattened) {
     if (block.type === 'property') fields.push(block.property.reference);
     else if (block.type === 'property-table') {
       fields.push(...block.properties.map((property) => property.reference));
@@ -156,12 +177,20 @@ export function deriveLegacyCardFields(blocks: CardBlock[]): LegacyCardFields {
     title: title?.text || undefined,
     note: note?.markdown || undefined,
     fields: fields.length ? fields : undefined,
-    showSourceLink: blocks.some((block) => block.type === 'source') || undefined,
+    showSourceLink: flattened.some((block) => block.type === 'source') || undefined,
   };
 }
 
 export function cloneCardBlocks(blocks: CardBlock[]): CardBlock[] {
   return blocks.map((block) => {
+    if (block.type === 'stack') {
+      return {
+        ...block,
+        style: block.style ? { ...block.style } : undefined,
+        stackStyle: block.stackStyle ? { ...block.stackStyle } : undefined,
+        blocks: cloneCardBlocks(block.blocks) as CardContentBlock[],
+      };
+    }
     if (block.type === 'property-table') {
       return {
         ...block,
@@ -189,6 +218,15 @@ export function normalizeCardBlocks(value: unknown): CardBlock[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const usedBlockIds = new Set<string>();
   const usedPropertyIds = new Set<string>();
+  return normalizeCardBlockArray(value, usedBlockIds, usedPropertyIds, true);
+}
+
+function normalizeCardBlockArray(
+  value: unknown[],
+  usedBlockIds: Set<string>,
+  usedPropertyIds: Set<string>,
+  allowStacks: boolean,
+): CardBlock[] {
   const blocks: CardBlock[] = [];
   for (const raw of value) {
     if (!isRecord(raw) || typeof raw.type !== 'string') continue;
@@ -253,6 +291,22 @@ export function normalizeCardBlocks(value: unknown): CardBlock[] | undefined {
       blocks.push({ id, type: 'divider', ...normalizeBlockBase(raw) });
     } else if (raw.type === 'source') {
       blocks.push({ id, type: 'source', ...normalizeBlockBase(raw) });
+    } else if (raw.type === 'stack' && allowStacks) {
+      const children = Array.isArray(raw.blocks)
+        ? normalizeCardBlockArray(raw.blocks, usedBlockIds, usedPropertyIds, false)
+          .filter((block): block is CardContentBlock => block.type !== 'stack')
+        : [];
+      blocks.push({
+        id,
+        type: 'stack',
+        ...normalizeBlockBase(raw),
+        heading: typeof raw.heading === 'string' && raw.heading.trim()
+          ? raw.heading.trim().slice(0, 120)
+          : undefined,
+        direction: raw.direction === 'horizontal' ? 'horizontal' : undefined,
+        blocks: children,
+        stackStyle: normalizeCardStackStyle(raw.stackStyle),
+      });
     }
   }
   return blocks;
@@ -304,6 +358,19 @@ export function normalizeCardBlockStyle(value: unknown): CardBlockStyle | undefi
   if (value.border === 'outline' || value.border === 'divider') style.border = value.border;
   if (isTextAlignment(value.alignment)) style.alignment = value.alignment;
   style.padding = normalizeNumber(value.padding, 0, 24);
+  return Object.keys(style).length ? style : undefined;
+}
+
+export function normalizeCardStackStyle(value: unknown): CardStackStyle | undefined {
+  if (!isRecord(value)) return undefined;
+  const style: CardStackStyle = {};
+  if (value.tone === 'soft' || value.tone === 'strong' || value.tone === 'accent') {
+    style.tone = value.tone;
+  }
+  if (value.border === 'outline') style.border = value.border;
+  style.padding = normalizeNumber(value.padding, 0, 24);
+  style.gap = normalizeNumber(value.gap, 0, 24);
+  style.radius = normalizeNumber(value.radius, 0, 24);
   return Object.keys(style).length ? style : undefined;
 }
 
@@ -380,6 +447,10 @@ function isBorderStyle(value: unknown): value is CardBorderStyle {
 
 function isShadowStyle(value: unknown): value is CardShadowStyle {
   return value === 'none' || value === 'small' || value === 'medium' || value === 'large';
+}
+
+function flattenCardBlocks(blocks: CardBlock[]): CardContentBlock[] {
+  return blocks.flatMap((block) => block.type === 'stack' ? block.blocks : [block]);
 }
 
 function uniqueId(value: unknown, prefix: string, usedIds: Set<string>): string {

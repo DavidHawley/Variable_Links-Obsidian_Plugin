@@ -16,14 +16,18 @@ import {
   migrateLegacyCardBlocks,
   normalizeCardBlocks,
   normalizeCardBlockStyle,
+  normalizeCardStackStyle,
   normalizeCardStyle,
   type CardBlock,
   type CardBlockStyle,
   type CardBlockWidth,
+  type CardContentBlock,
   type CardGridColumns,
   type CardLayoutMode,
   type CardPropertyEntry,
   type CardPropertyTableBlock,
+  type CardStackBlock,
+  type CardStackStyle,
   type CardStyleConfig,
 } from './cardBlocks';
 import {
@@ -60,11 +64,13 @@ interface CardPropertyAppearanceClipboard {
 interface CardAppearanceClipboard {
   blockStyle?: CardBlockStyle;
   propertyStyle?: CardPropertyAppearanceClipboard;
+  stackStyle?: CardStackStyle;
 }
 
 interface CardAppearanceTarget {
   block?: CardBlock;
   property?: CardPropertyEntry;
+  stack?: CardStackBlock;
 }
 
 let cardAppearanceClipboard: CardAppearanceClipboard | null = null;
@@ -183,7 +189,7 @@ class InfoCardLayoutModal extends Modal {
   private undoButton: HTMLButtonElement | null = null;
   private collapsedBlockIds = new Set<string>();
   private collapsedPropertyIds = new Set<string>();
-  private draggedBlockId: string | null = null;
+  private draggedBlock: { blockId: string; stackId: string | null } | null = null;
   private draggedProperty: { blockId: string; propertyId: string } | null = null;
 
   constructor(
@@ -336,13 +342,13 @@ class InfoCardLayoutModal extends Modal {
 
     const list = this.contentEl.createDiv({ cls: 'variable-links-card-layout-list' });
     list.addEventListener('dragover', (event) => {
-      if (!this.draggedBlockId) return;
+      if (!this.canDropDraggedBlock(null)) return;
       event.preventDefault();
     });
     list.addEventListener('drop', (event) => {
-      if (!this.draggedBlockId || event.target !== list) return;
+      if (!this.canDropDraggedBlock(null) || event.target !== list) return;
       event.preventDefault();
-      this.dropBlockAt(this.blocks.length);
+      this.dropBlockAt(null, this.blocks.length);
     });
     if (!this.blocks.length) {
       list.createDiv({
@@ -350,7 +356,9 @@ class InfoCardLayoutModal extends Modal {
         text: 'No blocks yet. Add a block to build this Info Card.',
       });
     }
-    this.blocks.forEach((block, index) => this.renderBlock(list, block, index));
+    this.blocks.forEach((block, index) => {
+      this.renderBlock(list, block, index, this.blocks, null);
+    });
 
     const previewSection = this.contentEl.createDiv({ cls: 'variable-links-card-preview-section' });
     previewSection.createEl('h3', { text: 'Live preview' });
@@ -572,6 +580,7 @@ class InfoCardLayoutModal extends Modal {
       { type: 'property-table', label: 'Property table' },
       { type: 'divider', label: 'Divider' },
       { type: 'source', label: 'Source link' },
+      { type: 'stack', label: 'Stack container' },
     ];
     for (const item of blockTypes) {
       typeSelect.createEl('option', { text: item.label, value: item.type });
@@ -582,28 +591,35 @@ class InfoCardLayoutModal extends Modal {
       });
   }
 
-  private renderBlock(parent: HTMLElement, block: CardBlock, index: number): void {
+  private renderBlock(
+    parent: HTMLElement,
+    block: CardBlock,
+    index: number,
+    container: CardBlock[],
+    stackId: string | null,
+  ): void {
     const item = parent.createDiv({ cls: 'variable-links-card-layout-block' });
     this.attachAppearanceContextMenu(item, {
-      block,
+      block: block.type === 'stack' ? undefined : block,
       property: block.type === 'property' ? block.property : undefined,
+      stack: block.type === 'stack' ? block : undefined,
     });
     const collapsed = this.collapsedBlockIds.has(block.id);
     item.toggleClass('is-collapsed', collapsed);
     item.dataset.blockId = block.id;
     item.addEventListener('dragover', (event) => {
-      if (!this.draggedBlockId || this.draggedBlockId === block.id) return;
+      if (!this.canDropDraggedBlock(stackId) || this.draggedBlock?.blockId === block.id) return;
       event.preventDefault();
       event.stopPropagation();
       item.addClass('is-drag-target');
     });
     item.addEventListener('dragleave', () => item.removeClass('is-drag-target'));
     item.addEventListener('drop', (event) => {
-      if (!this.draggedBlockId || this.draggedBlockId === block.id) return;
+      if (!this.canDropDraggedBlock(stackId) || this.draggedBlock?.blockId === block.id) return;
       event.preventDefault();
       event.stopPropagation();
       const after = event.clientY > item.getBoundingClientRect().top + item.offsetHeight / 2;
-      this.dropBlockAt(index + (after ? 1 : 0));
+      this.dropBlockAt(stackId, index + (after ? 1 : 0));
     });
 
     const heading = item.createDiv({ cls: 'variable-links-card-layout-block-heading' });
@@ -626,13 +642,13 @@ class InfoCardLayoutModal extends Modal {
       attr: { type: 'button', draggable: 'true', 'aria-label': `Drag ${this.blockLabel(block)}` },
     });
     dragHandle.addEventListener('dragstart', (event) => {
-      this.draggedBlockId = block.id;
+      this.draggedBlock = { blockId: block.id, stackId };
       event.dataTransfer?.setData('text/plain', block.id);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
       item.addClass('is-dragging');
     });
     dragHandle.addEventListener('dragend', () => {
-      this.draggedBlockId = null;
+      this.draggedBlock = null;
       item.removeClass('is-dragging');
     });
     const editorHeading = title.createDiv({ cls: 'variable-links-card-editor-heading-text' });
@@ -645,12 +661,21 @@ class InfoCardLayoutModal extends Modal {
     });
 
     const controls = heading.createDiv({ cls: 'variable-links-card-layout-controls' });
-    if (this.layoutMode === 'grid') this.renderBlockWidthControl(controls, block);
-    this.renderMovementControls(controls, index, this.blocks.length, (destination) => {
-      this.moveBlock(index, destination);
+    if (this.layoutMode === 'grid' || stackId !== null) {
+      this.renderBlockWidthControl(controls, block);
+    }
+    this.renderMovementControls(controls, index, container.length, (destination) => {
+      this.moveBlock(container, index, destination);
     });
-    controls.createEl('button', { text: 'Remove', attr: { type: 'button' } })
-      .addEventListener('click', () => this.mutate(() => { this.blocks.splice(index, 1); }));
+    if (stackId !== null) {
+      controls.createEl('button', { text: 'Remove from stack', attr: { type: 'button' } })
+        .addEventListener('click', () => this.moveBlockOutOfStack(stackId, index));
+    }
+    const removeLabel = block.type === 'stack' ? 'Delete stack and its items' : 'Remove item';
+    controls.createEl('button', {
+      text: block.type === 'stack' ? 'Delete stack' : 'Remove',
+      attr: { type: 'button', title: removeLabel, 'aria-label': removeLabel },
+    }).addEventListener('click', () => this.mutate(() => { container.splice(index, 1); }));
 
     if (collapsed) return;
 
@@ -671,7 +696,11 @@ class InfoCardLayoutModal extends Modal {
       }
     });
 
-    this.renderBlockStyleControls(item, block);
+    if (block.type === 'stack') {
+      this.renderStackEditor(item, block);
+    } else {
+      this.renderBlockStyleControls(item, block);
+    }
 
     if (block.type === 'title') {
       const input = this.addModalInput(item, 'Title text:', block.text, 'Info Card title');
@@ -685,9 +714,11 @@ class InfoCardLayoutModal extends Modal {
       );
       this.bindTextEdit(input, (value) => { block.markdown = value; });
     } else if (block.type === 'property') {
-      this.renderStandalonePropertyEditor(item, block, index);
+      this.renderStandalonePropertyEditor(item, block, index, container);
     } else if (block.type === 'property-table') {
-      this.renderPropertyTableEditor(item, block, index);
+      this.renderPropertyTableEditor(item, block, index, container);
+    } else if (block.type === 'stack') {
+      return;
     } else if (block.type === 'divider') {
       item.createEl('hr');
     } else if (!this.sourceFilePath) {
@@ -774,10 +805,145 @@ class InfoCardLayoutModal extends Modal {
     });
   }
 
+  private renderStackEditor(parent: HTMLElement, block: CardStackBlock): void {
+    const heading = this.addModalInput(
+      parent,
+      'Visible heading:',
+      block.heading ?? '',
+      'Optional heading shown on the Info Card',
+    );
+    this.bindTextEdit(heading, (value) => { block.heading = value.trim() || undefined; });
+
+    const direction = this.addSelect(parent, 'Arrangement:', [
+      { value: 'vertical', label: 'Vertical' },
+      { value: 'horizontal', label: 'Horizontal' },
+    ], block.direction ?? 'vertical');
+    direction.addEventListener('change', () => {
+      this.recordHistory();
+      block.direction = direction.value === 'horizontal' ? 'horizontal' : undefined;
+      this.schedulePreview();
+    });
+
+    this.renderStackStyleControls(parent, block);
+
+    const children = parent.createDiv({ cls: 'variable-links-card-stack-editor-children' });
+    children.addEventListener('dragover', (event) => {
+      if (!this.canDropDraggedBlock(block.id)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      children.addClass('is-drag-target');
+    });
+    children.addEventListener('dragleave', (event) => {
+      if (event.relatedTarget instanceof Node && children.contains(event.relatedTarget)) return;
+      children.removeClass('is-drag-target');
+    });
+    children.addEventListener('drop', (event) => {
+      if (!this.canDropDraggedBlock(block.id)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      children.removeClass('is-drag-target');
+      this.dropBlockAt(block.id, block.blocks.length);
+    });
+    if (!block.blocks.length) {
+      children.createDiv({
+        cls: 'variable-links-card-stack-editor-empty',
+        text: 'Drop Card items here or add a new item below.',
+      });
+    }
+    block.blocks.forEach((child, index) => {
+      this.renderBlock(children, child, index, block.blocks, block.id);
+    });
+
+    const addRow = parent.createDiv({ cls: 'variable-links-card-layout-add' });
+    const type = addRow.createEl('select', { attr: { 'aria-label': 'Stack item type' } });
+    const types: Array<{ value: CardContentBlock['type']; label: string }> = [
+      { value: 'title', label: 'Title' },
+      { value: 'note', label: 'Note' },
+      { value: 'property', label: 'Property' },
+      { value: 'property-table', label: 'Property table' },
+      { value: 'divider', label: 'Divider' },
+      { value: 'source', label: 'Source link' },
+    ];
+    for (const option of types) {
+      type.createEl('option', { value: option.value, text: option.label });
+    }
+    addRow.createEl('button', { text: 'Add to stack', attr: { type: 'button' } })
+      .addEventListener('click', () => {
+        this.mutate(() => {
+          const child = createCardBlock(type.value as CardContentBlock['type']);
+          if (child.type !== 'stack') block.blocks.push(child);
+        });
+      });
+  }
+
+  private renderStackStyleControls(parent: HTMLElement, block: CardStackBlock): void {
+    const details = parent.createEl('details', { cls: 'variable-links-card-block-style-editor' });
+    details.createEl('summary', { text: 'Stack appearance' });
+    const controls = details.createDiv({ cls: 'variable-links-card-table-settings' });
+    const tone = this.addSelect(controls, 'Background:', [
+      { value: 'none', label: 'None' },
+      { value: 'soft', label: 'Soft' },
+      { value: 'strong', label: 'Strong' },
+      { value: 'accent', label: 'Accent tint' },
+    ], block.stackStyle?.tone ?? 'none');
+    tone.addEventListener('change', () => {
+      this.updateStackStyle(block, (style) => {
+        style.tone = tone.value === 'none'
+          ? undefined
+          : tone.value as CardStackStyle['tone'];
+      });
+    });
+
+    const border = this.addSelect(controls, 'Border:', [
+      { value: 'none', label: 'None' },
+      { value: 'outline', label: 'Outline' },
+    ], block.stackStyle?.border ?? 'none');
+    border.addEventListener('change', () => {
+      this.updateStackStyle(block, (style) => {
+        style.border = border.value === 'outline' ? 'outline' : undefined;
+      });
+    });
+
+    const sizes = [0, 4, 8, 12, 16, 24];
+    const padding = this.addSelect(controls, 'Padding:', [
+      { value: 'default', label: 'Default' },
+      ...sizes.map((value) => ({ value: String(value), label: `${value}px` })),
+    ], block.stackStyle?.padding === undefined ? 'default' : String(block.stackStyle.padding));
+    padding.addEventListener('change', () => {
+      this.updateStackStyle(block, (style) => {
+        style.padding = padding.value === 'default' ? undefined : Number(padding.value);
+      });
+    });
+
+    const spacing = this.addSelect(controls, 'Spacing:', [
+      { value: 'default', label: 'Default' },
+      ...sizes.map((value) => ({ value: String(value), label: `${value}px` })),
+    ], block.stackStyle?.gap === undefined ? 'default' : String(block.stackStyle.gap));
+    spacing.addEventListener('change', () => {
+      this.updateStackStyle(block, (style) => {
+        style.gap = spacing.value === 'default' ? undefined : Number(spacing.value);
+      });
+    });
+
+    const radius = this.addSelect(controls, 'Corner radius:', [
+      { value: 'default', label: 'Theme default' },
+      ...[0, 4, 8, 12, 16, 24].map((value) => ({
+        value: String(value),
+        label: `${value}px`,
+      })),
+    ], block.stackStyle?.radius === undefined ? 'default' : String(block.stackStyle.radius));
+    radius.addEventListener('change', () => {
+      this.updateStackStyle(block, (style) => {
+        style.radius = radius.value === 'default' ? undefined : Number(radius.value);
+      });
+    });
+  }
+
   private renderStandalonePropertyEditor(
     parent: HTMLElement,
     block: Extract<CardBlock, { type: 'property' }>,
     index: number,
+    container: CardBlock[],
   ): void {
     const input = this.addPropertyInput(parent, block.property);
     this.bindTextEdit(input, (value) => { block.property.reference = value; });
@@ -787,14 +953,14 @@ class InfoCardLayoutModal extends Modal {
           if (!block.property.editorLabel && block.editorLabel) {
             block.property.editorLabel = block.editorLabel;
           }
-          const table = this.blocks.find(
+          const table = container.find(
             (candidate): candidate is CardPropertyTableBlock => candidate.type === 'property-table',
           );
           if (table) {
             table.properties.push(block.property);
-            this.blocks.splice(index, 1);
+            container.splice(index, 1);
           } else {
-            this.blocks.splice(index, 1, {
+            container.splice(index, 1, {
               id: createCardBlock('property-table').id,
               type: 'property-table',
               properties: [block.property],
@@ -808,6 +974,7 @@ class InfoCardLayoutModal extends Modal {
     parent: HTMLElement,
     block: CardPropertyTableBlock,
     blockIndex: number,
+    container: CardBlock[],
   ): void {
     const tableSettings = parent.createDiv({ cls: 'variable-links-card-table-settings' });
     const columns = this.addSelect(tableSettings, 'Columns:', [1, 2, 3, 4].map((value) => ({
@@ -855,7 +1022,14 @@ class InfoCardLayoutModal extends Modal {
       properties.createDiv({ cls: 'variable-links-hint-text', text: 'This table has no properties.' });
     }
     block.properties.forEach((property, propertyIndex) => {
-      this.renderPropertyRow(properties, block, blockIndex, property, propertyIndex);
+      this.renderPropertyRow(
+        properties,
+        block,
+        blockIndex,
+        container,
+        property,
+        propertyIndex,
+      );
     });
     parent.createEl('button', { text: 'Add property', attr: { type: 'button' } })
       .addEventListener('click', () => {
@@ -873,6 +1047,7 @@ class InfoCardLayoutModal extends Modal {
     parent: HTMLElement,
     block: CardPropertyTableBlock,
     blockIndex: number,
+    container: CardBlock[],
     property: CardPropertyEntry,
     propertyIndex: number,
   ): void {
@@ -975,7 +1150,7 @@ class InfoCardLayoutModal extends Modal {
       .addEventListener('click', () => {
         this.mutate(() => {
           block.properties.splice(propertyIndex, 1);
-          this.blocks.splice(blockIndex + 1, 0, {
+          container.splice(blockIndex + 1, 0, {
             id: createCardBlock('property').id,
             type: 'property',
             editorLabel: property.editorLabel,
@@ -1195,6 +1370,7 @@ class InfoCardLayoutModal extends Modal {
         labelWidth: target.property.labelWidth,
       };
     }
+    if (target.stack) clipboard.stackStyle = { ...(target.stack.stackStyle ?? {}) };
     cardAppearanceClipboard = clipboard;
   }
 
@@ -1202,7 +1378,8 @@ class InfoCardLayoutModal extends Modal {
     if (!cardAppearanceClipboard) return false;
     return Boolean(
       (target.block && cardAppearanceClipboard.blockStyle)
-      || (target.property && cardAppearanceClipboard.propertyStyle),
+      || (target.property && cardAppearanceClipboard.propertyStyle)
+      || (target.stack && cardAppearanceClipboard.stackStyle),
     );
   }
 
@@ -1217,6 +1394,9 @@ class InfoCardLayoutModal extends Modal {
         target.property.labelPosition = clipboard.propertyStyle.labelPosition;
         target.property.alignment = clipboard.propertyStyle.alignment;
         target.property.labelWidth = clipboard.propertyStyle.labelWidth;
+      }
+      if (target.stack && clipboard.stackStyle) {
+        target.stack.stackStyle = normalizeCardStackStyle({ ...clipboard.stackStyle });
       }
     });
   }
@@ -1255,25 +1435,64 @@ class InfoCardLayoutModal extends Modal {
     button.addEventListener('click', move);
   }
 
-  private moveBlock(index: number, destination: number): void {
-    if (destination < 0 || destination >= this.blocks.length) return;
+  private moveBlock(container: CardBlock[], index: number, destination: number): void {
+    if (destination < 0 || destination >= container.length) return;
     if (destination === index) return;
     this.mutate(() => {
-      const [block] = this.blocks.splice(index, 1);
-      if (block) this.blocks.splice(destination, 0, block);
+      const [block] = container.splice(index, 1);
+      if (block) container.splice(destination, 0, block);
     });
   }
 
-  private dropBlockAt(destination: number): void {
-    const source = this.blocks.findIndex((block) => block.id === this.draggedBlockId);
+  private dropBlockAt(targetStackId: string | null, destination: number): void {
+    const dragged = this.draggedBlock;
+    if (!dragged || !this.canDropDraggedBlock(targetStackId)) return;
+    const sourceContainer = this.getBlockContainer(dragged.stackId);
+    const targetContainer = this.getBlockContainer(targetStackId);
+    if (!sourceContainer || !targetContainer) return;
+    const source = sourceContainer.findIndex((block) => block.id === dragged.blockId);
     if (source === -1) return;
     this.mutate(() => {
-      const [block] = this.blocks.splice(source, 1);
+      const [block] = sourceContainer.splice(source, 1);
       if (!block) return;
-      const adjusted = source < destination ? destination - 1 : destination;
-      this.blocks.splice(Math.max(0, Math.min(adjusted, this.blocks.length)), 0, block);
+      const adjusted = sourceContainer === targetContainer && source < destination
+        ? destination - 1
+        : destination;
+      targetContainer.splice(
+        Math.max(0, Math.min(adjusted, targetContainer.length)),
+        0,
+        block,
+      );
     });
-    this.draggedBlockId = null;
+    this.draggedBlock = null;
+  }
+
+  private canDropDraggedBlock(targetStackId: string | null): boolean {
+    const dragged = this.draggedBlock;
+    if (!dragged) return false;
+    const sourceContainer = this.getBlockContainer(dragged.stackId);
+    const block = sourceContainer?.find((candidate) => candidate.id === dragged.blockId);
+    return Boolean(block && (targetStackId === null || block.type !== 'stack'));
+  }
+
+  private getBlockContainer(stackId: string | null): CardBlock[] | null {
+    if (stackId === null) return this.blocks;
+    const stack = this.blocks.find(
+      (block): block is CardStackBlock => block.type === 'stack' && block.id === stackId,
+    );
+    return stack?.blocks ?? null;
+  }
+
+  private moveBlockOutOfStack(stackId: string, index: number): void {
+    const stackIndex = this.blocks.findIndex(
+      (block) => block.type === 'stack' && block.id === stackId,
+    );
+    const stack = this.blocks[stackIndex];
+    if (stackIndex === -1 || stack?.type !== 'stack') return;
+    this.mutate(() => {
+      const [block] = stack.blocks.splice(index, 1);
+      if (block) this.blocks.splice(stackIndex + 1, 0, block);
+    });
   }
 
   private moveProperty(
@@ -1306,16 +1525,8 @@ class InfoCardLayoutModal extends Modal {
 
   private dropProperty(targetBlockId: string, destination: number): void {
     if (!this.draggedProperty) return;
-    const sourceBlock = this.blocks.find(
-      (block): block is CardPropertyTableBlock => (
-        block.type === 'property-table' && block.id === this.draggedProperty?.blockId
-      ),
-    );
-    const targetBlock = this.blocks.find(
-      (block): block is CardPropertyTableBlock => (
-        block.type === 'property-table' && block.id === targetBlockId
-      ),
-    );
+    const sourceBlock = this.findPropertyTable(this.draggedProperty.blockId);
+    const targetBlock = this.findPropertyTable(targetBlockId);
     if (!sourceBlock || !targetBlock) return;
     const source = sourceBlock.properties.findIndex(
       (property) => property.id === this.draggedProperty?.propertyId,
@@ -1334,6 +1545,21 @@ class InfoCardLayoutModal extends Modal {
       );
     });
     this.draggedProperty = null;
+  }
+
+  private findPropertyTable(blockId: string): CardPropertyTableBlock | null {
+    for (const block of this.blocks) {
+      if (block.type === 'property-table' && block.id === blockId) return block;
+      if (block.type === 'stack') {
+        const table = block.blocks.find(
+          (child): child is CardPropertyTableBlock => (
+            child.type === 'property-table' && child.id === blockId
+          ),
+        );
+        if (table) return table;
+      }
+    }
+    return null;
   }
 
   private updateCardStyle(update: (style: CardStyleConfig) => void): void {
@@ -1355,6 +1581,17 @@ class InfoCardLayoutModal extends Modal {
     this.schedulePreview();
   }
 
+  private updateStackStyle(
+    block: CardStackBlock,
+    update: (style: CardStackStyle) => void,
+  ): void {
+    this.recordHistory();
+    const style = { ...(block.stackStyle ?? {}) };
+    update(style);
+    block.stackStyle = normalizeCardStackStyle(style);
+    this.schedulePreview();
+  }
+
   private applyPreset(preset: string): void {
     this.mutate(() => {
       this.layoutMode = preset === 'classic' ? 'stack' : 'grid';
@@ -1370,14 +1607,16 @@ class InfoCardLayoutModal extends Modal {
           maxWidth: preset === 'profile' ? 640 : 560,
           padding: preset === 'profile' ? 12 : 8,
         };
-      for (const block of this.blocks) {
+      for (const block of this.allCardBlocks()) {
         block.style = undefined;
-        if (preset === 'classic') {
+        const topLevel = this.blocks.includes(block);
+        if (!topLevel || preset === 'classic') {
           block.width = undefined;
         } else if (block.type === 'title'
           || block.type === 'source'
           || block.type === 'divider'
           || block.type === 'property-table'
+          || block.type === 'stack'
           || (preset === 'profile' && block.type === 'note')) {
           block.width = 'full';
         } else {
@@ -1388,6 +1627,7 @@ class InfoCardLayoutModal extends Modal {
           block.rowMode = undefined;
           block.rows = undefined;
         }
+        if (block.type === 'stack') block.stackStyle = undefined;
       }
     });
   }
@@ -1398,7 +1638,7 @@ class InfoCardLayoutModal extends Modal {
       this.gridColumns = 2;
       this.layoutGap = 0;
       this.cardStyle = {};
-      for (const block of this.blocks) {
+      for (const block of this.allCardBlocks()) {
         block.width = undefined;
         block.style = undefined;
         if (block.type === 'property') this.resetPropertyDisplay(block.property);
@@ -1407,6 +1647,10 @@ class InfoCardLayoutModal extends Modal {
           block.rowMode = undefined;
           block.rows = undefined;
           for (const property of block.properties) this.resetPropertyDisplay(property);
+        }
+        if (block.type === 'stack') {
+          block.direction = undefined;
+          block.stackStyle = undefined;
         }
       }
     });
@@ -1444,7 +1688,7 @@ class InfoCardLayoutModal extends Modal {
 
   private setAllItemsCollapsed(collapsed: boolean): void {
     if (collapsed) {
-      for (const block of this.blocks) {
+      for (const block of this.allCardBlocks()) {
         this.collapsedBlockIds.add(block.id);
         if (block.type === 'property-table') {
           for (const property of block.properties) {
@@ -1460,9 +1704,10 @@ class InfoCardLayoutModal extends Modal {
   }
 
   private pruneCollapsedItemIds(): void {
-    const blockIds = new Set(this.blocks.map((block) => block.id));
+    const blocks = this.allCardBlocks();
+    const blockIds = new Set(blocks.map((block) => block.id));
     const propertyIds = new Set<string>();
-    for (const block of this.blocks) {
+    for (const block of blocks) {
       if (block.type === 'property') propertyIds.add(block.property.id);
       if (block.type === 'property-table') {
         for (const property of block.properties) propertyIds.add(property.id);
@@ -1474,6 +1719,12 @@ class InfoCardLayoutModal extends Modal {
     for (const id of this.collapsedPropertyIds) {
       if (!propertyIds.has(id)) this.collapsedPropertyIds.delete(id);
     }
+  }
+
+  private allCardBlocks(): CardBlock[] {
+    return this.blocks.flatMap((block) => (
+      block.type === 'stack' ? [block, ...block.blocks] : [block]
+    ));
   }
 
   private rerenderPreservingScroll(): void {
@@ -1553,6 +1804,7 @@ class InfoCardLayoutModal extends Modal {
   private blockLabel(block: CardBlock): string {
     if (block.type === 'property-table') return 'Property table';
     if (block.type === 'source') return 'Source link';
+    if (block.type === 'stack') return 'Stack container';
     return block.type.charAt(0).toUpperCase() + block.type.slice(1);
   }
 
@@ -1570,6 +1822,10 @@ class InfoCardLayoutModal extends Modal {
     if (block.type === 'property-table') {
       const count = block.properties.length;
       return `Property table — ${count} ${count === 1 ? 'property' : 'properties'}`;
+    }
+    if (block.type === 'stack') {
+      const count = block.blocks.length;
+      return `Stack — ${count} ${count === 1 ? 'item' : 'items'}`;
     }
     return this.blockLabel(block);
   }
@@ -2353,6 +2609,7 @@ export class VariablePropertiesView extends ItemView {
   private cardBlockLabel(block: CardBlock): string {
     if (block.type === 'property-table') return 'Property table';
     if (block.type === 'source') return 'Source link';
+    if (block.type === 'stack') return `Stack (${block.blocks.length})`;
     return block.type.charAt(0).toUpperCase() + block.type.slice(1);
   }
 

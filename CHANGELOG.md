@@ -6,6 +6,7 @@ All notable user-visible changes to Variable Links are recorded here.
 
 ### Added
 
+- Added single-level Stack containers for grouping Card items vertically or horizontally with optional headings and independent appearance controls.
 - Added internal Copy appearance and Paste appearance actions for Card blocks and properties, with compatibility checks and Undo support.
 - Added persistent editor labels, independently collapsible Card items, and Collapse all/Expand all controls to the Info Card editor.
 - Added horizontal and vertical resizing to the Info Card editor window, with its size remembered when reopened.

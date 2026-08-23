@@ -5,6 +5,7 @@ import {
   type CardLayoutFields,
   type CardPropertyEntry,
   type CardPropertyTableBlock,
+  type CardStackBlock,
 } from './cardBlocks';
 
 export interface CardConfig extends CardLayoutFields {
@@ -80,13 +81,8 @@ export class InfoCard {
     preview = false,
   ): { container: HTMLElement; hydrate: Array<() => Promise<void>>; generation: number } | null {
     this.hideImmediate();
-    const blocks = getActiveCardBlocks(cardConfig).filter((block) => {
-      if (block.type === 'title') return Boolean(block.text);
-      if (block.type === 'note') return Boolean(block.markdown);
-      if (block.type === 'property-table') return block.properties.length > 0;
-      if (block.type === 'source') return Boolean(sourceFilePath);
-      return true;
-    });
+    const blocks = getActiveCardBlocks(cardConfig)
+      .filter((block) => this.isBlockVisible(block, sourceFilePath));
     if (!blocks.length) return null;
     const generation = this.generation;
     const useBlockLayout = cardConfig.useBlockLayout === true;
@@ -176,6 +172,18 @@ export class InfoCard {
     hydrate: Array<() => Promise<void>>,
     generation: number,
   ): void {
+    if (block.type === 'stack') {
+      this.renderStackBlock(
+        block,
+        host,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
+      return;
+    }
     if (block.type === 'title') {
       if (block.text) host.createDiv({ cls: 'variable-links-card-title', text: block.text });
       return;
@@ -234,6 +242,58 @@ export class InfoCard {
         void this.app.workspace.openLinkText(sourceFilePath.replace(/\.md$/i, ''), '', false);
       });
     }
+  }
+
+  private renderStackBlock(
+    block: CardStackBlock,
+    host: HTMLElement,
+    container: HTMLElement,
+    sourceFilePath: string,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    generation: number,
+  ): void {
+    const stack = host.createDiv({ cls: 'variable-links-card-stack' });
+    stack.dataset.direction = block.direction ?? 'vertical';
+    const style = block.stackStyle;
+    if (style?.tone) stack.addClass(`variable-links-card-stack-tone-${style.tone}`);
+    if (style?.border) stack.addClass(`variable-links-card-stack-border-${style.border}`);
+    if (style?.padding !== undefined) stack.style.padding = `${style.padding}px`;
+    if (style?.gap !== undefined) {
+      stack.style.setProperty('--variable-links-card-stack-gap', `${style.gap}px`);
+    }
+    if (style?.radius !== undefined) {
+      stack.style.setProperty('--variable-links-card-stack-radius', `${style.radius}px`);
+    }
+    if (block.heading) stack.createDiv({ cls: 'variable-links-card-stack-heading', text: block.heading });
+    const content = stack.createDiv({ cls: 'variable-links-card-stack-content' });
+    for (const child of block.blocks) {
+      if (!this.isBlockVisible(child, sourceFilePath)) continue;
+      const childHost = content.createDiv({ cls: 'variable-links-card-stack-item' });
+      childHost.dataset.width = child.width ?? 'auto';
+      if (child.style) this.applyBlockStyle(childHost, child);
+      this.renderBlock(
+        child,
+        childHost,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
+    }
+  }
+
+  private isBlockVisible(block: CardBlock, sourceFilePath: string): boolean {
+    if (block.type === 'title') return Boolean(block.text);
+    if (block.type === 'note') return Boolean(block.markdown);
+    if (block.type === 'property-table') return block.properties.length > 0;
+    if (block.type === 'source') return Boolean(sourceFilePath);
+    if (block.type === 'stack') {
+      return Boolean(block.heading)
+        || block.blocks.some((child) => this.isBlockVisible(child, sourceFilePath));
+    }
+    return true;
   }
 
   private renderStandaloneProperty(
