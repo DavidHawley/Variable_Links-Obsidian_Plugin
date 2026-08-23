@@ -1209,6 +1209,8 @@ export class VariablePropertiesView extends ItemView {
   private markdownChild: MarkdownRenderChild | null = null;
   private activeTab: PanelTab = 'link';
   private creatingVariableType: VariableType | null = null;
+  private variableEditorOpen = true;
+  private variableAppearanceOpen = true;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -1514,26 +1516,30 @@ export class VariablePropertiesView extends ItemView {
     });
     typeStatus.hidden = true;
 
-    const section = parent.createEl('details', { cls: 'variable-links-panel-editor' });
-    section.open = true;
-    section.createEl('summary', { text: title });
-    const form = section.createEl('form');
-    const nameInput = this.addInput(form, 'Variable name', name, 'e.g. customer');
+    const form = parent.createEl('form', { cls: 'variable-links-panel-variable-form' });
+    const editSection = form.createEl('details', { cls: 'variable-links-panel-editor' });
+    editSection.open = this.variableEditorOpen;
+    editSection.addEventListener('toggle', () => {
+      this.variableEditorOpen = editSection.open;
+    });
+    editSection.createEl('summary', { text: title });
+    const editControls = editSection.createDiv({ cls: 'variable-links-panel-section-content' });
+    const nameInput = this.addInput(editControls, 'Variable name', name, 'e.g. customer');
     const propertyLinkInput = this.addInput(
-      form,
+      editControls,
       'Property link',
       formatPropertyLink(definition.file, definition.property),
       '[[People/John Smith]]#company',
     );
     const propertyLinkRow = propertyLinkInput.parentElement;
     const fixedValueInput = this.addInput(
-      form,
+      editControls,
       'Value',
       definition.value ?? '',
       'Value displayed by this variable',
     );
     const fixedValueRow = fixedValueInput.parentElement;
-    const linkedValueRow = form.createDiv({
+    const linkedValueRow = editControls.createDiv({
       cls: 'variable-links-panel-linked-value',
       attr: { 'data-variable-links-ignore-dirty': 'true' },
     });
@@ -1544,7 +1550,7 @@ export class VariablePropertiesView extends ItemView {
       resolvedResult,
     );
     const fileLinkInput = this.addInput(
-      form,
+      editControls,
       'File link',
       toFileLink(
         definition.link ?? (activeType === 'property' ? definition.file : ''),
@@ -1556,7 +1562,7 @@ export class VariablePropertiesView extends ItemView {
     });
     this.attachFileLinkSuggestions(fileLinkInput);
     const displayInput = this.addInput(
-      form,
+      editControls,
       'Display name (optional)',
       definition.display ?? '',
       'e.g. John Smith',
@@ -1597,17 +1603,27 @@ export class VariablePropertiesView extends ItemView {
     updateTypeFields();
     let favoriteInput: HTMLInputElement | null = null;
     if (!existingVariable) {
-      const favoriteRow = form.createDiv({ cls: 'variable-links-panel-checkbox' });
+      const favoriteRow = editControls.createDiv({ cls: 'variable-links-panel-checkbox' });
       favoriteInput = favoriteRow.createEl('input', { type: 'checkbox' });
       favoriteInput.checked = definition.favorite === true;
       favoriteRow.createEl('label', { text: 'Favorite' });
     }
 
-    form.createEl('h5', { text: 'Variable appearance' });
+    const appearanceSection = form.createEl('details', {
+      cls: 'variable-links-panel-appearance',
+    });
+    appearanceSection.open = this.variableAppearanceOpen;
+    appearanceSection.addEventListener('toggle', () => {
+      this.variableAppearanceOpen = appearanceSection.open;
+    });
+    appearanceSection.createEl('summary', { text: 'Variable appearance' });
+    const appearanceControls = appearanceSection.createDiv({
+      cls: 'variable-links-panel-section-content',
+    });
     const defaultAppearance = getDefaultVariableAppearance(this.plugin.settings);
     const useDefaults = definition.appearance === undefined;
     const appearance = definition.appearance ?? defaultAppearance;
-    const defaultsRow = form.createDiv({ cls: 'variable-links-panel-appearance-defaults' });
+    const defaultsRow = appearanceControls.createDiv({ cls: 'variable-links-panel-appearance-defaults' });
     const useDefaultsInput = this.addInlineCheckbox(
       defaultsRow,
       'Use default appearance',
@@ -1617,17 +1633,17 @@ export class VariablePropertiesView extends ItemView {
       text: 'Restore defaults',
       attr: { type: 'button' },
     });
-    const emphasisRow = form.createDiv({ cls: 'variable-links-panel-appearance-options' });
+    const emphasisRow = appearanceControls.createDiv({ cls: 'variable-links-panel-appearance-options' });
     const boldInput = this.addInlineCheckbox(emphasisRow, 'Bold', appearance.bold === true);
     const italicInput = this.addInlineCheckbox(emphasisRow, 'Italic', appearance.italic === true);
-    const decorationRow = form.createDiv({ cls: 'variable-links-panel-field' });
+    const decorationRow = appearanceControls.createDiv({ cls: 'variable-links-panel-field' });
     decorationRow.createEl('label', { text: 'Decoration:' });
     const decorationInput = decorationRow.createEl('select');
     decorationInput.createEl('option', { text: 'Underline', value: 'underline' });
     decorationInput.createEl('option', { text: 'Highlight', value: 'highlight' });
     decorationInput.createEl('option', { text: 'None', value: 'none' });
     decorationInput.value = appearance.decoration ?? 'underline';
-    const colorRow = form.createDiv({ cls: 'variable-links-panel-decoration-color' });
+    const colorRow = appearanceControls.createDiv({ cls: 'variable-links-panel-decoration-color' });
     const customColorInput = this.addInlineCheckbox(
       colorRow,
       'Custom decoration color',
@@ -1638,7 +1654,7 @@ export class VariablePropertiesView extends ItemView {
       attr: { 'aria-label': 'Decoration color' },
     });
     colorInput.value = appearance.color ?? this.plugin.settings.defaultAppearanceColor;
-    const opacityRow = form.createDiv({ cls: 'variable-links-panel-opacity' });
+    const opacityRow = appearanceControls.createDiv({ cls: 'variable-links-panel-opacity' });
     opacityRow.createEl('label', { text: 'Decoration opacity:' });
     const opacityInput = opacityRow.createEl('input', {
       type: 'range',
@@ -1649,7 +1665,7 @@ export class VariablePropertiesView extends ItemView {
     opacityInput.addEventListener('input', () => {
       opacityValue.textContent = `${opacityInput.value}%`;
     });
-    const swatchRow = form.createDiv({ cls: 'variable-links-panel-color-swatches' });
+    const swatchRow = appearanceControls.createDiv({ cls: 'variable-links-panel-color-swatches' });
     const themeColorButton = swatchRow.createEl('button', {
       text: 'Theme',
       cls: 'variable-links-panel-theme-color',
@@ -2195,12 +2211,12 @@ export class VariablePropertiesView extends ItemView {
   }
 
   private addInput(
-    form: HTMLFormElement,
+    parent: HTMLElement,
     label: string,
     value: string,
     placeholder: string,
   ): HTMLInputElement {
-    const row = form.createDiv({ cls: 'variable-links-panel-field' });
+    const row = parent.createDiv({ cls: 'variable-links-panel-field' });
     row.createEl('label', { text: `${label}:` });
     const input = row.createEl('input', { type: 'text', placeholder });
     input.value = value;
@@ -2208,12 +2224,12 @@ export class VariablePropertiesView extends ItemView {
   }
 
   private addTextarea(
-    form: HTMLFormElement,
+    parent: HTMLElement,
     label: string,
     value: string,
     placeholder: string,
   ): HTMLTextAreaElement {
-    const row = form.createDiv({
+    const row = parent.createDiv({
       cls: 'variable-links-panel-field variable-links-panel-textarea-field',
     });
     row.createEl('label', { text: `${label}:` });

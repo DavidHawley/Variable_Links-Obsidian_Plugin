@@ -306,13 +306,16 @@
   cursor: text;
 }
 
-.variable-links-panel-editor {
+.variable-links-panel-editor,
+.variable-links-panel-appearance {
   margin-top: 12px;
 }
 
-.variable-links-panel-editor summary {
+.variable-links-panel-editor > summary,
+.variable-links-panel-appearance > summary {
   cursor: pointer;
   font-weight: var(--font-semibold);
+  text-transform: capitalize;
 }
 
 .variable-links-card-fields-table[data-columns]:not([data-columns='1']) {
@@ -371,7 +374,7 @@
 }
 
 .variable-links-panel-editor > summary,
-.variable-links-panel-editor form > h5 {
+.variable-links-panel-appearance > summary {
   box-sizing: border-box;
   width: calc(100% + 24px);
   margin-left: -12px;
@@ -381,12 +384,9 @@
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.variable-links-panel-editor > summary {
+.variable-links-panel-editor > summary,
+.variable-links-panel-appearance > summary {
   margin-bottom: 8px;
-}
-
-.variable-links-panel-editor form > h5 {
-  margin: 12px 0 8px;
 }
 
 .variable-links-panel-field {

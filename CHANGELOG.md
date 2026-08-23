@@ -23,6 +23,7 @@ All notable user-visible changes to Variable Links are recorded here.
 
 ### Changed
 
+- Made the Edit Variable and Variable Appearance sections independently collapsible in the Properties panel.
 - Improved the visual separation of section titles in the Variable Link Properties panel.
 - Live Preview Info Card delays can now be adjusted in quarter-second increments starting at one second.
 - Moved the Favorite control beside the selected Variable Link name and made changes save immediately.
