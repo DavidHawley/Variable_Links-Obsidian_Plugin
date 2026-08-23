@@ -325,11 +325,17 @@
     width: 100%;
   }
 
-  .variable-links-card-fields-table[data-columns]:not([data-columns='1']) th,
-  .variable-links-card-fields-table[data-columns]:not([data-columns='1']) td {
+  .variable-links-card.variable-links-card-layout-stack
+    .variable-links-card-fields-table[data-columns]:not([data-columns='1']) th,
+  .variable-links-card.variable-links-card-layout-stack
+    .variable-links-card-fields-table[data-columns]:not([data-columns='1']) td,
+  .variable-links-card.variable-links-card-layout-grid
+    .variable-links-card-fields-table[data-columns]:not([data-columns='1']) th,
+  .variable-links-card.variable-links-card-layout-grid
+    .variable-links-card-fields-table[data-columns]:not([data-columns='1']) td {
     display: block;
     box-sizing: border-box;
-    width: 100% !important;
+    width: 100%;
   }
 }
 
