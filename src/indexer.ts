@@ -1,5 +1,5 @@
 import { App } from 'obsidian';
-import Registry, { VariableDefinition } from './registry';
+import Registry, { getVariableType, VariableDefinition } from './registry';
 
 export interface VariableIndexEntry {
   name: string;
@@ -25,7 +25,8 @@ export class Indexer {
     this.byProperty.clear();
 
     for (const [name, def] of Array.from(this.registry.data.entries())) {
-      const filePath = this.normalizeFile(def.file);
+      const type = getVariableType(def);
+      const filePath = this.normalizeFile(type === 'fixed' ? def.link : def.file);
       const entry: VariableIndexEntry = { name, def, filePath };
       this.byName.set(name, entry);
 
@@ -35,7 +36,7 @@ export class Indexer {
         s.add(name);
       }
 
-      if (def.property) {
+      if (type === 'property' && def.property) {
         let ps = this.byProperty.get(def.property);
         if (!ps) { ps = new Set(); this.byProperty.set(def.property, ps); }
         ps.add(name);

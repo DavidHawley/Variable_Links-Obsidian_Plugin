@@ -6,22 +6,6 @@ This document records planned improvements to Variable Links. Plans may change a
 
 > **Scope closed:** The planned feature set for 1.2.0 is complete. Do not add further features to this release. Changes that clarify, implement, test, or correct the items already listed may still be made. Record additional feature ideas for a later version.
 
-### Configurable Info Card delays
-
-- Add a separate hover-delay setting for Reading View.
-- Default the Reading View delay to 0.5 seconds.
-- Let the Live Preview delay increase in 0.25-second increments, starting at 1 second.
-- Keep the Live Preview default at 3 seconds.
-- Preserve compatible delay values already saved by users.
-
-### Favorite control placement
-
-- Move the Favorite checkbox to the top right of the Link panel, beside the selected Variable Link name and above the mapping editor.
-- Save Favorite changes immediately without requiring the mapping form to be saved.
-- Keep a Favorite option available while creating a new variable.
-- Preserve the current Favorite state when a mapping is edited or renamed.
-- Keep the variable name and Favorite control usable when the sidebar is narrow.
-
 ### Info Card layout and style editor
 
 - Add a larger Info Card editor opened from the Card tab.
@@ -48,6 +32,18 @@ This document records planned improvements to Variable Links. Plans may change a
 - Prefer theme-aware colors and reusable presets.
 - Keep optional advanced CSS card-level rather than attaching raw CSS to every block.
 
+#### Stack container blocks
+
+- Add a Stack container item that can group normal Card items into a distinct section.
+- Keep Stack containers separate from the card-level Stack layout mode.
+- Allow items to be dragged into, out of, and between Stack containers, with a clear highlighted drop zone.
+- Give each Stack an identifier name, an optional visible heading, and an independently collapsible editor section.
+- Support vertical and horizontal item arrangements within a Stack.
+- Add Stack-level appearance controls for background, border, padding, spacing, and corner radius.
+- Provide Move to top, Move to end, Remove from Stack, and Delete Stack actions alongside drag and drop.
+- Preserve each Stack's contents, order, layout, and appearance when the editor is closed and reopened.
+- Limit the initial implementation to one level: Stack containers may contain normal Card items but not other Stack containers.
+
 #### Compatibility and safety
 
 - Automatically migrate the existing title, note, fields, and source link into the new block layout without changing how existing cards initially appear.
@@ -57,59 +53,39 @@ This document records planned improvements to Variable Links. Plans may change a
 
 #### Suggested implementation order
 
-1. Add the block-based card format, multiple notes, movable property items, migration, and non-drag movement controls.
-2. Add drag-and-drop ordering, Stack and Grid layouts, column spans, Property tables, live preview, and undo.
-3. Add card and block styling, starter layouts, restore controls, and accessibility and compatibility testing.
+1. **Completed:** Add the block-based card format, multiple notes, movable property items, migration, and non-drag movement controls.
+2. **Completed:** Add drag-and-drop ordering, Stack and Grid layouts, column spans, Property tables, live preview, and undo.
+3. **Completed:** Add card and block styling, starter layouts, restore controls, and accessibility and compatibility testing.
+4. **Completed:** Add single-level Stack container blocks for grouping, arranging, and styling related Card items.
 
-### Switch token submenu
+## 1.3.0
 
-- Add a Switch token submenu that is enabled only when the context menu is opened inside a complete Variable Link token.
-- Keep Switch token disabled outside tokens while Insert and Insert favorite remain available.
-- Keep Insert and Insert favorite disabled inside tokens.
-- Show the current token as a disabled item at the top of the submenu.
-- List favorite variables first with a star, followed by a separator and the remaining variables in alphabetical order.
-- Do not duplicate favorite variables in the regular list.
-- Disable Switch token when no alternative configured variables are available.
-- Replace the entire existing token with the selected token as one undoable editor action.
-- Move the caret to the end of the replacement token.
-- Allow missing or deleted tokens to be switched even when Properties and Favorite are unavailable.
-- Keep submenu entries limited to variable names so the menu remains compact and stable.
-- Consider adding Search all and a Switch Variable Link token command after the basic submenu is proven usable with large registries.
-- Test Source Mode, Live Preview, keyboard navigation, missing variables, multiple tokens on one line, line boundaries, favorites ordering, insertion disabling, caret placement, and Undo.
+### Custom Variable Link token syntax
 
-### Fixed and property value variables
+- Add Token prefix and Token suffix settings while keeping `{{` and `}}` as the defaults.
+- Show a live example of the resulting token format in Settings.
+- Treat configured prefix and suffix characters literally rather than as pattern syntax.
+- Centralize token parsing and formatting so Reading View, Live Preview, insertion, switching, caret detection, renaming, and token caching use the same rules.
 
-- Support two user-facing variable types: **Fixed value** and **Property value**.
-- Treat existing variables without a stored type as Property value variables so existing registries continue to work without manual migration.
-- Add **New fixed value** and **New property value** actions to the Variable Link selector dropdown.
-- Do not create or save a new variable until the user completes its form and confirms the normal save action.
+#### Validation and compatibility warnings
 
-#### Fixed value
+- Require nonempty prefix and suffix values that do not contain line breaks or consist only of whitespace.
+- Prevent identical prefix and suffix values and place a reasonable length limit on both fields.
+- Prevent variable names from containing the active prefix or suffix.
+- Warn about formats that conflict with Obsidian or Markdown syntax, including wikilinks, embeds, code markers, and comments.
+- Keep the existing default format fully compatible for users who do not change the settings.
 
-- Let the user enter a value directly instead of reading it from a note property.
-- Allow an optional file link; a fixed variable without one should display normally and do nothing when clicked.
-- Support the existing display name, Favorite, appearance, card, rename, insertion, and token-switching features.
-- Preserve text exactly as entered rather than automatically converting numbers, dates, checkboxes, or other value types.
-- Allow an intentionally empty fixed value.
+#### Changing formats and migration
 
-#### Property value
+- Show the current format, proposed format, and a sample token in a confirmation dialog before applying a change.
+- Offer Cancel, Use for new tokens only, and Migrate existing tokens actions.
+- Make Migrate existing tokens the recommended action.
+- Use the verified token cache to update only Variable Link tokens rather than replacing similar text indiscriminately.
+- Prepare changes before writing files, preserve rollback information, and leave the previous format active if migration cannot complete safely.
+- When Use for new tokens only is selected, recognize both the active and previous formats temporarily.
+- Provide a way to stop recognizing a previous format after migration or manual cleanup is complete.
 
-- Keep the current behavior of resolving the variable value from a property in a linked note.
-- Continue to require a valid property reference before a Property value variable can be saved.
-- Keep existing display name, Favorite, appearance, card, rename, insertion, and token-switching behavior.
+#### Testing
 
-#### Changing types safely
-
-- Add a Variable type dropdown to the properties panel for existing variables.
-- Show a confirmation dialog before changing the type, explain the effect of the change, and change nothing if the user cancels.
-- Treat a confirmed type selection as an unsaved form change; do not update the registry or rendered tokens until the user saves the form.
-- When changing from Property value to Fixed value, default to copying the currently resolved property value when no previous fixed value exists.
-- When changing from Fixed value to Property value, restore its previous property settings or show blank required property fields if none were previously saved.
-
-#### Data preservation and compatibility
-
-- Store an explicit variable type while retaining the fields for both types in the registry.
-- Hide inactive fields in the panel without deleting their saved values, allowing users to switch back without re-entering their previous information.
-- Keep the variable name, stable identifier, display name, Favorite state, appearance, card settings, and optional link data intact when its type changes.
-- Ensure only the active type's value source affects rendering and resolution.
-- Test new and existing registries, repeated type changes, canceled confirmations, unsaved changes, empty fixed values, optional file links, renamed variables, Favorites, Insert, Switch token, Source Mode, Live Preview, Reading View, and Info Cards.
+- Test custom formats in Source Mode, Live Preview, Reading View, Insert, Favorites, Switch token, Properties, renaming, missing variables, token caching, and Info Cards.
+- Test multiple active and legacy formats, migration cancellation, partial-write recovery, conflicting Markdown syntax, repeated tokens, and tokens at line boundaries.

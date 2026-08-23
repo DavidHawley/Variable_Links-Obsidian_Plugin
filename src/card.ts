@@ -1,10 +1,14 @@
 import { App, MarkdownRenderChild, MarkdownRenderer, TFile, parseYaml } from 'obsidian';
+import {
+  getActiveCardBlocks,
+  type CardBlock,
+  type CardLayoutFields,
+  type CardPropertyEntry,
+  type CardPropertyTableBlock,
+  type CardStackBlock,
+} from './cardBlocks';
 
-export interface CardConfig {
-  title?: string;
-  note?: string;
-  fields?: string[];
-  showSourceLink?: boolean;
+export interface CardConfig extends CardLayoutFields {
   disableLivePreviewHover?: boolean;
 }
 
@@ -33,83 +37,9 @@ export class InfoCard {
     pointer: CardPointerPosition,
   ): Promise<void> {
     if (this.destroyed) return;
-    this.hideImmediate();
-    const generation = this.generation;
-
-    const container = createDiv({ cls: 'variable-links-card' });
-    this.el = container;
-    const renderChild = new MarkdownRenderChild(container);
-    this.renderChild = renderChild;
-    renderChild.load();
-    const hydrate: Array<() => Promise<void>> = [];
-
-    if (cardConfig.title) {
-      container.createDiv({ cls: 'variable-links-card-title', text: cardConfig.title });
-    }
-
-    if (cardConfig.note) {
-      const noteEl = createDiv({ cls: 'variable-links-card-note' });
-      noteEl.textContent = '…';
-      container.appendChild(noteEl);
-      hydrate.push(async () => {
-        noteEl.replaceChildren();
-        await MarkdownRenderer.render(this.app, cardConfig.note ?? '', noteEl, sourceFilePath, renderChild);
-      });
-    }
-
-    if (cardConfig.fields?.length) {
-      const table = createEl('table', { cls: 'variable-links-card-fields-table' });
-      const tbody = createEl('tbody');
-
-      for (const fieldConfig of cardConfig.fields) {
-        const external = fieldConfig.match(/^\[\[([^\]]+)\]\]#([^:]+)(?::([\s\S]*))?$/);
-        const separator = external ? -1 : fieldConfig.indexOf(':');
-        const field = (external?.[2] ?? (separator === -1 ? fieldConfig : fieldConfig.slice(0, separator))).trim();
-        const customLabel = (external?.[3] ?? (separator === -1 ? '' : fieldConfig.slice(separator + 1))).trim();
-        const fieldSourcePath = external?.[1] ?? sourceFilePath;
-
-        const row = createEl('tr');
-        const name = createEl('th', {
-          cls: 'variable-links-card-field-name',
-          text: customLabel || this.toSentenceCase(field),
-        });
-        name.scope = 'row';
-        const value = createEl('td', { cls: 'variable-links-card-field-value', text: '…' });
-        row.append(name, value);
-        tbody.appendChild(row);
-        hydrate.push(async () => {
-          const frontmatter = await this.getFrontmatter(fieldSourcePath);
-          if (!this.isCurrent(container, generation)) return;
-          const fieldValue = frontmatter?.[field];
-          if (fieldValue === undefined) {
-            value.textContent = '(Missing)';
-          } else if (Array.isArray(fieldValue)) {
-            value.textContent = fieldValue.map(String).join(', ');
-          } else if (typeof fieldValue === 'string') {
-            value.replaceChildren();
-            await MarkdownRenderer.render(this.app, fieldValue, value, fieldSourcePath, renderChild);
-          } else if (fieldValue === null
-            || typeof fieldValue === 'boolean'
-            || typeof fieldValue === 'number'
-            || typeof fieldValue === 'bigint') {
-            value.textContent = String(fieldValue);
-          } else {
-            value.textContent = JSON.stringify(fieldValue);
-          }
-        });
-      }
-      table.appendChild(tbody);
-      container.appendChild(table);
-    }
-
-    if (cardConfig.showSourceLink) {
-      const source = container.createDiv({ cls: 'variable-links-card-source' });
-      const link = source.createEl('a', { text: 'Open source', href: '#' });
-      link.addEventListener('click', (event) => {
-        event.preventDefault();
-        void this.app.workspace.openLinkText(sourceFilePath.replace(/\.md$/i, ''), '', false);
-      });
-    }
+    const rendering = this.createCard(sourceFilePath, cardConfig);
+    if (!rendering) return;
+    const { container, hydrate, generation } = rendering;
 
     if (!this.isCurrent(container, generation)) return;
     targetEl.ownerDocument.body.appendChild(container);
@@ -124,6 +54,444 @@ export class InfoCard {
       if (!this.isCurrent(container, generation)) return;
       this.schedulePosition(targetEl, container, pointer, generation);
     }
+  }
+
+  async renderPreview(
+    parent: HTMLElement,
+    sourceFilePath: string,
+    cardConfig: CardConfig,
+  ): Promise<void> {
+    if (this.destroyed) return;
+    const rendering = this.createCard(sourceFilePath, cardConfig, true);
+    if (!rendering) {
+      parent.createDiv({ cls: 'variable-links-card-preview-empty', text: 'Nothing to preview yet.' });
+      return;
+    }
+    const { container, hydrate, generation } = rendering;
+    parent.appendChild(container);
+    for (const render of hydrate) {
+      await render();
+      if (!this.isCurrent(container, generation)) return;
+    }
+  }
+
+  private createCard(
+    sourceFilePath: string,
+    cardConfig: CardConfig,
+    preview = false,
+  ): { container: HTMLElement; hydrate: Array<() => Promise<void>>; generation: number } | null {
+    this.hideImmediate();
+    const blocks = getActiveCardBlocks(cardConfig)
+      .filter((block) => this.isBlockVisible(block, sourceFilePath));
+    if (!blocks.length) return null;
+    const generation = this.generation;
+    const useBlockLayout = cardConfig.useBlockLayout === true;
+    const layoutMode = useBlockLayout && cardConfig.layoutMode === 'grid' ? 'grid' : 'stack';
+    const gridColumns = cardConfig.gridColumns ?? 2;
+    const layoutGap = cardConfig.layoutGap ?? (layoutMode === 'grid' ? 8 : 0);
+    const classes = ['variable-links-card'];
+    if (useBlockLayout) {
+      classes.push(
+        `variable-links-card-layout-${layoutMode}`,
+        `variable-links-card-grid-columns-${gridColumns}`,
+      );
+    } else {
+      classes.push('variable-links-card-simple');
+    }
+    if (preview) classes.push('variable-links-card-preview');
+    const container = createDiv({ cls: classes.join(' ') });
+    if (useBlockLayout) this.applyCardStyle(container, cardConfig);
+    if (useBlockLayout) {
+      container.style.setProperty('--variable-links-card-layout-gap', `${layoutGap}px`);
+    }
+    this.el = container;
+    const renderChild = new MarkdownRenderChild(container);
+    this.renderChild = renderChild;
+    renderChild.load();
+    const hydrate: Array<() => Promise<void>> = [];
+    for (const block of blocks) {
+      const wrapBlock = layoutMode === 'grid' || Boolean(useBlockLayout && block.style);
+      const host = wrapBlock
+        ? container.createDiv({ cls: 'variable-links-card-block' })
+        : container;
+      if (layoutMode === 'grid') host.dataset.width = block.width ?? 'auto';
+      if (wrapBlock) this.applyBlockStyle(host, block);
+      this.renderBlock(
+        block,
+        host,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
+    }
+    return { container, hydrate, generation };
+  }
+
+  private applyCardStyle(container: HTMLElement, cardConfig: CardConfig): void {
+    const style = cardConfig.cardStyle;
+    if (!style) return;
+    if (style.background && style.background !== 'default') {
+      container.addClass(`variable-links-card-background-${style.background}`);
+    }
+    if (style.border && style.border !== 'default') {
+      container.addClass(`variable-links-card-border-${style.border}`);
+    }
+    if (style.shadow) container.addClass(`variable-links-card-shadow-${style.shadow}`);
+    if (style.alignment) container.addClass(`variable-links-card-align-${style.alignment}`);
+    if (style.radius !== undefined) {
+      container.style.setProperty('--variable-links-card-radius', `${style.radius}px`);
+    }
+    if (style.maxWidth !== undefined) {
+      container.style.setProperty('--variable-links-card-max-width', `${style.maxWidth}px`);
+      container.addClass('variable-links-card-custom-width');
+    }
+    if (style.padding !== undefined) {
+      container.style.setProperty('--variable-links-card-padding', `${style.padding}px`);
+    }
+    for (const cssClass of style.cssClasses ?? []) container.addClass(cssClass);
+  }
+
+  private applyBlockStyle(host: HTMLElement, block: CardBlock): void {
+    const style = block.style;
+    if (!style) return;
+    host.addClass('variable-links-card-block-styled');
+    if (style.tone) host.addClass(`variable-links-card-block-tone-${style.tone}`);
+    if (style.border) host.addClass(`variable-links-card-block-border-${style.border}`);
+    if (style.alignment) host.addClass(`variable-links-card-block-align-${style.alignment}`);
+    if (style.padding !== undefined) host.style.padding = `${style.padding}px`;
+  }
+
+  private renderBlock(
+    block: CardBlock,
+    host: HTMLElement,
+    container: HTMLElement,
+    sourceFilePath: string,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    generation: number,
+  ): void {
+    if (block.type === 'stack') {
+      this.renderStackBlock(
+        block,
+        host,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
+      return;
+    }
+    if (block.type === 'title') {
+      if (block.text) host.createDiv({ cls: 'variable-links-card-title', text: block.text });
+      return;
+    }
+    if (block.type === 'note') {
+      if (!block.markdown) return;
+      const noteEl = createDiv({ cls: 'variable-links-card-note' });
+      noteEl.textContent = '…';
+      host.appendChild(noteEl);
+      hydrate.push(async () => {
+        noteEl.replaceChildren();
+        await MarkdownRenderer.render(
+          this.app,
+          block.markdown,
+          noteEl,
+          sourceFilePath,
+          renderChild,
+        );
+      });
+      return;
+    }
+    if (block.type === 'property') {
+      this.renderStandaloneProperty(
+        block.property,
+        host,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
+      return;
+    }
+    if (block.type === 'property-table') {
+      if (!block.properties.length) return;
+      this.renderPropertyTable(
+        block,
+        host,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
+      return;
+    }
+    if (block.type === 'divider') {
+      host.createEl('hr', { cls: 'variable-links-card-divider' });
+      return;
+    }
+    if (block.type === 'source' && sourceFilePath) {
+      const source = host.createDiv({ cls: 'variable-links-card-source' });
+      const link = source.createEl('a', { text: 'Open source', href: '#' });
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        void this.app.workspace.openLinkText(sourceFilePath.replace(/\.md$/i, ''), '', false);
+      });
+    }
+  }
+
+  private renderStackBlock(
+    block: CardStackBlock,
+    host: HTMLElement,
+    container: HTMLElement,
+    sourceFilePath: string,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    generation: number,
+  ): void {
+    const stack = host.createDiv({ cls: 'variable-links-card-stack' });
+    stack.dataset.direction = block.direction ?? 'vertical';
+    const style = block.stackStyle;
+    if (style?.tone) stack.addClass(`variable-links-card-stack-tone-${style.tone}`);
+    if (style?.border) stack.addClass(`variable-links-card-stack-border-${style.border}`);
+    if (style?.padding !== undefined) stack.style.padding = `${style.padding}px`;
+    if (style?.gap !== undefined) {
+      stack.style.setProperty('--variable-links-card-stack-gap', `${style.gap}px`);
+    }
+    if (style?.radius !== undefined) {
+      stack.style.setProperty('--variable-links-card-stack-radius', `${style.radius}px`);
+    }
+    if (block.heading) stack.createDiv({ cls: 'variable-links-card-stack-heading', text: block.heading });
+    const content = stack.createDiv({ cls: 'variable-links-card-stack-content' });
+    for (const child of block.blocks) {
+      if (!this.isBlockVisible(child, sourceFilePath)) continue;
+      const childHost = content.createDiv({ cls: 'variable-links-card-stack-item' });
+      childHost.dataset.width = child.width ?? 'auto';
+      if (child.style) this.applyBlockStyle(childHost, child);
+      this.renderBlock(
+        child,
+        childHost,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
+    }
+  }
+
+  private isBlockVisible(block: CardBlock, sourceFilePath: string): boolean {
+    if (block.type === 'title') return Boolean(block.text);
+    if (block.type === 'note') return Boolean(block.markdown);
+    if (block.type === 'property-table') return block.properties.length > 0;
+    if (block.type === 'source') return Boolean(sourceFilePath);
+    if (block.type === 'stack') {
+      return Boolean(block.heading)
+        || block.blocks.some((child) => this.isBlockVisible(child, sourceFilePath));
+    }
+    return true;
+  }
+
+  private renderStandaloneProperty(
+    property: CardPropertyEntry,
+    host: HTMLElement,
+    container: HTMLElement,
+    sourceFilePath: string,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    generation: number,
+  ): void {
+    const wrapper = createDiv({ cls: 'variable-links-card-property' });
+    const parsed = this.parsePropertyReference(property.reference, sourceFilePath);
+    wrapper.dataset.labelPosition = property.labelPosition ?? 'left';
+    if (property.alignment) wrapper.dataset.alignment = property.alignment;
+    if (property.labelWidth !== undefined) {
+      wrapper.style.setProperty('--variable-links-card-label-width', `${property.labelWidth}%`);
+    }
+    const name = property.labelPosition === 'hidden'
+      ? null
+      : createDiv({
+        cls: 'variable-links-card-property-name',
+        text: (property.label ?? parsed.label) || this.toSentenceCase(parsed.field),
+      });
+    const value = createDiv({ cls: 'variable-links-card-property-value', text: '…' });
+    if (name) wrapper.append(name, value);
+    else wrapper.append(value);
+    host.appendChild(wrapper);
+    this.queuePropertyHydration(
+      parsed,
+      value,
+      container,
+      renderChild,
+      hydrate,
+      generation,
+    );
+  }
+
+  private renderPropertyTable(
+    block: CardPropertyTableBlock,
+    host: HTMLElement,
+    container: HTMLElement,
+    sourceFilePath: string,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    generation: number,
+  ): void {
+    const columns = block.columns ?? 1;
+    const contentRows = Math.ceil(block.properties.length / columns);
+    const rowCount = block.rowMode === 'fixed'
+      ? Math.max(contentRows, block.rows ?? 1)
+      : contentRows;
+    const table = createEl('table', { cls: 'variable-links-card-fields-table' });
+    table.dataset.columns = String(columns);
+    const tbody = createEl('tbody');
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+      const row = createEl('tr');
+      for (let columnIndex = 0; columnIndex < columns; columnIndex++) {
+        const property = block.properties[rowIndex * columns + columnIndex];
+        if (property) {
+          this.renderPropertyCells(
+            property,
+            row,
+            sourceFilePath,
+            renderChild,
+            hydrate,
+            container,
+            generation,
+          );
+        } else {
+          const emptyCell = createEl('td', { cls: 'variable-links-card-field-empty' });
+          emptyCell.colSpan = 2;
+          emptyCell.setAttribute('aria-hidden', 'true');
+          row.appendChild(emptyCell);
+        }
+      }
+      tbody.appendChild(row);
+    }
+    table.appendChild(tbody);
+    host.appendChild(table);
+  }
+
+  private renderPropertyCells(
+    property: CardPropertyEntry,
+    row: HTMLTableRowElement,
+    sourceFilePath: string,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    container: HTMLElement,
+    generation: number,
+  ): void {
+    const parsed = this.parsePropertyReference(property.reference, sourceFilePath);
+    const label = (property.label ?? parsed.label) || this.toSentenceCase(parsed.field);
+    if (property.labelPosition === 'above') {
+      const cell = createEl('td', { cls: 'variable-links-card-field-cell' });
+      cell.colSpan = 2;
+      const wrapper = cell.createDiv({ cls: 'variable-links-card-property' });
+      wrapper.dataset.labelPosition = 'above';
+      if (property.alignment) wrapper.dataset.alignment = property.alignment;
+      wrapper.createDiv({ cls: 'variable-links-card-property-name', text: label });
+      const value = wrapper.createDiv({ cls: 'variable-links-card-property-value', text: '…' });
+      row.appendChild(cell);
+      this.queuePropertyHydration(
+        parsed,
+        value,
+        container,
+        renderChild,
+        hydrate,
+        generation,
+      );
+      return;
+    }
+    if (property.labelPosition === 'hidden') {
+      const value = createEl('td', { cls: 'variable-links-card-field-value', text: '…' });
+      value.colSpan = 2;
+      if (property.alignment) value.style.textAlign = property.alignment;
+      row.appendChild(value);
+      this.queuePropertyHydration(
+        parsed,
+        value,
+        container,
+        renderChild,
+        hydrate,
+        generation,
+      );
+      return;
+    }
+    const name = createEl('th', {
+      cls: 'variable-links-card-field-name',
+      text: label,
+    });
+    name.scope = 'row';
+    const value = createEl('td', { cls: 'variable-links-card-field-value', text: '…' });
+    if (property.labelWidth !== undefined) name.style.width = `${property.labelWidth}%`;
+    if (property.alignment) {
+      name.style.textAlign = property.alignment;
+      value.style.textAlign = property.alignment;
+    }
+    row.append(name, value);
+    this.queuePropertyHydration(
+      parsed,
+      value,
+      container,
+      renderChild,
+      hydrate,
+      generation,
+    );
+  }
+
+  private queuePropertyHydration(
+    property: { field: string; label: string; sourcePath: string },
+    value: HTMLElement,
+    container: HTMLElement,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    generation: number,
+  ): void {
+    hydrate.push(async () => {
+      const frontmatter = await this.getFrontmatter(property.sourcePath);
+      if (!this.isCurrent(container, generation)) return;
+      const fieldValue = frontmatter?.[property.field];
+      if (fieldValue === undefined) {
+        value.textContent = '(Missing)';
+      } else if (Array.isArray(fieldValue)) {
+        value.textContent = fieldValue.map(String).join(', ');
+      } else if (typeof fieldValue === 'string') {
+        value.replaceChildren();
+        await MarkdownRenderer.render(
+          this.app,
+          fieldValue,
+          value,
+          property.sourcePath,
+          renderChild,
+        );
+      } else if (fieldValue === null
+        || typeof fieldValue === 'boolean'
+        || typeof fieldValue === 'number'
+        || typeof fieldValue === 'bigint') {
+        value.textContent = String(fieldValue);
+      } else {
+        value.textContent = JSON.stringify(fieldValue);
+      }
+    });
+  }
+
+  private parsePropertyReference(
+    reference: string,
+    sourceFilePath: string,
+  ): { field: string; label: string; sourcePath: string } {
+    const external = reference.match(/^\[\[([^\]]+)\]\]#([^:]+)(?::([\s\S]*))?$/);
+    const separator = external ? -1 : reference.indexOf(':');
+    return {
+      field: (external?.[2]
+        ?? (separator === -1 ? reference : reference.slice(0, separator))).trim(),
+      label: (external?.[3]
+        ?? (separator === -1 ? '' : reference.slice(separator + 1))).trim(),
+      sourcePath: external?.[1] ?? sourceFilePath,
+    };
   }
 
   private schedulePosition(

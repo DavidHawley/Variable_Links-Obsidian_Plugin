@@ -10,6 +10,7 @@ import VariableLinksPlugin from './main';
 export interface VariableLinksSettings {
   registryFilePath: string;
   enableInfoCards: boolean;
+  readingViewHoverDelaySeconds: number;
   livePreviewHoverDelaySeconds: number;
   disableLivePreviewHover: boolean;
   defaultAppearanceBold: boolean;
@@ -22,6 +23,9 @@ export interface VariableLinksSettings {
   openInNewPane: boolean;
   suggestionFuzzy: boolean;
   defaultDateFormat: string;
+  infoCardEditorWidth: number | null;
+  infoCardEditorHeight: number | null;
+  infoCardEditorCollapsedItems: Record<string, string[]>;
 }
 
 type SettingKey = keyof VariableLinksSettings;
@@ -29,6 +33,7 @@ type SettingKey = keyof VariableLinksSettings;
 export const DEFAULT_SETTINGS: VariableLinksSettings = {
   registryFilePath: '',
   enableInfoCards: true,
+  readingViewHoverDelaySeconds: 0.5,
   livePreviewHoverDelaySeconds: 3,
   disableLivePreviewHover: false,
   defaultAppearanceBold: false,
@@ -41,13 +46,53 @@ export const DEFAULT_SETTINGS: VariableLinksSettings = {
   openInNewPane: false,
   suggestionFuzzy: true,
   defaultDateFormat: 'YYYY-MM-DD',
+  infoCardEditorWidth: null,
+  infoCardEditorHeight: null,
+  infoCardEditorCollapsedItems: {},
 };
 
-export function normalizeLivePreviewHoverDelay(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return DEFAULT_SETTINGS.livePreviewHoverDelaySeconds;
+export function normalizeInfoCardEditorDimension(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value);
+}
+
+export function normalizeInfoCardEditorCollapsedItems(
+  value: unknown,
+): Record<string, string[]> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const normalized = Object.create(null) as Record<string, string[]>;
+  for (const [name, itemIds] of Object.entries(value)) {
+    if (!name || name.length > 200 || !Array.isArray(itemIds)) continue;
+    const ids = itemIds
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0 && item.length <= 200);
+    if (ids.length) normalized[name] = [...new Set(ids)].slice(0, 500);
   }
-  return Math.min(30, Math.max(1, Math.round(value)));
+  return normalized;
+}
+
+function normalizeQuarterSecondDelay(value: unknown, fallback: number, minimum: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(30, Math.max(minimum, Math.round(value * 4) / 4));
+}
+
+export function normalizeReadingViewHoverDelay(value: unknown): number {
+  return normalizeQuarterSecondDelay(
+    value,
+    DEFAULT_SETTINGS.readingViewHoverDelaySeconds,
+    0,
+  );
+}
+
+export function normalizeLivePreviewHoverDelay(value: unknown): number {
+  return normalizeQuarterSecondDelay(
+    value,
+    DEFAULT_SETTINGS.livePreviewHoverDelaySeconds,
+    1,
+  );
 }
 
 export class VariableLinksSettingTab extends PluginSettingTab {
@@ -138,6 +183,17 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         control: { type: 'toggle', key: 'enableInfoCards' },
       },
       {
+        name: 'Reading View hover delay',
+        desc: 'Seconds to hover over a rendered variable before its info card appears in Reading View.',
+        control: {
+          type: 'number',
+          key: 'readingViewHoverDelaySeconds',
+          min: 0,
+          max: 30,
+          step: 0.25,
+        },
+      },
+      {
         name: 'Live Preview hover delay',
         desc: 'Seconds to hover over a rendered variable before its info card appears in Live Preview.',
         control: {
@@ -145,7 +201,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
           key: 'livePreviewHoverDelaySeconds',
           min: 1,
           max: 30,
-          step: 1,
+          step: 0.25,
         },
       },
       {
@@ -182,10 +238,15 @@ export class VariableLinksSettingTab extends PluginSettingTab {
 
   async setControlValue(key: string, value: unknown): Promise<void> {
     if (!this.isSettingKey(key)) return;
+    if (key === 'infoCardEditorWidth'
+      || key === 'infoCardEditorHeight'
+      || key === 'infoCardEditorCollapsedItems') return;
 
     if (key === 'registryFilePath' || key === 'defaultDateFormat') {
       if (typeof value !== 'string') return;
       this.variableLinksPlugin.settings[key] = value.trim();
+    } else if (key === 'readingViewHoverDelaySeconds') {
+      this.variableLinksPlugin.settings[key] = normalizeReadingViewHoverDelay(value);
     } else if (key === 'livePreviewHoverDelaySeconds') {
       this.variableLinksPlugin.settings[key] = normalizeLivePreviewHoverDelay(value);
     } else if (key === 'defaultAppearanceOpacity') {

@@ -1,13 +1,13 @@
 import { App, MarkdownView } from 'obsidian';
-import Registry from './registry';
+import Registry, { getVariableType } from './registry';
 import Resolver from './resolver';
 import Indexer from './indexer';
 import InfoCard from './card';
 import { filePathFromLink } from './linkSyntax';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
+import { getActiveCardBlocks } from './cardBlocks';
 
 const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
-const READING_VIEW_CARD_DELAY = 500;
 
 interface PreviewMode {
   rerender?: (force: boolean) => void;
@@ -187,7 +187,7 @@ export class Renderer {
     this.clearHoverExitTimer();
     const livePreview = token.classList.contains('variable-links-token-live-preview');
     const definition = this.registry.getVariable(name);
-    if (!definition?.card) return;
+    if (!definition?.card || !getActiveCardBlocks(definition.card).length) return;
     if (livePreview && (
       this.registry.plugin.settings.disableLivePreviewHover
       || definition.card.disableLivePreviewHover
@@ -200,7 +200,7 @@ export class Renderer {
     this.clearHoverState();
     const delay = livePreview
       ? this.registry.plugin.settings.livePreviewHoverDelaySeconds * 1000
-      : READING_VIEW_CARD_DELAY;
+      : this.registry.plugin.settings.readingViewHoverDelaySeconds * 1000;
     const state: HoverState = {
       name,
       token,
@@ -284,14 +284,20 @@ export class Renderer {
     const { token, name } = state;
     if (!token.isConnected || !token.matches(':hover')) return;
     const definition = this.registry.getVariable(name);
-    if (!definition?.card) return;
+    if (!definition?.card || !getActiveCardBlocks(definition.card).length) return;
     if (state.livePreview && definition.card.disableLivePreviewHover) return;
-    const filePath = filePathFromLink(definition.file);
-    const sourcePath = filePath ? `${filePath}.md` : definition.file;
+    const rawSource = getVariableType(definition) === 'fixed'
+      ? definition.link ?? ''
+      : definition.file;
+    const filePath = filePathFromLink(rawSource);
+    const sourcePath = filePath ? `${filePath}.md` : '';
+    const card = sourcePath
+      ? definition.card
+      : { ...definition.card, showSourceLink: false };
     await this.infoCard.showFor(
       token,
       sourcePath,
-      definition.card,
+      card,
       { clientX: state.clientX, clientY: state.clientY },
     );
   }

@@ -9,7 +9,7 @@ import {
   TFile,
 } from 'obsidian';
 import Indexer from './indexer';
-import Registry from './registry';
+import Registry, { getVariableType, type VariableType } from './registry';
 
 interface SuggestItem {
   name: string;
@@ -17,6 +17,8 @@ interface SuggestItem {
   display?: string;
   file?: string;
   property?: string;
+  value?: string;
+  variableType?: VariableType;
 }
 
 export default class VariableSuggest extends EditorSuggest<SuggestItem> {
@@ -44,7 +46,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   getSuggestions(context: EditorSuggestContext): SuggestItem[] {
     const query = context.query.toLowerCase();
     const matches = (item: SuggestItem): boolean => !query
-      || [item.name, item.display, item.file, item.property]
+      || [item.name, item.display, item.file, item.property, item.value]
         .filter((value): value is string => typeof value === 'string')
         .some((value) => value.toLowerCase().includes(query));
     const variables: SuggestItem[] = Array.from(this.indexer.byName.values()).map((entry) => ({
@@ -52,7 +54,9 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       kind: 'variable',
       display: entry.def.display,
       file: entry.filePath,
-      property: entry.def.property,
+      property: getVariableType(entry.def) === 'property' ? entry.def.property : undefined,
+      value: entry.def.value,
+      variableType: getVariableType(entry.def),
     }));
     const properties: SuggestItem[] = [];
     for (const file of this.app.vault.getMarkdownFiles()) {
@@ -60,7 +64,9 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       if (!this.isRecord(frontmatter)) continue;
       for (const property of Object.keys(frontmatter)) {
         const alreadyMapped = Array.from(this.indexer.byName.values()).some((entry) =>
-          entry.filePath === file.path && entry.def.property === property
+          getVariableType(entry.def) === 'property'
+          && entry.filePath === file.path
+          && entry.def.property === property
         );
         if (!alreadyMapped) {
           properties.push({ name: property, kind: 'property', file: file.path, property });
@@ -73,7 +79,9 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   renderSuggestion(item: SuggestItem, el: HTMLElement): void {
     el.createDiv({ text: item.name });
     const detail = item.kind === 'variable'
-      ? `Variable · ${item.file ?? ''}${item.property ? ` • ${item.property}` : ''}`
+      ? item.variableType === 'fixed'
+        ? `Fixed value${item.file ? ` · ${item.file}` : ''}`
+        : `Property value · ${item.file ?? ''}${item.property ? ` • ${item.property}` : ''}`
       : `Property · ${item.file ?? ''}`;
     el.createDiv({ text: detail, cls: 'suggest-meta' });
     if (item.display) el.createDiv({ text: item.display, cls: 'suggest-sub' });
@@ -100,6 +108,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
 
       try {
         await this.registry.saveVariable(variableName, {
+          type: 'property',
           file: item.file ?? '',
           property: item.property ?? item.name,
           display: item.property ?? item.name,

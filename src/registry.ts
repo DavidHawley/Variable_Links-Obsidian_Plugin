@@ -4,19 +4,34 @@ import {
   type VariableAppearance,
 } from './appearance';
 import type { CardConfig } from './card';
+import {
+  deriveLegacyCardFields,
+  normalizeCardBlocks,
+  normalizeCardStyle,
+  normalizeGridColumns,
+  normalizeLayoutGap,
+} from './cardBlocks';
 import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
 
+export type VariableType = 'property' | 'fixed';
+
 export interface VariableDefinition {
   guid?: string;
+  type?: VariableType;
   file: string; // vault path or wiki-link raw
   property: string;
+  value?: string;
   link?: string;
   display?: string;
   favorite?: boolean;
   appearance?: VariableAppearance;
   card?: CardConfig;
   format?: string;
+}
+
+export function getVariableType(definition: VariableDefinition): VariableType {
+  return definition.type === 'fixed' ? 'fixed' : 'property';
 }
 
 export class Registry {
@@ -127,8 +142,10 @@ export class Registry {
         usedGuids.add(guid);
         const def: VariableDefinition = {
           guid,
+          type: raw.type === 'fixed' ? 'fixed' : 'property',
           file: typeof raw.file === 'string' ? raw.file : '',
           property: typeof raw.property === 'string' ? raw.property : '',
+          value: this.toFixedValue(raw.value),
           link: typeof raw.link === 'string' ? raw.link : undefined,
           display: typeof raw.display === 'string' ? raw.display : undefined,
           favorite: raw.favorite === true,
@@ -237,9 +254,12 @@ export class Registry {
   async saveVariable(name: string, definition: VariableDefinition, previousName?: string) {
     const variableName = name.trim();
     const oldName = previousName?.trim();
+    const type = getVariableType(definition);
     if (!variableName) throw new Error('Variable name is required.');
-    if (!definition.file?.trim()) throw new Error('A source note is required.');
-    if (!definition.property?.trim()) throw new Error('A property name is required.');
+    if (type === 'property' && !definition.file?.trim()) throw new Error('A source note is required.');
+    if (type === 'property' && !definition.property?.trim()) {
+      throw new Error('A property name is required.');
+    }
     if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
     if (oldName && oldName !== variableName && this.data.has(variableName)) {
       throw new Error(`A Variable Link named “${variableName}” already exists.`);
@@ -249,9 +269,14 @@ export class Registry {
     const guid = existing?.guid || definition.guid || this.createGuid();
     const normalized: Partial<VariableDefinition> = {
       guid,
+      type,
       file: definition.file.trim(),
       property: definition.property.trim()
     };
+    if (type === 'fixed') normalized.value = definition.value ?? '';
+    else if (Object.prototype.hasOwnProperty.call(definition, 'value')) {
+      normalized.value = definition.value;
+    }
     if (Object.prototype.hasOwnProperty.call(definition, 'link')) {
       normalized.link = definition.link?.trim() || undefined;
     }
@@ -278,6 +303,8 @@ export class Registry {
         if (Object.prototype.hasOwnProperty.call(definition, 'link') && !definition.link?.trim()) {
           delete updated.link;
         }
+        if (Object.prototype.hasOwnProperty.call(definition, 'value')
+          && definition.value === undefined) delete updated.value;
         if (Object.prototype.hasOwnProperty.call(definition, 'favorite') && !definition.favorite) delete updated.favorite;
         if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card) delete updated.card;
         if (Object.prototype.hasOwnProperty.call(definition, 'appearance') && !normalized.appearance) {
@@ -289,6 +316,14 @@ export class Registry {
     } catch (error) {
       if (renamePlan) await renamePlan.rollback();
       throw error;
+    }
+
+    if (rename && oldName) {
+      try {
+        await this.plugin.renameInfoCardEditorCollapsedItems(oldName, variableName);
+      } catch {
+        new Notice('The variable was renamed, but its card designer collapse state could not be moved.');
+      }
     }
 
     // Once the registry write succeeds, the rename is authoritative. Derived
@@ -331,6 +366,11 @@ export class Registry {
     await this.load();
     await this.plugin.indexer?.build();
     if (guid) await this.plugin.tokenCache?.removeGuid(guid);
+    try {
+      await this.plugin.saveInfoCardEditorCollapsedItems(variableName, []);
+    } catch {
+      new Notice('The variable was deleted, but its saved card designer collapse state could not be removed.');
+    }
     this.plugin.livePreviewRenderer?.refresh();
   }
 
@@ -440,6 +480,14 @@ export class Registry {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 
+  private toFixedValue(value: unknown): string | undefined {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+      return String(value);
+    }
+    return undefined;
+  }
+
   private isRegistryDocument(value: unknown): value is Record<string, unknown> {
     return this.isRecord(value) && this.isRecord(value['variable-links']);
   }
@@ -449,11 +497,30 @@ export class Registry {
     const fields = Array.isArray(value.fields)
       ? value.fields.filter((field): field is string => typeof field === 'string')
       : undefined;
+    const title = typeof value.title === 'string' ? value.title : undefined;
+    const note = typeof value.note === 'string' ? value.note : undefined;
+    const hasShowSourceLink = Object.prototype.hasOwnProperty.call(value, 'showSourceLink');
+    const showSourceLink = value.showSourceLink === true;
+    const blocks = normalizeCardBlocks(value.blocks);
+    const hasLegacyFields = title !== undefined
+      || note !== undefined
+      || fields !== undefined
+      || hasShowSourceLink;
+    const derived = blocks && !hasLegacyFields ? deriveLegacyCardFields(blocks) : {};
     return {
-      title: typeof value.title === 'string' ? value.title : undefined,
-      note: typeof value.note === 'string' ? value.note : undefined,
-      fields,
-      showSourceLink: value.showSourceLink === true,
+      title: title ?? derived.title,
+      note: note ?? derived.note,
+      fields: fields ?? derived.fields,
+      showSourceLink: hasShowSourceLink ? showSourceLink : derived.showSourceLink,
+      blocks,
+      useBlockLayout: value.useBlockLayout === true
+        || (value.useBlockLayout !== false && Boolean(blocks && !hasLegacyFields)),
+      layoutMode: value.layoutMode === 'grid'
+        ? 'grid'
+        : value.layoutMode === 'stack' ? 'stack' : undefined,
+      gridColumns: normalizeGridColumns(value.gridColumns),
+      layoutGap: normalizeLayoutGap(value.layoutGap),
+      cardStyle: normalizeCardStyle(value.cardStyle),
       disableLivePreviewHover: value.disableLivePreviewHover === true,
     };
   }

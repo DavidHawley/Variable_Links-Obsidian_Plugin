@@ -21,7 +21,10 @@ import Renderer from './renderer';
 import Resolver from './resolver';
 import {
   DEFAULT_SETTINGS,
+  normalizeInfoCardEditorCollapsedItems,
+  normalizeInfoCardEditorDimension,
   normalizeLivePreviewHoverDelay,
+  normalizeReadingViewHoverDelay,
   VariableLinksSettings,
   VariableLinksSettingTab,
 } from './settings';
@@ -51,6 +54,20 @@ interface ContextClick {
   time: number;
 }
 
+interface VariableTokenContext {
+  name: string;
+  from: EditorPosition;
+  to: EditorPosition;
+}
+
+interface CloseableDialog {
+  close(): void;
+}
+
+interface PluginPanelResource {
+  releasePluginResources(): void;
+}
+
 export default class VariableLinksPlugin extends Plugin {
   settings: VariableLinksSettings = { ...DEFAULT_SETTINGS };
   registry: Registry | null = null;
@@ -66,6 +83,8 @@ export default class VariableLinksPlugin extends Plugin {
   private timers = new Set<number>();
   private contextMenuCleanups: Array<() => void> = [];
   private lastContextClick: ContextClick | null = null;
+  private openDialogs = new Set<CloseableDialog>();
+  private openPanels = new Set<PluginPanelResource>();
 
   async onload(): Promise<void> {
     this.active = true;
@@ -125,6 +144,10 @@ export default class VariableLinksPlugin extends Plugin {
 
   onunload(): void {
     this.active = false;
+    for (const dialog of [...this.openDialogs]) dialog.close();
+    this.openDialogs.clear();
+    for (const panel of [...this.openPanels]) panel.releasePluginResources();
+    this.openPanels.clear();
     for (const timer of this.timers) window.clearTimeout(timer);
     this.timers.clear();
     this.clearContextMenuResources();
@@ -145,6 +168,30 @@ export default class VariableLinksPlugin extends Plugin {
     this.suggest = null;
   }
 
+  trackDialog(dialog: CloseableDialog): void {
+    if (!this.active) {
+      dialog.close();
+      return;
+    }
+    this.openDialogs.add(dialog);
+  }
+
+  releaseDialog(dialog: CloseableDialog): void {
+    this.openDialogs.delete(dialog);
+  }
+
+  trackPanel(panel: PluginPanelResource): void {
+    if (!this.active) {
+      panel.releasePluginResources();
+      return;
+    }
+    this.openPanels.add(panel);
+  }
+
+  releasePanel(panel: PluginPanelResource): void {
+    this.openPanels.delete(panel);
+  }
+
   onCaretVariableChanged(_last: LastTouched): void {
     if (this.active) void this.refreshPanelViews();
   }
@@ -160,6 +207,9 @@ export default class VariableLinksPlugin extends Plugin {
       enableInfoCards: typeof saved.enableInfoCards === 'boolean'
         ? saved.enableInfoCards
         : DEFAULT_SETTINGS.enableInfoCards,
+      readingViewHoverDelaySeconds: normalizeReadingViewHoverDelay(
+        saved.readingViewHoverDelaySeconds,
+      ),
       livePreviewHoverDelaySeconds: normalizeLivePreviewHoverDelay(
         saved.livePreviewHoverDelaySeconds,
       ),
@@ -194,11 +244,62 @@ export default class VariableLinksPlugin extends Plugin {
       defaultDateFormat: typeof saved.defaultDateFormat === 'string'
         ? saved.defaultDateFormat
         : DEFAULT_SETTINGS.defaultDateFormat,
+      infoCardEditorWidth: normalizeInfoCardEditorDimension(saved.infoCardEditorWidth),
+      infoCardEditorHeight: normalizeInfoCardEditorDimension(saved.infoCardEditorHeight),
+      infoCardEditorCollapsedItems: normalizeInfoCardEditorCollapsedItems(
+        saved.infoCardEditorCollapsedItems,
+      ),
     };
   }
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  async saveInfoCardEditorSize(width: number, height: number): Promise<void> {
+    const normalizedWidth = normalizeInfoCardEditorDimension(width);
+    const normalizedHeight = normalizeInfoCardEditorDimension(height);
+    if (normalizedWidth === null || normalizedHeight === null) return;
+    if (this.settings.infoCardEditorWidth === normalizedWidth
+      && this.settings.infoCardEditorHeight === normalizedHeight) return;
+    this.settings.infoCardEditorWidth = normalizedWidth;
+    this.settings.infoCardEditorHeight = normalizedHeight;
+    await this.saveSettings();
+  }
+
+  async saveInfoCardEditorCollapsedItems(
+    variableName: string,
+    itemIds: string[],
+  ): Promise<void> {
+    const nextIds = [...new Set(itemIds)].sort((left, right) => left.localeCompare(right));
+    const currentIds = this.settings.infoCardEditorCollapsedItems[variableName] ?? [];
+    if (currentIds.length === nextIds.length
+      && currentIds.every((item, index) => item === nextIds[index])) return;
+    const collapsedItems = Object.assign(
+      Object.create(null) as Record<string, string[]>,
+      this.settings.infoCardEditorCollapsedItems,
+    );
+    if (nextIds.length) collapsedItems[variableName] = nextIds;
+    else delete collapsedItems[variableName];
+    this.settings.infoCardEditorCollapsedItems = collapsedItems;
+    await this.saveSettings();
+  }
+
+  async renameInfoCardEditorCollapsedItems(
+    previousName: string,
+    nextName: string,
+  ): Promise<void> {
+    if (previousName === nextName) return;
+    const itemIds = this.settings.infoCardEditorCollapsedItems[previousName];
+    if (!itemIds) return;
+    const collapsedItems = Object.assign(
+      Object.create(null) as Record<string, string[]>,
+      this.settings.infoCardEditorCollapsedItems,
+    );
+    collapsedItems[nextName] = itemIds;
+    delete collapsedItems[previousName];
+    this.settings.infoCardEditorCollapsedItems = collapsedItems;
+    await this.saveSettings();
   }
 
   async openVariableProperties(variableName?: string): Promise<void> {
@@ -242,9 +343,10 @@ export default class VariableLinksPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor) => {
       if (!this.active) return;
       this.clearContextMenuResources();
-      const variableName = this.getContextVariableName(editor);
       const insertionPosition = this.getContextEditorPosition(editor);
-      const insideVariableToken = variableName !== null;
+      const tokenContext = this.getContextVariableToken(editor, insertionPosition);
+      const variableName = tokenContext?.name ?? null;
+      const insideVariableToken = tokenContext !== null;
       const definition = variableName ? this.registry?.getVariable(variableName) : null;
       const favorites = Array.from(this.registry?.data.entries() ?? [])
         .filter(([, item]) => item.favorite)
@@ -275,6 +377,13 @@ export default class VariableLinksPlugin extends Plugin {
             item.onClick(() => void this.setVariableFavorite(variableName, !favorite));
           }
         });
+        this.addSwitchTokenMenu(
+          submenu,
+          tokenContext,
+          favorites,
+          allLinks,
+          editor,
+        );
         submenu.addSeparator();
         this.addInsertMenu(
           submenu,
@@ -320,24 +429,94 @@ export default class VariableLinksPlugin extends Plugin {
     });
   }
 
-  private getContextVariableName(editor: Editor): string | null {
+  private addSwitchTokenMenu(
+    menu: Menu,
+    tokenContext: VariableTokenContext | null,
+    favorites: string[],
+    allLinks: string[],
+    editor: Editor,
+  ): void {
+    const currentName = tokenContext?.name ?? '';
+    const alternatives = allLinks.filter((name) => name !== currentName);
+    menu.addItem((item) => {
+      const enabled = tokenContext !== null && alternatives.length > 0 && this.hasSubmenu(item);
+      item.setTitle('Switch token').setIcon('replace').setDisabled(!enabled);
+      if (!enabled || !tokenContext || !this.hasSubmenu(item)) return;
+
+      const submenu = item.setSubmenu();
+      this.enableNestedSubmenuSwitch(menu, item, submenu);
+      submenu.addItem((currentItem) => {
+        currentItem.setTitle(currentName).setIcon('check').setDisabled(true);
+      });
+      submenu.addSeparator();
+
+      const favoriteNames = favorites.filter((name) => name !== currentName);
+      const favoriteSet = new Set(favoriteNames);
+      const regularNames = alternatives.filter((name) => !favoriteSet.has(name));
+      for (const name of favoriteNames) {
+        submenu.addItem((linkItem) => {
+          linkItem
+            .setTitle(name)
+            .setIcon('star')
+            .onClick(() => this.switchVariableToken(editor, tokenContext, name));
+        });
+      }
+      if (favoriteNames.length > 0 && regularNames.length > 0) submenu.addSeparator();
+      for (const name of regularNames) {
+        submenu.addItem((linkItem) => {
+          linkItem
+            .setTitle(name)
+            .onClick(() => this.switchVariableToken(editor, tokenContext, name));
+        });
+      }
+    });
+  }
+
+  private getContextVariableToken(
+    editor: Editor,
+    position: EditorPosition | null,
+  ): VariableTokenContext | null {
     const click = this.getRecentContextClick();
     const tokenElement = click?.target?.closest<HTMLElement>('.variable-links-token[data-var]');
     const renderedName = tokenElement?.dataset.var?.trim();
-    if (renderedName) return renderedName;
-    return this.getVariableAtPosition(editor, this.getContextEditorPosition(editor));
+    return this.getVariableAtPosition(editor, position, renderedName || undefined);
   }
 
-  private getVariableAtPosition(editor: Editor, position: EditorPosition | null): string | null {
+  private getVariableAtPosition(
+    editor: Editor,
+    position: EditorPosition | null,
+    expectedName?: string,
+  ): VariableTokenContext | null {
     if (!position) return null;
     const line = editor.getLine(position.line);
     const pattern = /\{\{\s*([^}\s]+)\s*}}/g;
     let match: RegExpExecArray | null;
+    const matchingTokens: VariableTokenContext[] = [];
     while ((match = pattern.exec(line)) !== null) {
       const name = match[1];
-      if (name && position.ch >= match.index && position.ch <= pattern.lastIndex) return name.trim();
+      if (!name) continue;
+      const trimmedName = name.trim();
+      if (expectedName && trimmedName !== expectedName) continue;
+      const token = {
+        name: trimmedName,
+        from: { line: position.line, ch: match.index },
+        to: { line: position.line, ch: pattern.lastIndex },
+      };
+      if (position.ch >= match.index && position.ch <= pattern.lastIndex) return token;
+      if (expectedName) matchingTokens.push(token);
     }
-    return null;
+    if (!expectedName || matchingTokens.length === 0) return null;
+    return matchingTokens.reduce((closest, token) => {
+      const closestDistance = Math.min(
+        Math.abs(position.ch - closest.from.ch),
+        Math.abs(position.ch - closest.to.ch),
+      );
+      const tokenDistance = Math.min(
+        Math.abs(position.ch - token.from.ch),
+        Math.abs(position.ch - token.to.ch),
+      );
+      return tokenDistance < closestDistance ? token : closest;
+    });
   }
 
   private getContextEditorPosition(editor: Editor): EditorPosition | null {
@@ -357,6 +536,20 @@ export default class VariableLinksPlugin extends Plugin {
     const token = `{{${variableName}}}`;
     editor.replaceRange(token, position);
     editor.setCursor({ line: position.line, ch: position.ch + token.length });
+    editor.focus();
+  }
+
+  private switchVariableToken(
+    editor: Editor,
+    tokenContext: VariableTokenContext,
+    variableName: string,
+  ): void {
+    const token = `{{${variableName}}}`;
+    editor.replaceRange(token, tokenContext.from, tokenContext.to);
+    editor.setCursor({
+      line: tokenContext.from.line,
+      ch: tokenContext.from.ch + token.length,
+    });
     editor.focus();
   }
 
