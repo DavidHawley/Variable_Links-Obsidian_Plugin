@@ -139,6 +139,11 @@ interface InfoCardEditorState {
   disableLivePreviewHover: boolean;
 }
 
+interface InfoCardEditorSize {
+  width: number;
+  height: number;
+}
+
 class InfoCardLayoutModal extends Modal {
   private readonly blocks: CardBlock[];
   private readonly previewCard: InfoCard;
@@ -152,6 +157,10 @@ class InfoCardLayoutModal extends Modal {
   private previewHost: HTMLElement | null = null;
   private previewTimer: number | null = null;
   private scrollRestoreFrame: number | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  private resizeEndCleanup: (() => void) | null = null;
+  private editorSize: InfoCardEditorSize | null = null;
+  private editorSizeDirty = false;
   private undoButton: HTMLButtonElement | null = null;
   private draggedBlockId: string | null = null;
   private draggedProperty: { blockId: string; propertyId: string } | null = null;
@@ -178,11 +187,18 @@ class InfoCardLayoutModal extends Modal {
   onOpen(): void {
     this.plugin.trackDialog(this);
     this.modalEl.addClass('variable-links-card-layout-modal');
+    this.restoreEditorSize();
     this.render();
+    this.observeEditorSize();
   }
 
   onClose(): void {
     this.plugin.releaseDialog(this);
+    this.resizeEndCleanup?.();
+    this.resizeEndCleanup = null;
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.persistEditorSize();
     if (this.previewTimer !== null) window.clearTimeout(this.previewTimer);
     this.previewTimer = null;
     if (this.scrollRestoreFrame !== null) {
@@ -191,6 +207,72 @@ class InfoCardLayoutModal extends Modal {
     }
     this.previewCard.destroy();
     this.contentEl.empty();
+  }
+
+  private restoreEditorSize(): void {
+    const activeWindow = this.modalEl.ownerDocument.defaultView ?? window;
+    const maximumWidth = Math.max(1, activeWindow.innerWidth - 24);
+    const maximumHeight = Math.max(1, activeWindow.innerHeight - 24);
+    const minimumWidth = Math.min(520, maximumWidth);
+    const minimumHeight = Math.min(420, maximumHeight);
+    const savedWidth = this.plugin.settings.infoCardEditorWidth;
+    const savedHeight = this.plugin.settings.infoCardEditorHeight;
+    if (savedWidth !== null) {
+      const width = Math.min(maximumWidth, Math.max(minimumWidth, savedWidth));
+      this.modalEl.style.width = `${width}px`;
+    }
+    if (savedHeight !== null) {
+      const height = Math.min(maximumHeight, Math.max(minimumHeight, savedHeight));
+      this.modalEl.style.height = `${height}px`;
+    }
+  }
+
+  private observeEditorSize(): void {
+    this.editorSize = this.readEditorSize();
+    this.resizeObserver = new ResizeObserver(() => {
+      this.captureEditorSize();
+    });
+    this.resizeObserver.observe(this.modalEl);
+    const ownerDocument = this.modalEl.ownerDocument;
+    const saveResizedDimensions = (): void => {
+      this.captureEditorSize();
+      this.persistEditorSize();
+    };
+    ownerDocument.addEventListener('pointerup', saveResizedDimensions, true);
+    ownerDocument.addEventListener('mouseup', saveResizedDimensions, true);
+    this.resizeEndCleanup = () => {
+      ownerDocument.removeEventListener('pointerup', saveResizedDimensions, true);
+      ownerDocument.removeEventListener('mouseup', saveResizedDimensions, true);
+    };
+  }
+
+  private captureEditorSize(): void {
+    const size = this.readEditorSize();
+    const prior = this.editorSize;
+    if (prior
+      && Math.abs(prior.width - size.width) < 1
+      && Math.abs(prior.height - size.height) < 1) return;
+    this.editorSize = size;
+    this.editorSizeDirty = true;
+  }
+
+  private readEditorSize(): InfoCardEditorSize {
+    const bounds = this.modalEl.getBoundingClientRect();
+    return {
+      width: Math.round(bounds.width),
+      height: Math.round(bounds.height),
+    };
+  }
+
+  private persistEditorSize(): void {
+    if (!this.editorSizeDirty || !this.editorSize) return;
+    this.editorSizeDirty = false;
+    void this.plugin.saveInfoCardEditorSize(
+      this.editorSize.width,
+      this.editorSize.height,
+    ).catch(() => {
+      this.editorSizeDirty = true;
+    });
   }
 
   private render(): void {

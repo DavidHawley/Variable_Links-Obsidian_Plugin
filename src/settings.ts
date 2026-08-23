@@ -23,6 +23,8 @@ export interface VariableLinksSettings {
   openInNewPane: boolean;
   suggestionFuzzy: boolean;
   defaultDateFormat: string;
+  infoCardEditorWidth: number | null;
+  infoCardEditorHeight: number | null;
 }
 
 type SettingKey = keyof VariableLinksSettings;
@@ -43,7 +45,14 @@ export const DEFAULT_SETTINGS: VariableLinksSettings = {
   openInNewPane: false,
   suggestionFuzzy: true,
   defaultDateFormat: 'YYYY-MM-DD',
+  infoCardEditorWidth: null,
+  infoCardEditorHeight: null,
 };
+
+export function normalizeInfoCardEditorDimension(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value);
+}
 
 function normalizeQuarterSecondDelay(value: unknown, fallback: number, minimum: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -211,6 +220,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
 
   async setControlValue(key: string, value: unknown): Promise<void> {
     if (!this.isSettingKey(key)) return;
+    if (key === 'infoCardEditorWidth' || key === 'infoCardEditorHeight') return;
 
     if (key === 'registryFilePath' || key === 'defaultDateFormat') {
       if (typeof value !== 'string') return;

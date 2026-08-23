@@ -6,6 +6,7 @@ All notable user-visible changes to Variable Links are recorded here.
 
 ### Added
 
+- Added horizontal and vertical resizing to the Info Card editor window, with its size remembered when reopened.
 - Added a configurable Info Card hover delay for Reading View.
 - Added a context-menu submenu for switching complete Variable Link tokens, with favorites listed first.
 - Added Fixed value variables with optional file links alongside the existing Property value variables.

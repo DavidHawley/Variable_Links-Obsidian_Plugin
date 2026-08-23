@@ -21,6 +21,7 @@ import Renderer from './renderer';
 import Resolver from './resolver';
 import {
   DEFAULT_SETTINGS,
+  normalizeInfoCardEditorDimension,
   normalizeLivePreviewHoverDelay,
   normalizeReadingViewHoverDelay,
   VariableLinksSettings,
@@ -242,11 +243,24 @@ export default class VariableLinksPlugin extends Plugin {
       defaultDateFormat: typeof saved.defaultDateFormat === 'string'
         ? saved.defaultDateFormat
         : DEFAULT_SETTINGS.defaultDateFormat,
+      infoCardEditorWidth: normalizeInfoCardEditorDimension(saved.infoCardEditorWidth),
+      infoCardEditorHeight: normalizeInfoCardEditorDimension(saved.infoCardEditorHeight),
     };
   }
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  async saveInfoCardEditorSize(width: number, height: number): Promise<void> {
+    const normalizedWidth = normalizeInfoCardEditorDimension(width);
+    const normalizedHeight = normalizeInfoCardEditorDimension(height);
+    if (normalizedWidth === null || normalizedHeight === null) return;
+    if (this.settings.infoCardEditorWidth === normalizedWidth
+      && this.settings.infoCardEditorHeight === normalizedHeight) return;
+    this.settings.infoCardEditorWidth = normalizedWidth;
+    this.settings.infoCardEditorHeight = normalizedHeight;
+    await this.saveSettings();
   }
 
   async openVariableProperties(variableName?: string): Promise<void> {
