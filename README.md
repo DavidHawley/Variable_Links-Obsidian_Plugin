@@ -1,175 +1,162 @@
 # Variable Links
 
-Variable Links is an Obsidian plugin for creating reusable pointers to properties in your notes.
+Variable Links is an Obsidian plugin for creating reusable pointers to values in your vault.
 
-A token such as `{{customer}}` can point to a property in another note. Wherever the token appears, it displays the property's current value. Change the source property once, and every use of the variable reflects the new value.
+A Variable Link can display a value you enter directly or the current value of a property in another note. Insert the same variable anywhere in your vault, then update its source once instead of finding and replacing every copy.
 
-## Main features
+```markdown
+Project owner: {{project_owner}}
+```
 
-- Create named pointers to properties in your notes.
-- Display the current property value in Reading View and Live Preview.
-- Link a variable to any note in your vault.
-- Show customizable Info Cards when hovering over variables.
-- Set variable values to bold, italic, underlined, highlighted, or undecorated with an optional custom color and opacity.
-- Access variables and actions from the editor’s right-click menu.
-- Rename variables while automatically updating their tokens throughout the vault.
-- Mark frequently used variables as favorites.
-- Insert variables using suggestions after typing `{{`.
+Variable Links can also open a related file when clicked and show a customizable Info Card when hovered.
 
-## AI development disclosure
+## Features
 
-Variable Links was made almost entirely with AI-generated code and documentation, guided, tested, and reviewed through human direction and feedback.
+- Create reusable variables backed by a fixed value or a note property.
+- Display variables in Reading View and Live Preview.
+- Open a chosen note when a displayed variable is clicked.
+- Rename a variable and update its tokens throughout the vault.
+- Insert variables from suggestions, favorites, commands, or the right-click menu.
+- Switch an existing token to a different variable from the right-click menu.
+- Style displayed values with bold, italic, underline, highlight, color, and opacity controls.
+- Build hover Info Cards with notes, properties, tables, dividers, links, and grouped sections.
+- Arrange Info Cards with responsive Stack or Grid layouts.
 
-## Getting started
+## Quick start
 
-Suppose `People/John Smith.md` contains:
+Open the Command Palette and run **Variable Links: Open Variable Properties**. Choose or create a variable, then select one of the two value types:
+
+- **Fixed value** — enter the value directly. You may also choose a file for the variable to open.
+- **Property value** — link to a property using `[[File path]]#property`. The displayed value follows the property in that note.
+
+For example, if `People/John Smith.md` contains:
 
 ```yaml
 ---
 company: Acme Corporation
-email: john@example.com
-phone: 555-0100
 ---
 ```
 
-Create a Variable Link named `customer` that points to the `company` property in this note.
+Create a Property value variable named `customer` and set its Property link to:
 
-You can then write:
+```text
+[[People/John Smith]]#company
+```
+
+Then insert:
 
 ```markdown
 Customer: {{customer}}
 ```
 
-The displayed result will be:
-
-```text
-Customer: Acme Corporation
-```
-
-If the `company` property changes, the displayed value updates without requiring you to replace the token.
+The displayed result is `Customer: Acme Corporation`. If the property changes, the displayed variable changes with it.
 
 ## Creating and inserting variables
 
-Type `{{` in the editor to open suggestions.
+Type `{{` in the editor to open suggestions. The list includes existing Variable Links and properties found across your vault.
 
-The suggestion menu includes:
+- Choose an existing variable to insert its token.
+- Choose an unlinked property to create a new variable and insert it.
+- Mark commonly used variables as favorites for quicker access.
 
-- Existing Variable Links.
-- Frontmatter properties found in notes across your vault.
+You can also right-click in the Markdown editor and open the **Variable Links** submenu to:
 
-Selecting an existing variable inserts its token. Selecting an unlinked property creates a new Variable Link and inserts it automatically.
+- Open a variable in the Properties panel.
+- Favorite or unfavorite the selected variable.
+- Insert a favorite or any configured variable.
+- Switch a complete token to another variable.
 
-Generated variable names use a unique number when needed, such as:
-
-```text
-{{Due_01}}
-{{Due_02}}
-```
+Insert actions are disabled while the cursor is already inside a Variable Link token.
 
 ## Variable Properties panel
 
-Open the Command Palette and run:
+The panel has two tabs beneath the **Variable Link Properties** heading.
 
-**Variable Links: Open Variable Properties**
+### Link
 
-The panel lets you manage:
+Use the Link tab to manage:
 
-- Variable name
-- Property link, such as `[[People/John Smith]]#company`
-- File link opened when the variable is clicked
-- Display name
-- Favorite status
-- Default appearance
-- Info Card settings
+- Variable name and favorite status.
+- Fixed value or Property value type.
+- Property link and its current linked value.
+- File link opened when the variable is clicked.
+- Display name.
+- Bold, italic, decoration, color, and opacity.
 
-Use the **Link** and **Card** tabs beneath the **Variable Link Properties** header to switch between mapping and Info Card settings.
+Supported linked text, number, and true/false property values can be edited directly from the panel. Changing a variable's type requires confirmation, and its saved information is retained if you switch back later.
 
-Set a default variable appearance in the plugin settings, including bold, italic, decoration, and color. Individual variables can override that appearance or return to the current defaults. A reusable six-color palette makes saved colors available from every variable’s appearance controls.
+When you rename a variable, known tokens in Markdown notes are updated automatically. Tokens inside inline code and fenced code blocks are left unchanged.
 
-If your cursor is inside an unknown token, such as `{{new_variable}}`, opening the panel creates a prefilled form for setting it up.
+### Card
 
-## Right-click menu
-
-Right-click in the Markdown editor to open the **Variable Links** submenu.
-
-Available actions include:
-
-- **Properties** — open the selected variable in the Variable Properties panel.
-- **Favorite / Unfavorite** — change whether the variable appears in your favorites.
-- **Insert Favorite** — insert one of your favorite variables.
-- **Insert** — browse and insert any configured variable.
-
-Variables are inserted at the position where you opened the context menu.
-
-## Renaming variables
-
-You can rename a variable from the Variable Properties panel.
-
-For example, renaming:
-
-```text
-{{customer}}
-```
-
-to:
-
-```text
-{{client}}
-```
-
-updates that variable’s known tokens throughout your Markdown notes. The link keeps its internal identity, property link, file link, and Info Card configuration.
-
-Tokens inside inline code and fenced code blocks are left unchanged.
+Use the Card tab to configure the Info Card shown when the variable is hovered. You can keep the original simple card fields or enable **Use block layout editor** for the Card Designer.
 
 ## Info Cards
 
-Info Cards display additional information when you hover over a variable in Reading View or Live Preview. The Live Preview delay defaults to three seconds and can be changed in the plugin settings. Live Preview hover can also be disabled globally or for individual cards without affecting Reading View.
+The original editor provides a straightforward title, note, field list, and source link. The Card Designer supports more detailed layouts made from:
 
-A card can include:
+- Titles
+- Notes with Markdown
+- Individual properties
+- Multi-column property tables
+- Dividers
+- Source links
+- Stack containers that group related items
 
-- A custom title
-- A Markdown note or description
-- Properties from the variable’s source note
-- Properties from other notes
-- Custom labels
-- A link to the source note
+Cards can use a vertical Stack layout or a responsive Grid with one to four columns. You can adjust spacing, maximum width, padding, corner radius, border, shadow, background, alignment, and optional CSS classes.
 
-### Source-note fields
+The Card Designer also includes:
 
-Enter a property name:
+- Classic stack, Compact grid, and Profile card starter layouts.
+- Drag-and-drop and arrow controls for arranging items.
+- Editable item names and collapsible sections for organizing complex cards.
+- A live preview and up to 50 Undo steps.
+- Restore original and Restore defaults actions.
+- Right-click **Copy appearance** and **Paste appearance** actions that copy styling without replacing content.
+
+Stack containers can arrange their contents vertically or horizontally. They may contain normal card items, but not another Stack container.
+
+### Referencing properties in cards
+
+Use a property name to read from the variable's source note:
 
 ```text
 email
 ```
 
-### Custom labels
-
-Use `property:Label`:
+Add `:Display name` to provide a custom label:
 
 ```text
-email:Email Address
-phone:Phone Number
+email:Email address
 ```
 
-### Fields from another note
-
-Use `[[Note]]#property`:
+Reference a property in another note with:
 
 ```text
 [[Projects/Launch Plan]]#due
 ```
 
-You can also provide a custom label:
+You can also add a custom label:
 
 ```text
-[[Projects/Launch Plan]]#due:Project Due Date
+[[Projects/Launch Plan]]#due:Project due date
 ```
 
-The field editor suggests properties found across your vault.
+## Hover behavior
 
-## Live Preview
+Info Cards work in Reading View and Live Preview. Their hover delays are configured separately in the plugin settings, and Live Preview cards can be disabled globally or for an individual variable.
 
-Variable Links display their current values in Live Preview. Move the cursor into a variable to reveal and edit its original token:
+Cards open near the pointer, stay within the visible Obsidian window, and close when the pointer leaves or focus moves elsewhere.
+
+## Appearance defaults
+
+Plugin settings provide a default appearance for displayed variables, including bold, italic, underline or highlight, color, and opacity. Individual variables can override these defaults or return to them later.
+
+Six reusable color swatches are available in the appearance controls. Colors support opacity while still following Obsidian's current theme when no custom color is selected.
+
+## Live Preview editing
+
+In Live Preview, a Variable Link normally displays its resolved value. Move the caret into it to reveal and edit the original token:
 
 ```text
 {{customer}}
@@ -177,19 +164,19 @@ Variable Links display their current values in Live Preview. Move the cursor int
 
 ## Installation
 
-Copy the following files into:
+Download `main.js`, `manifest.json`, and `styles.css` from the matching version on the [Releases page](https://github.com/DavidHawley/Variable_Links-Obsidian_Plugin/releases).
+
+Copy the files into:
 
 ```text
 .obsidian/plugins/variable-links/
 ```
 
-Required files:
-
-- `main.js`
-- `manifest.json`
-- `styles.css`
-
 Reload Obsidian, then enable **Variable Links** under **Settings → Community plugins**.
+
+## AI development disclosure
+
+Variable Links was made almost entirely with AI-generated code and documentation, guided, tested, and reviewed through human direction and feedback.
 
 ## License
 
