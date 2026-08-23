@@ -1,16 +1,46 @@
 export interface CardPropertyEntry {
   id: string;
   reference: string;
+  label?: string;
+  labelPosition?: CardLabelPosition;
+  alignment?: CardTextAlignment;
+  labelWidth?: number;
 }
 
 export type CardLayoutMode = 'stack' | 'grid';
 export type CardBlockWidth = 'full' | 'half' | 'third' | 'quarter';
 export type CardGridColumns = 1 | 2 | 3 | 4;
 export type CardTableRowMode = 'auto' | 'fixed';
+export type CardTextAlignment = 'left' | 'center' | 'right';
+export type CardLabelPosition = 'left' | 'above' | 'hidden';
+export type CardBackgroundTone = 'default' | 'primary' | 'secondary' | 'accent' | 'transparent';
+export type CardBorderStyle = 'default' | 'none' | 'subtle' | 'accent';
+export type CardShadowStyle = 'none' | 'small' | 'medium' | 'large';
+export type CardBlockTone = 'none' | 'soft' | 'strong' | 'accent';
+export type CardBlockBorder = 'none' | 'outline' | 'divider';
+
+export interface CardStyleConfig {
+  background?: CardBackgroundTone;
+  border?: CardBorderStyle;
+  radius?: number;
+  shadow?: CardShadowStyle;
+  maxWidth?: number;
+  padding?: number;
+  alignment?: CardTextAlignment;
+  cssClasses?: string[];
+}
+
+export interface CardBlockStyle {
+  tone?: CardBlockTone;
+  padding?: number;
+  border?: CardBlockBorder;
+  alignment?: CardTextAlignment;
+}
 
 interface CardBlockBase {
   id: string;
   width?: CardBlockWidth;
+  style?: CardBlockStyle;
 }
 
 export interface CardTitleBlock extends CardBlockBase {
@@ -64,6 +94,7 @@ export interface CardLayoutFields extends LegacyCardFields {
   layoutMode?: CardLayoutMode;
   gridColumns?: CardGridColumns;
   layoutGap?: number;
+  cardStyle?: CardStyleConfig;
 }
 
 export function createCardBlockId(prefix = 'block'): string {
@@ -130,10 +161,20 @@ export function deriveLegacyCardFields(blocks: CardBlock[]): LegacyCardFields {
 export function cloneCardBlocks(blocks: CardBlock[]): CardBlock[] {
   return blocks.map((block) => {
     if (block.type === 'property-table') {
-      return { ...block, properties: block.properties.map((property) => ({ ...property })) };
+      return {
+        ...block,
+        style: block.style ? { ...block.style } : undefined,
+        properties: block.properties.map((property) => ({ ...property })),
+      };
     }
-    if (block.type === 'property') return { ...block, property: { ...block.property } };
-    return { ...block };
+    if (block.type === 'property') {
+      return {
+        ...block,
+        style: block.style ? { ...block.style } : undefined,
+        property: { ...block.property },
+      };
+    }
+    return { ...block, style: block.style ? { ...block.style } : undefined };
   });
 }
 
@@ -155,14 +196,14 @@ export function normalizeCardBlocks(value: unknown): CardBlock[] | undefined {
         id,
         type: 'title',
         text: typeof raw.text === 'string' ? raw.text : '',
-        ...normalizeBlockWidth(raw.width),
+        ...normalizeBlockBase(raw),
       });
     } else if (raw.type === 'note') {
       blocks.push({
         id,
         type: 'note',
         markdown: typeof raw.markdown === 'string' ? raw.markdown : '',
-        ...normalizeBlockWidth(raw.width),
+        ...normalizeBlockBase(raw),
       });
     } else if (raw.type === 'property') {
       const property = normalizePropertyEntry(raw.property, usedPropertyIds);
@@ -172,8 +213,9 @@ export function normalizeCardBlocks(value: unknown): CardBlock[] | undefined {
           blocks.push({
             id: index === 0 ? id : uniqueId(undefined, 'property', usedBlockIds),
             type: 'property',
-            ...normalizeBlockWidth(raw.width),
+            ...normalizeBlockBase(raw),
             property: {
+              ...property,
               id: index === 0
                 ? property.id
                 : uniqueId(undefined, 'property', usedPropertyIds),
@@ -189,6 +231,7 @@ export function normalizeCardBlocks(value: unknown): CardBlock[] | undefined {
           .filter((property): property is CardPropertyEntry => property !== null)
           .flatMap((property) => splitCardPropertyReferences(property.reference)
             .map((reference, index) => ({
+              ...property,
               id: index === 0
                 ? property.id
                 : uniqueId(undefined, 'property', usedPropertyIds),
@@ -199,15 +242,15 @@ export function normalizeCardBlocks(value: unknown): CardBlock[] | undefined {
         id,
         type: 'property-table',
         properties,
-        ...normalizeBlockWidth(raw.width),
+        ...normalizeBlockBase(raw),
         columns: normalizeGridColumns(raw.columns),
         rowMode: raw.rowMode === 'fixed' ? 'fixed' : undefined,
         rows: normalizeTableRows(raw.rows),
       });
     } else if (raw.type === 'divider') {
-      blocks.push({ id, type: 'divider', ...normalizeBlockWidth(raw.width) });
+      blocks.push({ id, type: 'divider', ...normalizeBlockBase(raw) });
     } else if (raw.type === 'source') {
-      blocks.push({ id, type: 'source', ...normalizeBlockWidth(raw.width) });
+      blocks.push({ id, type: 'source', ...normalizeBlockBase(raw) });
     }
   }
   return blocks;
@@ -230,10 +273,51 @@ export function normalizeTableRows(value: unknown): number | undefined {
   return Math.min(12, Math.max(1, Math.round(number)));
 }
 
-function normalizeBlockWidth(value: unknown): { width?: CardBlockWidth } {
-  return value === 'full' || value === 'half' || value === 'third' || value === 'quarter'
-    ? { width: value }
-    : {};
+export function normalizeCardStyle(value: unknown): CardStyleConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const style: CardStyleConfig = {};
+  if (isBackgroundTone(value.background)) style.background = value.background;
+  if (isBorderStyle(value.border)) style.border = value.border;
+  if (isShadowStyle(value.shadow)) style.shadow = value.shadow;
+  if (isTextAlignment(value.alignment)) style.alignment = value.alignment;
+  style.radius = normalizeNumber(value.radius, 0, 24);
+  style.maxWidth = normalizeNumber(value.maxWidth, 240, 900);
+  style.padding = normalizeNumber(value.padding, 0, 32);
+  if (Array.isArray(value.cssClasses)) {
+    const classes = value.cssClasses
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => /^[A-Za-z_][\w-]*$/.test(item));
+    if (classes.length) style.cssClasses = [...new Set(classes)].slice(0, 12);
+  }
+  return Object.keys(style).length ? style : undefined;
+}
+
+export function normalizeCardBlockStyle(value: unknown): CardBlockStyle | undefined {
+  if (!isRecord(value)) return undefined;
+  const style: CardBlockStyle = {};
+  if (value.tone === 'soft' || value.tone === 'strong' || value.tone === 'accent') {
+    style.tone = value.tone;
+  }
+  if (value.border === 'outline' || value.border === 'divider') style.border = value.border;
+  if (isTextAlignment(value.alignment)) style.alignment = value.alignment;
+  style.padding = normalizeNumber(value.padding, 0, 24);
+  return Object.keys(style).length ? style : undefined;
+}
+
+function normalizeBlockBase(value: Record<string, unknown>): {
+  width?: CardBlockWidth;
+  style?: CardBlockStyle;
+} {
+  const base: { width?: CardBlockWidth; style?: CardBlockStyle } = {};
+  if (value.width === 'full'
+    || value.width === 'half'
+    || value.width === 'third'
+    || value.width === 'quarter') {
+    base.width = value.width;
+  }
+  base.style = normalizeCardBlockStyle(value.style);
+  return base;
 }
 
 function normalizePropertyEntry(
@@ -244,7 +328,43 @@ function normalizePropertyEntry(
   return {
     id: uniqueId(value.id, 'property', usedIds),
     reference: typeof value.reference === 'string' ? value.reference : '',
+    label: typeof value.label === 'string' && value.label.trim() ? value.label.trim() : undefined,
+    labelPosition: value.labelPosition === 'above' || value.labelPosition === 'hidden'
+      ? value.labelPosition
+      : undefined,
+    alignment: isTextAlignment(value.alignment) ? value.alignment : undefined,
+    labelWidth: normalizeNumber(value.labelWidth, 20, 70),
   };
+}
+
+function normalizeNumber(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number)) return undefined;
+  return Math.min(maximum, Math.max(minimum, Math.round(number)));
+}
+
+function isTextAlignment(value: unknown): value is CardTextAlignment {
+  return value === 'left' || value === 'center' || value === 'right';
+}
+
+function isBackgroundTone(value: unknown): value is CardBackgroundTone {
+  return value === 'default'
+    || value === 'primary'
+    || value === 'secondary'
+    || value === 'accent'
+    || value === 'transparent';
+}
+
+function isBorderStyle(value: unknown): value is CardBorderStyle {
+  return value === 'default' || value === 'none' || value === 'subtle' || value === 'accent';
+}
+
+function isShadowStyle(value: unknown): value is CardShadowStyle {
+  return value === 'none' || value === 'small' || value === 'medium' || value === 'large';
 }
 
 function uniqueId(value: unknown, prefix: string, usedIds: Set<string>): string {

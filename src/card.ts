@@ -104,6 +104,7 @@ export class InfoCard {
     }
     if (preview) classes.push('variable-links-card-preview');
     const container = createDiv({ cls: classes.join(' ') });
+    if (useBlockLayout) this.applyCardStyle(container, cardConfig);
     if (useBlockLayout) {
       container.style.setProperty('--variable-links-card-layout-gap', `${layoutGap}px`);
     }
@@ -113,10 +114,12 @@ export class InfoCard {
     renderChild.load();
     const hydrate: Array<() => Promise<void>> = [];
     for (const block of blocks) {
-      const host = layoutMode === 'grid'
+      const wrapBlock = layoutMode === 'grid' || Boolean(useBlockLayout && block.style);
+      const host = wrapBlock
         ? container.createDiv({ cls: 'variable-links-card-block' })
         : container;
       if (layoutMode === 'grid') host.dataset.width = block.width ?? 'auto';
+      if (wrapBlock) this.applyBlockStyle(host, block);
       this.renderBlock(
         block,
         host,
@@ -128,6 +131,40 @@ export class InfoCard {
       );
     }
     return { container, hydrate, generation };
+  }
+
+  private applyCardStyle(container: HTMLElement, cardConfig: CardConfig): void {
+    const style = cardConfig.cardStyle;
+    if (!style) return;
+    if (style.background && style.background !== 'default') {
+      container.addClass(`variable-links-card-background-${style.background}`);
+    }
+    if (style.border && style.border !== 'default') {
+      container.addClass(`variable-links-card-border-${style.border}`);
+    }
+    if (style.shadow) container.addClass(`variable-links-card-shadow-${style.shadow}`);
+    if (style.alignment) container.addClass(`variable-links-card-align-${style.alignment}`);
+    if (style.radius !== undefined) {
+      container.style.setProperty('--variable-links-card-radius', `${style.radius}px`);
+    }
+    if (style.maxWidth !== undefined) {
+      container.style.setProperty('--variable-links-card-max-width', `${style.maxWidth}px`);
+      container.addClass('variable-links-card-custom-width');
+    }
+    if (style.padding !== undefined) {
+      container.style.setProperty('--variable-links-card-padding', `${style.padding}px`);
+    }
+    for (const cssClass of style.cssClasses ?? []) container.addClass(cssClass);
+  }
+
+  private applyBlockStyle(host: HTMLElement, block: CardBlock): void {
+    const style = block.style;
+    if (!style) return;
+    host.addClass('variable-links-card-block-styled');
+    if (style.tone) host.addClass(`variable-links-card-block-tone-${style.tone}`);
+    if (style.border) host.addClass(`variable-links-card-block-border-${style.border}`);
+    if (style.alignment) host.addClass(`variable-links-card-block-align-${style.alignment}`);
+    if (style.padding !== undefined) host.style.padding = `${style.padding}px`;
   }
 
   private renderBlock(
@@ -210,12 +247,20 @@ export class InfoCard {
   ): void {
     const wrapper = createDiv({ cls: 'variable-links-card-property' });
     const parsed = this.parsePropertyReference(property.reference, sourceFilePath);
-    const name = createDiv({
-      cls: 'variable-links-card-property-name',
-      text: parsed.label || this.toSentenceCase(parsed.field),
-    });
+    wrapper.dataset.labelPosition = property.labelPosition ?? 'left';
+    if (property.alignment) wrapper.dataset.alignment = property.alignment;
+    if (property.labelWidth !== undefined) {
+      wrapper.style.setProperty('--variable-links-card-label-width', `${property.labelWidth}%`);
+    }
+    const name = property.labelPosition === 'hidden'
+      ? null
+      : createDiv({
+        cls: 'variable-links-card-property-name',
+        text: (property.label ?? parsed.label) || this.toSentenceCase(parsed.field),
+      });
     const value = createDiv({ cls: 'variable-links-card-property-value', text: '…' });
-    wrapper.append(name, value);
+    if (name) wrapper.append(name, value);
+    else wrapper.append(value);
     host.appendChild(wrapper);
     this.queuePropertyHydration(
       parsed,
@@ -281,12 +326,52 @@ export class InfoCard {
     generation: number,
   ): void {
     const parsed = this.parsePropertyReference(property.reference, sourceFilePath);
+    const label = (property.label ?? parsed.label) || this.toSentenceCase(parsed.field);
+    if (property.labelPosition === 'above') {
+      const cell = createEl('td', { cls: 'variable-links-card-field-cell' });
+      cell.colSpan = 2;
+      const wrapper = cell.createDiv({ cls: 'variable-links-card-property' });
+      wrapper.dataset.labelPosition = 'above';
+      if (property.alignment) wrapper.dataset.alignment = property.alignment;
+      wrapper.createDiv({ cls: 'variable-links-card-property-name', text: label });
+      const value = wrapper.createDiv({ cls: 'variable-links-card-property-value', text: '…' });
+      row.appendChild(cell);
+      this.queuePropertyHydration(
+        parsed,
+        value,
+        container,
+        renderChild,
+        hydrate,
+        generation,
+      );
+      return;
+    }
+    if (property.labelPosition === 'hidden') {
+      const value = createEl('td', { cls: 'variable-links-card-field-value', text: '…' });
+      value.colSpan = 2;
+      if (property.alignment) value.style.textAlign = property.alignment;
+      row.appendChild(value);
+      this.queuePropertyHydration(
+        parsed,
+        value,
+        container,
+        renderChild,
+        hydrate,
+        generation,
+      );
+      return;
+    }
     const name = createEl('th', {
       cls: 'variable-links-card-field-name',
-      text: parsed.label || this.toSentenceCase(parsed.field),
+      text: label,
     });
     name.scope = 'row';
     const value = createEl('td', { cls: 'variable-links-card-field-value', text: '…' });
+    if (property.labelWidth !== undefined) name.style.width = `${property.labelWidth}%`;
+    if (property.alignment) {
+      name.style.textAlign = property.alignment;
+      value.style.textAlign = property.alignment;
+    }
     row.append(name, value);
     this.queuePropertyHydration(
       parsed,

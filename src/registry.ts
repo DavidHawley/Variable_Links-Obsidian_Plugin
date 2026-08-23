@@ -7,6 +7,7 @@ import type { CardConfig } from './card';
 import {
   deriveLegacyCardFields,
   normalizeCardBlocks,
+  normalizeCardStyle,
   normalizeGridColumns,
   normalizeLayoutGap,
 } from './cardBlocks';
@@ -506,6 +507,7 @@ export class Registry {
         : value.layoutMode === 'stack' ? 'stack' : undefined,
       gridColumns: normalizeGridColumns(value.gridColumns),
       layoutGap: normalizeLayoutGap(value.layoutGap),
+      cardStyle: normalizeCardStyle(value.cardStyle),
       disableLivePreviewHover: value.disableLivePreviewHover === true,
     };
   }

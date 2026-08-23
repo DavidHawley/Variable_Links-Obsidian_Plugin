@@ -16,6 +16,10 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added Stack and responsive Grid Info Card layouts with one to four automatic columns, adjustable spacing, and per-block width controls.
 - Added drag-and-drop ordering, an in-editor live preview, and up to 50 steps of undo while editing a card layout.
 - Added one-to-four-column Property tables with automatic or fixed minimum rows and controls for moving property cells within or between tables.
+- Added theme-aware Info Card controls for background, border, corner radius, shadow, maximum width, padding, alignment, and optional CSS snippet classes.
+- Added per-block controls for background tone, padding, border, and alignment.
+- Added independent property controls for displayed labels, label placement, alignment, and label width without changing the property reference.
+- Added Classic stack, Compact grid, and Profile card starter layouts, plus Restore original and Restore defaults actions.
 
 ### Changed
 
@@ -34,12 +38,14 @@ All notable user-visible changes to Variable Links are recorded here.
 - Existing Info Cards can seed the block layout while preserving their original content order and initial appearance, and both editor configurations are retained when switching.
 - Separated comma-delimited entries in block Property controls so linked `[[File]]#property` values resolve correctly.
 - Grid Info Cards collapse to a single column when the available card width becomes narrow.
+- Multi-column cards and Property tables now collapse into readable single-column layouts on small screens.
 
 ### Fixed
 
 - Kept the Info Card editor at its current scroll position after dropping or moving layout items.
 - Kept cards using the original simple editor out of the new Grid and Stack layout styling.
 - Prevented original and Stack cards from collapsing to a narrow strip under responsive Grid sizing.
+- Allowed Stage 3 appearance controls to wrap into wider rows without overlapping or clipping.
 
 ## 1.1.1 - 2026-08-22
 

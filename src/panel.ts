@@ -15,12 +15,16 @@ import {
   createPropertyEntry,
   migrateLegacyCardBlocks,
   normalizeCardBlocks,
+  normalizeCardBlockStyle,
+  normalizeCardStyle,
   type CardBlock,
+  type CardBlockStyle,
   type CardBlockWidth,
   type CardGridColumns,
   type CardLayoutMode,
   type CardPropertyEntry,
   type CardPropertyTableBlock,
+  type CardStyleConfig,
 } from './cardBlocks';
 import {
   getDefaultVariableAppearance,
@@ -128,6 +132,7 @@ interface InfoCardEditorState {
   layoutMode: CardLayoutMode;
   gridColumns: CardGridColumns;
   layoutGap: number;
+  cardStyle: CardStyleConfig;
   disableLivePreviewHover: boolean;
 }
 
@@ -135,9 +140,11 @@ class InfoCardLayoutModal extends Modal {
   private readonly blocks: CardBlock[];
   private readonly previewCard: InfoCard;
   private readonly history: InfoCardEditorState[] = [];
+  private readonly originalState: InfoCardEditorState;
   private layoutMode: CardLayoutMode;
   private gridColumns: CardGridColumns;
   private layoutGap: number;
+  private cardStyle: CardStyleConfig;
   private disableLivePreviewHover: boolean;
   private previewHost: HTMLElement | null = null;
   private previewTimer: number | null = null;
@@ -158,8 +165,10 @@ class InfoCardLayoutModal extends Modal {
     this.layoutMode = card.layoutMode ?? 'stack';
     this.gridColumns = card.gridColumns ?? 2;
     this.layoutGap = card.layoutGap ?? (this.layoutMode === 'grid' ? 8 : 0);
+    this.cardStyle = { ...(card.cardStyle ?? {}) };
     this.disableLivePreviewHover = card.disableLivePreviewHover === true;
     this.previewCard = new InfoCard(app);
+    this.originalState = this.snapshot();
   }
 
   onOpen(): void {
@@ -179,15 +188,23 @@ class InfoCardLayoutModal extends Modal {
     this.contentEl.empty();
     const heading = this.contentEl.createDiv({ cls: 'variable-links-card-layout-editor-heading' });
     heading.createEl('h2', { text: `Info Card layout for {{${this.variableName}}}` });
-    this.undoButton = heading.createEl('button', { text: 'Undo', attr: { type: 'button' } });
+    const headingActions = heading.createDiv({ cls: 'variable-links-card-layout-heading-actions' });
+    this.undoButton = headingActions.createEl('button', { text: 'Undo', attr: { type: 'button' } });
     this.undoButton.disabled = this.history.length === 0;
     this.undoButton.addEventListener('click', () => this.undo());
+    headingActions.createEl('button', { text: 'Restore original', attr: { type: 'button' } })
+      .addEventListener('click', () => {
+        this.mutate(() => this.applyState(this.originalState));
+      });
+    headingActions.createEl('button', { text: 'Restore defaults', attr: { type: 'button' } })
+      .addEventListener('click', () => this.restoreDefaults());
     this.contentEl.createEl('p', {
       cls: 'variable-links-hint-text',
       text: 'Drag blocks to arrange them, or use the movement controls for keyboard access.',
     });
 
     this.renderLayoutControls();
+    this.renderCardStyleControls();
     this.renderAddBlockControl();
 
     const list = this.contentEl.createDiv({ cls: 'variable-links-card-layout-list' });
@@ -242,6 +259,14 @@ class InfoCardLayoutModal extends Modal {
 
   private renderLayoutControls(): void {
     const controls = this.contentEl.createDiv({ cls: 'variable-links-card-layout-settings' });
+    const presetRow = controls.createDiv({ cls: 'variable-links-card-layout-setting' });
+    presetRow.createEl('label', { text: 'Starter layout:' });
+    const preset = presetRow.createEl('select', { attr: { 'aria-label': 'Starter layout' } });
+    preset.createEl('option', { value: 'classic', text: 'Classic stack' });
+    preset.createEl('option', { value: 'compact', text: 'Compact grid' });
+    preset.createEl('option', { value: 'profile', text: 'Profile card' });
+    presetRow.createEl('button', { text: 'Apply', attr: { type: 'button' } })
+      .addEventListener('click', () => this.applyPreset(preset.value));
     const mode = this.addSelect(controls, 'Layout:', [
       { value: 'stack', label: 'Stack' },
       { value: 'grid', label: 'Grid' },
@@ -275,6 +300,137 @@ class InfoCardLayoutModal extends Modal {
       }
       this.layoutGap = Number(gap.value);
       gapValue.textContent = `${this.layoutGap}px`;
+      this.schedulePreview();
+    });
+  }
+
+  private renderCardStyleControls(): void {
+    const details = this.contentEl.createEl('details', { cls: 'variable-links-card-style-editor' });
+    details.createEl('summary', { text: 'Card appearance' });
+    const controls = details.createDiv({ cls: 'variable-links-card-layout-settings' });
+    const background = this.addSelect(controls, 'Background:', [
+      { value: 'default', label: 'Theme default' },
+      { value: 'primary', label: 'Primary' },
+      { value: 'secondary', label: 'Secondary' },
+      { value: 'accent', label: 'Accent tint' },
+      { value: 'transparent', label: 'Transparent' },
+    ], this.cardStyle.background ?? 'default');
+    background.addEventListener('change', () => {
+      this.updateCardStyle((style) => {
+        style.background = background.value === 'default'
+          ? undefined
+          : background.value as CardStyleConfig['background'];
+      });
+    });
+
+    const border = this.addSelect(controls, 'Border:', [
+      { value: 'default', label: 'Theme default' },
+      { value: 'none', label: 'None' },
+      { value: 'subtle', label: 'Subtle' },
+      { value: 'accent', label: 'Accent' },
+    ], this.cardStyle.border ?? 'default');
+    border.addEventListener('change', () => {
+      this.updateCardStyle((style) => {
+        style.border = border.value === 'default'
+          ? undefined
+          : border.value as CardStyleConfig['border'];
+      });
+    });
+
+    const shadow = this.addSelect(controls, 'Shadow:', [
+      { value: 'default', label: 'Theme default' },
+      { value: 'none', label: 'None' },
+      { value: 'small', label: 'Small' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'large', label: 'Large' },
+    ], this.cardStyle.shadow ?? 'default');
+    shadow.addEventListener('change', () => {
+      this.updateCardStyle((style) => {
+        style.shadow = shadow.value === 'default'
+          ? undefined
+          : shadow.value as CardStyleConfig['shadow'];
+      });
+    });
+
+    const alignment = this.addSelect(controls, 'Text alignment:', [
+      { value: 'default', label: 'Theme default' },
+      { value: 'left', label: 'Left' },
+      { value: 'center', label: 'Center' },
+      { value: 'right', label: 'Right' },
+    ], this.cardStyle.alignment ?? 'default');
+    alignment.addEventListener('change', () => {
+      this.updateCardStyle((style) => {
+        style.alignment = alignment.value === 'default'
+          ? undefined
+          : alignment.value as CardStyleConfig['alignment'];
+      });
+    });
+
+    const maximumWidth = this.addSelect(controls, 'Maximum width:', [
+      { value: 'default', label: 'Layout default' },
+      ...[320, 400, 480, 560, 640, 720, 800].map((value) => ({
+        value: String(value),
+        label: `${value}px`,
+      })),
+    ], this.cardStyle.maxWidth === undefined ? 'default' : String(this.cardStyle.maxWidth));
+    maximumWidth.addEventListener('change', () => {
+      this.updateCardStyle((style) => {
+        style.maxWidth = maximumWidth.value === 'default'
+          ? undefined
+          : Number(maximumWidth.value);
+      });
+    });
+
+    this.addCardStyleRange(controls, 'Corner radius:', 'radius', 0, 24, 2, 6);
+    this.addCardStyleRange(controls, 'Card padding:', 'padding', 0, 32, 2, 8);
+
+    const classRow = controls.createDiv({ cls: 'variable-links-card-layout-setting' });
+    classRow.createEl('label', { text: 'CSS classes:' });
+    const classInput = classRow.createEl('input', {
+      type: 'text',
+      placeholder: 'my-card wide-card',
+      attr: { 'aria-label': 'CSS classes' },
+    });
+    classInput.value = this.cardStyle.cssClasses?.join(' ') ?? '';
+    this.bindTextEdit(classInput, (value) => {
+      this.cardStyle.cssClasses = value.split(/\s+/).map((item) => item.trim()).filter(Boolean);
+    });
+    controls.createDiv({
+      cls: 'variable-links-hint-text variable-links-card-style-hint',
+      text: 'Optional class names can be styled from an Obsidian CSS snippet.',
+    });
+  }
+
+  private addCardStyleRange(
+    parent: HTMLElement,
+    label: string,
+    property: 'radius' | 'padding',
+    minimum: number,
+    maximum: number,
+    step: number,
+    fallback: number,
+  ): void {
+    const row = parent.createDiv({ cls: 'variable-links-card-layout-setting' });
+    row.createEl('label', { text: label });
+    const input = row.createEl('input', {
+      type: 'range',
+      attr: {
+        min: String(minimum),
+        max: String(maximum),
+        step: String(step),
+        'aria-label': label,
+      },
+    });
+    input.value = String(this.cardStyle[property] ?? fallback);
+    const output = row.createEl('output', { text: `${input.value}px` });
+    let recorded = false;
+    input.addEventListener('input', () => {
+      if (!recorded) {
+        this.recordHistory();
+        recorded = true;
+      }
+      this.cardStyle[property] = Number(input.value);
+      output.textContent = `${input.value}px`;
       this.schedulePreview();
     });
   }
@@ -348,6 +504,8 @@ class InfoCardLayoutModal extends Modal {
     controls.createEl('button', { text: 'Remove', attr: { type: 'button' } })
       .addEventListener('click', () => this.mutate(() => { this.blocks.splice(index, 1); }));
 
+    this.renderBlockStyleControls(item, block);
+
     if (block.type === 'title') {
       const input = this.addModalInput(item, 'Title text:', block.text, 'Info Card title');
       this.bindTextEdit(input, (value) => { block.text = value; });
@@ -389,6 +547,62 @@ class InfoCardLayoutModal extends Modal {
     width.addEventListener('change', () => {
       this.mutate(() => {
         block.width = width.value === 'auto' ? undefined : width.value as CardBlockWidth;
+      });
+    });
+  }
+
+  private renderBlockStyleControls(parent: HTMLElement, block: CardBlock): void {
+    const details = parent.createEl('details', { cls: 'variable-links-card-block-style-editor' });
+    details.createEl('summary', { text: 'Block appearance' });
+    const controls = details.createDiv({ cls: 'variable-links-card-table-settings' });
+    const tone = this.addSelect(controls, 'Background:', [
+      { value: 'none', label: 'None' },
+      { value: 'soft', label: 'Soft' },
+      { value: 'strong', label: 'Strong' },
+      { value: 'accent', label: 'Accent tint' },
+    ], block.style?.tone ?? 'none');
+    tone.addEventListener('change', () => {
+      this.updateBlockStyle(block, (style) => {
+        style.tone = tone.value === 'none'
+          ? undefined
+          : tone.value as CardBlockStyle['tone'];
+      });
+    });
+
+    const padding = this.addSelect(controls, 'Padding:', [
+      { value: 'default', label: 'Default' },
+      ...[0, 4, 8, 12, 16, 24].map((value) => ({ value: String(value), label: `${value}px` })),
+    ], block.style?.padding === undefined ? 'default' : String(block.style.padding));
+    padding.addEventListener('change', () => {
+      this.updateBlockStyle(block, (style) => {
+        style.padding = padding.value === 'default' ? undefined : Number(padding.value);
+      });
+    });
+
+    const border = this.addSelect(controls, 'Border:', [
+      { value: 'none', label: 'None' },
+      { value: 'outline', label: 'Outline' },
+      { value: 'divider', label: 'Bottom divider' },
+    ], block.style?.border ?? 'none');
+    border.addEventListener('change', () => {
+      this.updateBlockStyle(block, (style) => {
+        style.border = border.value === 'none'
+          ? undefined
+          : border.value as CardBlockStyle['border'];
+      });
+    });
+
+    const alignment = this.addSelect(controls, 'Alignment:', [
+      { value: 'default', label: 'Use card setting' },
+      { value: 'left', label: 'Left' },
+      { value: 'center', label: 'Center' },
+      { value: 'right', label: 'Right' },
+    ], block.style?.alignment ?? 'default');
+    alignment.addEventListener('change', () => {
+      this.updateBlockStyle(block, (style) => {
+        style.alignment = alignment.value === 'default'
+          ? undefined
+          : alignment.value as CardBlockStyle['alignment'];
       });
     });
   }
@@ -445,7 +659,7 @@ class InfoCardLayoutModal extends Modal {
       rows.createEl('label', { text: 'Minimum rows:' });
       const rowCount = rows.createEl('input', {
         type: 'number',
-        attr: { min: '1', max: '12', step: '1' },
+        attr: { min: '1', max: '12', step: '1', 'aria-label': 'Minimum rows' },
       });
       rowCount.value = String(block.rows ?? 1);
       rowCount.addEventListener('change', () => {
@@ -575,7 +789,77 @@ class InfoCardLayoutModal extends Modal {
       cls: 'variable-links-hint-text variable-links-card-layout-property-hint',
       text: 'Property, [[File]]#property, or either with :Display name. Comma-separated entries are saved separately.',
     });
+    this.renderPropertyDisplayControls(parent, property);
     return input;
+  }
+
+  private renderPropertyDisplayControls(
+    parent: HTMLElement,
+    property: CardPropertyEntry,
+  ): void {
+    const details = parent.createEl('details', { cls: 'variable-links-card-property-style-editor' });
+    details.createEl('summary', { text: 'Property display' });
+    const controls = details.createDiv({ cls: 'variable-links-card-table-settings' });
+
+    const labelRow = controls.createDiv({ cls: 'variable-links-card-layout-setting' });
+    labelRow.createEl('label', { text: 'Displayed label:' });
+    const label = labelRow.createEl('input', {
+      type: 'text',
+      placeholder: 'Use property name',
+      attr: { 'aria-label': 'Displayed label' },
+    });
+    label.value = property.label ?? '';
+    this.bindTextEdit(label, (value) => { property.label = value.trim() || undefined; });
+
+    const position = this.addSelect(controls, 'Label position:', [
+      { value: 'left', label: 'Beside value' },
+      { value: 'above', label: 'Above value' },
+      { value: 'hidden', label: 'Hidden' },
+    ], property.labelPosition ?? 'left');
+    position.addEventListener('change', () => {
+      this.recordHistory();
+      property.labelPosition = position.value === 'left'
+        ? undefined
+        : position.value as CardPropertyEntry['labelPosition'];
+      this.schedulePreview();
+    });
+
+    const alignment = this.addSelect(controls, 'Alignment:', [
+      { value: 'default', label: 'Use block setting' },
+      { value: 'left', label: 'Left' },
+      { value: 'center', label: 'Center' },
+      { value: 'right', label: 'Right' },
+    ], property.alignment ?? 'default');
+    alignment.addEventListener('change', () => {
+      this.recordHistory();
+      property.alignment = alignment.value === 'default'
+        ? undefined
+        : alignment.value as CardPropertyEntry['alignment'];
+      this.schedulePreview();
+    });
+
+    const widthRow = controls.createDiv({ cls: 'variable-links-card-layout-setting' });
+    widthRow.createEl('label', { text: 'Label width:' });
+    const width = widthRow.createEl('input', {
+      type: 'range',
+      attr: { min: '20', max: '70', step: '5', 'aria-label': 'Property label width' },
+    });
+    width.value = String(property.labelWidth ?? 40);
+    const widthValue = widthRow.createEl('output', { text: `${width.value}%` });
+    let recorded = false;
+    width.addEventListener('input', () => {
+      if (!recorded) {
+        this.recordHistory();
+        recorded = true;
+      }
+      property.labelWidth = Number(width.value);
+      widthValue.textContent = `${width.value}%`;
+      this.schedulePreview();
+    });
+    controls.createDiv({
+      cls: 'variable-links-hint-text variable-links-card-style-hint',
+      text: 'A blank displayed label uses the label in the reference, then the property name.',
+    });
   }
 
   private addModalInput(
@@ -587,6 +871,7 @@ class InfoCardLayoutModal extends Modal {
     const row = parent.createDiv({ cls: 'variable-links-card-layout-field' });
     row.createEl('label', { text: label });
     const input = row.createEl('input', { type: 'text', placeholder });
+    input.setAttribute('aria-label', label.replace(/:$/, ''));
     input.value = value;
     return input;
   }
@@ -600,6 +885,7 @@ class InfoCardLayoutModal extends Modal {
     const row = parent.createDiv({ cls: 'variable-links-card-layout-field' });
     row.createEl('label', { text: label });
     const input = row.createEl('textarea', { attr: { placeholder, rows: '4' } });
+    input.setAttribute('aria-label', label.replace(/:$/, ''));
     input.value = value;
     return input;
   }
@@ -613,6 +899,7 @@ class InfoCardLayoutModal extends Modal {
     const row = parent.createDiv({ cls: 'variable-links-card-layout-setting' });
     row.createEl('label', { text: label });
     const select = row.createEl('select');
+    select.setAttribute('aria-label', label.replace(/:$/, ''));
     for (const option of options) {
       select.createEl('option', { value: option.value, text: option.label });
     }
@@ -727,6 +1014,98 @@ class InfoCardLayoutModal extends Modal {
     this.draggedProperty = null;
   }
 
+  private updateCardStyle(update: (style: CardStyleConfig) => void): void {
+    this.recordHistory();
+    const style = { ...this.cardStyle };
+    update(style);
+    this.cardStyle = normalizeCardStyle(style) ?? {};
+    this.schedulePreview();
+  }
+
+  private updateBlockStyle(
+    block: CardBlock,
+    update: (style: CardBlockStyle) => void,
+  ): void {
+    this.recordHistory();
+    const style = { ...(block.style ?? {}) };
+    update(style);
+    block.style = normalizeCardBlockStyle(style);
+    this.schedulePreview();
+  }
+
+  private applyPreset(preset: string): void {
+    this.mutate(() => {
+      this.layoutMode = preset === 'classic' ? 'stack' : 'grid';
+      this.gridColumns = preset === 'profile' ? 2 : preset === 'compact' ? 3 : 2;
+      this.layoutGap = preset === 'classic' ? 0 : preset === 'profile' ? 12 : 8;
+      this.cardStyle = preset === 'classic'
+        ? {}
+        : {
+          background: 'secondary',
+          border: 'subtle',
+          radius: preset === 'profile' ? 12 : 8,
+          shadow: 'small',
+          maxWidth: preset === 'profile' ? 640 : 560,
+          padding: preset === 'profile' ? 12 : 8,
+        };
+      for (const block of this.blocks) {
+        block.style = undefined;
+        if (preset === 'classic') {
+          block.width = undefined;
+        } else if (block.type === 'title'
+          || block.type === 'source'
+          || block.type === 'divider'
+          || block.type === 'property-table'
+          || (preset === 'profile' && block.type === 'note')) {
+          block.width = 'full';
+        } else {
+          block.width = undefined;
+        }
+        if (block.type === 'property-table') {
+          block.columns = preset === 'classic' ? undefined : 2;
+          block.rowMode = undefined;
+          block.rows = undefined;
+        }
+      }
+    });
+  }
+
+  private restoreDefaults(): void {
+    this.mutate(() => {
+      this.layoutMode = 'stack';
+      this.gridColumns = 2;
+      this.layoutGap = 0;
+      this.cardStyle = {};
+      for (const block of this.blocks) {
+        block.width = undefined;
+        block.style = undefined;
+        if (block.type === 'property') this.resetPropertyDisplay(block.property);
+        if (block.type === 'property-table') {
+          block.columns = undefined;
+          block.rowMode = undefined;
+          block.rows = undefined;
+          for (const property of block.properties) this.resetPropertyDisplay(property);
+        }
+      }
+    });
+  }
+
+  private resetPropertyDisplay(property: CardPropertyEntry): void {
+    property.label = undefined;
+    property.labelPosition = undefined;
+    property.alignment = undefined;
+    property.labelWidth = undefined;
+  }
+
+  private applyState(state: InfoCardEditorState): void {
+    this.blocks.splice(0, this.blocks.length, ...cloneCardBlocks(state.blocks));
+    this.layoutMode = state.layoutMode;
+    this.gridColumns = state.gridColumns;
+    this.layoutGap = state.layoutGap;
+    this.cardStyle = { ...state.cardStyle, cssClasses: state.cardStyle.cssClasses?.slice() };
+    this.disableLivePreviewHover = state.disableLivePreviewHover;
+  }
+
   private mutate(change: () => void): void {
     const scrollPosition = this.getScrollContainer().scrollTop;
     this.recordHistory();
@@ -745,11 +1124,7 @@ class InfoCardLayoutModal extends Modal {
     const previous = this.history.pop();
     if (!previous) return;
     const scrollPosition = this.getScrollContainer().scrollTop;
-    this.blocks.splice(0, this.blocks.length, ...cloneCardBlocks(previous.blocks));
-    this.layoutMode = previous.layoutMode;
-    this.gridColumns = previous.gridColumns;
-    this.layoutGap = previous.layoutGap;
-    this.disableLivePreviewHover = previous.disableLivePreviewHover;
+    this.applyState(previous);
     this.render();
     this.restoreScrollPosition(scrollPosition);
   }
@@ -772,6 +1147,10 @@ class InfoCardLayoutModal extends Modal {
       layoutMode: this.layoutMode,
       gridColumns: this.gridColumns,
       layoutGap: this.layoutGap,
+      cardStyle: {
+        ...this.cardStyle,
+        cssClasses: this.cardStyle.cssClasses?.slice(),
+      },
       disableLivePreviewHover: this.disableLivePreviewHover,
     };
   }
@@ -783,6 +1162,7 @@ class InfoCardLayoutModal extends Modal {
       layoutMode: this.layoutMode,
       gridColumns: this.gridColumns,
       layoutGap: this.layoutGap,
+      cardStyle: normalizeCardStyle(this.cardStyle),
       disableLivePreviewHover: this.disableLivePreviewHover || undefined,
     };
   }
