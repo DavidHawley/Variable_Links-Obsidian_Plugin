@@ -1,5 +1,4 @@
 import {
-  App,
   ItemView,
   MarkdownRenderChild,
   MarkdownRenderer,
@@ -64,14 +63,15 @@ type PanelTab = 'link' | 'card';
 
 class DeleteVariableModal extends Modal {
   constructor(
-    app: App,
+    private readonly plugin: VariableLinksPlugin,
     private readonly variableName: string,
     private readonly onConfirm: () => void,
   ) {
-    super(app);
+    super(plugin.app);
   }
 
   onOpen(): void {
+    this.plugin.trackDialog(this);
     this.contentEl.createEl('h3', { text: 'Delete variable link?' });
     this.contentEl.createEl('p', {
       text: `Delete “${this.variableName}”? Existing tokens will remain in notes but will no longer resolve.`,
@@ -85,21 +85,23 @@ class DeleteVariableModal extends Modal {
   }
 
   onClose(): void {
+    this.plugin.releaseDialog(this);
     this.contentEl.empty();
   }
 }
 
 class ChangeVariableTypeModal extends Modal {
   constructor(
-    app: App,
+    private readonly plugin: VariableLinksPlugin,
     private readonly currentType: VariableType,
     private readonly nextType: VariableType,
     private readonly onConfirm: () => void,
   ) {
-    super(app);
+    super(plugin.app);
   }
 
   onOpen(): void {
+    this.plugin.trackDialog(this);
     const currentLabel = this.currentType === 'fixed' ? 'Fixed value' : 'Property value';
     const nextLabel = this.nextType === 'fixed' ? 'Fixed value' : 'Property value';
     this.contentEl.createEl('h3', { text: 'Change variable type?' });
@@ -123,6 +125,7 @@ class ChangeVariableTypeModal extends Modal {
   }
 
   onClose(): void {
+    this.plugin.releaseDialog(this);
     this.contentEl.empty();
   }
 }
@@ -148,37 +151,44 @@ class InfoCardLayoutModal extends Modal {
   private disableLivePreviewHover: boolean;
   private previewHost: HTMLElement | null = null;
   private previewTimer: number | null = null;
+  private scrollRestoreFrame: number | null = null;
   private undoButton: HTMLButtonElement | null = null;
   private draggedBlockId: string | null = null;
   private draggedProperty: { blockId: string; propertyId: string } | null = null;
 
   constructor(
-    app: App,
+    private readonly plugin: VariableLinksPlugin,
     private readonly variableName: string,
     card: CardConfig,
     private readonly sourceFilePath: string,
     private readonly attachPropertySuggestions: (input: HTMLInputElement) => void,
     private readonly onSave: (card: CardConfig) => Promise<void>,
   ) {
-    super(app);
+    super(plugin.app);
     this.blocks = normalizeCardBlocks(card.blocks ?? migrateLegacyCardBlocks(card)) ?? [];
     this.layoutMode = card.layoutMode ?? 'stack';
     this.gridColumns = card.gridColumns ?? 2;
     this.layoutGap = card.layoutGap ?? (this.layoutMode === 'grid' ? 8 : 0);
     this.cardStyle = { ...(card.cardStyle ?? {}) };
     this.disableLivePreviewHover = card.disableLivePreviewHover === true;
-    this.previewCard = new InfoCard(app);
+    this.previewCard = new InfoCard(plugin.app);
     this.originalState = this.snapshot();
   }
 
   onOpen(): void {
+    this.plugin.trackDialog(this);
     this.modalEl.addClass('variable-links-card-layout-modal');
     this.render();
   }
 
   onClose(): void {
+    this.plugin.releaseDialog(this);
     if (this.previewTimer !== null) window.clearTimeout(this.previewTimer);
     this.previewTimer = null;
+    if (this.scrollRestoreFrame !== null) {
+      window.cancelAnimationFrame(this.scrollRestoreFrame);
+      this.scrollRestoreFrame = null;
+    }
     this.previewCard.destroy();
     this.contentEl.empty();
   }
@@ -1136,7 +1146,11 @@ class InfoCardLayoutModal extends Modal {
   private restoreScrollPosition(scrollPosition: number): void {
     const scrollContainer = this.getScrollContainer();
     scrollContainer.scrollTop = scrollPosition;
-    window.requestAnimationFrame(() => {
+    if (this.scrollRestoreFrame !== null) {
+      window.cancelAnimationFrame(this.scrollRestoreFrame);
+    }
+    this.scrollRestoreFrame = window.requestAnimationFrame(() => {
+      this.scrollRestoreFrame = null;
       if (scrollContainer.isConnected) scrollContainer.scrollTop = scrollPosition;
     });
   }
@@ -1191,6 +1205,7 @@ export class VariablePropertiesView extends ItemView {
   private active = false;
   private refreshGeneration = 0;
   private timers = new Set<number>();
+  private metadataWaitCleanups = new Set<() => void>();
   private markdownChild: MarkdownRenderChild | null = null;
   private activeTab: PanelTab = 'link';
   private creatingVariableType: VariableType | null = null;
@@ -1216,6 +1231,7 @@ export class VariablePropertiesView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.active = true;
+    this.plugin.trackPanel(this);
     this.containerEl.empty();
     this.containerEl.addClass('variable-links-panel');
     this.panelContentEl = this.containerEl.createDiv({ cls: 'variable-links-panel-inner' });
@@ -1223,13 +1239,21 @@ export class VariablePropertiesView extends ItemView {
   }
 
   onClose(): Promise<void> {
+    this.releasePluginResources();
+    this.plugin.releasePanel(this);
+    return Promise.resolve();
+  }
+
+  releasePluginResources(): void {
     this.active = false;
     this.refreshGeneration++;
     for (const timer of this.timers) window.clearTimeout(timer);
     this.timers.clear();
+    for (const cleanup of [...this.metadataWaitCleanups]) cleanup();
+    this.metadataWaitCleanups.clear();
     this.clearMarkdownChild();
     this.panelContentEl = null;
-    return Promise.resolve();
+    this.containerEl.empty();
   }
 
   async selectVariable(name: string): Promise<void> {
@@ -1321,7 +1345,7 @@ export class VariablePropertiesView extends ItemView {
     deleteButton.disabled = !activeName || !storedDefinition;
     deleteButton.addEventListener('click', () => {
       if (deleteButton.disabled) return;
-      new DeleteVariableModal(this.app, activeName, () => void this.deleteVariable(activeName)).open();
+      new DeleteVariableModal(this.plugin, activeName, () => void this.deleteVariable(activeName)).open();
     });
 
     const tabContent = container.createDiv({ cls: 'variable-links-panel-tab-content' });
@@ -1564,7 +1588,7 @@ export class VariablePropertiesView extends ItemView {
         return;
       }
       new ChangeVariableTypeModal(
-        this.app,
+        this.plugin,
         activeType,
         nextType,
         () => applyType(nextType),
@@ -1839,7 +1863,7 @@ export class VariablePropertiesView extends ItemView {
         attr: { type: 'button' },
       }).addEventListener('click', () => {
         new InfoCardLayoutModal(
-          this.app,
+          this.plugin,
           name,
           card,
           filePathFromLink(cardSourceFile),
@@ -2107,12 +2131,14 @@ export class VariablePropertiesView extends ItemView {
         finished = true;
         window.clearTimeout(timer);
         this.app.metadataCache.offref(eventRef);
+        this.metadataWaitCleanups.delete(finish);
         resolve();
       };
       const eventRef = this.app.metadataCache.on('changed', (changedFile) => {
         if (changedFile.path === file.path) finish();
       });
       const timer = window.setTimeout(finish, 1000);
+      this.metadataWaitCleanups.add(finish);
     });
   }
 

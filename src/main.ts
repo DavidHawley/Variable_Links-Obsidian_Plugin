@@ -58,6 +58,14 @@ interface VariableTokenContext {
   to: EditorPosition;
 }
 
+interface CloseableDialog {
+  close(): void;
+}
+
+interface PluginPanelResource {
+  releasePluginResources(): void;
+}
+
 export default class VariableLinksPlugin extends Plugin {
   settings: VariableLinksSettings = { ...DEFAULT_SETTINGS };
   registry: Registry | null = null;
@@ -73,6 +81,8 @@ export default class VariableLinksPlugin extends Plugin {
   private timers = new Set<number>();
   private contextMenuCleanups: Array<() => void> = [];
   private lastContextClick: ContextClick | null = null;
+  private openDialogs = new Set<CloseableDialog>();
+  private openPanels = new Set<PluginPanelResource>();
 
   async onload(): Promise<void> {
     this.active = true;
@@ -132,6 +142,10 @@ export default class VariableLinksPlugin extends Plugin {
 
   onunload(): void {
     this.active = false;
+    for (const dialog of [...this.openDialogs]) dialog.close();
+    this.openDialogs.clear();
+    for (const panel of [...this.openPanels]) panel.releasePluginResources();
+    this.openPanels.clear();
     for (const timer of this.timers) window.clearTimeout(timer);
     this.timers.clear();
     this.clearContextMenuResources();
@@ -150,6 +164,30 @@ export default class VariableLinksPlugin extends Plugin {
     this.resolver = null;
     this.indexer = null;
     this.suggest = null;
+  }
+
+  trackDialog(dialog: CloseableDialog): void {
+    if (!this.active) {
+      dialog.close();
+      return;
+    }
+    this.openDialogs.add(dialog);
+  }
+
+  releaseDialog(dialog: CloseableDialog): void {
+    this.openDialogs.delete(dialog);
+  }
+
+  trackPanel(panel: PluginPanelResource): void {
+    if (!this.active) {
+      panel.releasePluginResources();
+      return;
+    }
+    this.openPanels.add(panel);
+  }
+
+  releasePanel(panel: PluginPanelResource): void {
+    this.openPanels.delete(panel);
   }
 
   onCaretVariableChanged(_last: LastTouched): void {

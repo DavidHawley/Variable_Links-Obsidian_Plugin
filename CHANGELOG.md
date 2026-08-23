@@ -42,6 +42,7 @@ All notable user-visible changes to Variable Links are recorded here.
 
 ### Fixed
 
+- Cleaned up resources owned by open panels and dialogs, including preview rendering and pending callbacks, when the plugin unloads.
 - Kept the Info Card editor at its current scroll position after dropping or moving layout items.
 - Kept cards using the original simple editor out of the new Grid and Stack layout styling.
 - Prevented original and Stack cards from collapsing to a narrow strip under responsive Grid sizing.
