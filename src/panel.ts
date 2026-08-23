@@ -8,7 +8,7 @@ import {
   TFile,
   WorkspaceLeaf,
 } from 'obsidian';
-import type { CardConfig } from './card';
+import InfoCard, { type CardConfig } from './card';
 import {
   cloneCardBlocks,
   createCardBlock,
@@ -16,6 +16,9 @@ import {
   migrateLegacyCardBlocks,
   normalizeCardBlocks,
   type CardBlock,
+  type CardBlockWidth,
+  type CardGridColumns,
+  type CardLayoutMode,
   type CardPropertyEntry,
   type CardPropertyTableBlock,
 } from './cardBlocks';
@@ -120,21 +123,43 @@ class ChangeVariableTypeModal extends Modal {
   }
 }
 
+interface InfoCardEditorState {
+  blocks: CardBlock[];
+  layoutMode: CardLayoutMode;
+  gridColumns: CardGridColumns;
+  layoutGap: number;
+  disableLivePreviewHover: boolean;
+}
+
 class InfoCardLayoutModal extends Modal {
   private readonly blocks: CardBlock[];
+  private readonly previewCard: InfoCard;
+  private readonly history: InfoCardEditorState[] = [];
+  private layoutMode: CardLayoutMode;
+  private gridColumns: CardGridColumns;
+  private layoutGap: number;
   private disableLivePreviewHover: boolean;
+  private previewHost: HTMLElement | null = null;
+  private previewTimer: number | null = null;
+  private undoButton: HTMLButtonElement | null = null;
+  private draggedBlockId: string | null = null;
+  private draggedProperty: { blockId: string; propertyId: string } | null = null;
 
   constructor(
     app: App,
     private readonly variableName: string,
     card: CardConfig,
-    private readonly hasSourceFile: boolean,
+    private readonly sourceFilePath: string,
     private readonly attachPropertySuggestions: (input: HTMLInputElement) => void,
     private readonly onSave: (card: CardConfig) => Promise<void>,
   ) {
     super(app);
     this.blocks = normalizeCardBlocks(card.blocks ?? migrateLegacyCardBlocks(card)) ?? [];
+    this.layoutMode = card.layoutMode ?? 'stack';
+    this.gridColumns = card.gridColumns ?? 2;
+    this.layoutGap = card.layoutGap ?? (this.layoutMode === 'grid' ? 8 : 0);
     this.disableLivePreviewHover = card.disableLivePreviewHover === true;
+    this.previewCard = new InfoCard(app);
   }
 
   onOpen(): void {
@@ -143,17 +168,118 @@ class InfoCardLayoutModal extends Modal {
   }
 
   onClose(): void {
+    if (this.previewTimer !== null) window.clearTimeout(this.previewTimer);
+    this.previewTimer = null;
+    this.previewCard.destroy();
     this.contentEl.empty();
   }
 
   private render(): void {
+    this.previewCard.hideImmediate();
     this.contentEl.empty();
-    this.contentEl.createEl('h2', { text: `Info Card layout for {{${this.variableName}}}` });
+    const heading = this.contentEl.createDiv({ cls: 'variable-links-card-layout-editor-heading' });
+    heading.createEl('h2', { text: `Info Card layout for {{${this.variableName}}}` });
+    this.undoButton = heading.createEl('button', { text: 'Undo', attr: { type: 'button' } });
+    this.undoButton.disabled = this.history.length === 0;
+    this.undoButton.addEventListener('click', () => this.undo());
     this.contentEl.createEl('p', {
       cls: 'variable-links-hint-text',
-      text: 'Blocks render from top to bottom. Use the movement controls to arrange them.',
+      text: 'Drag blocks to arrange them, or use the movement controls for keyboard access.',
     });
 
+    this.renderLayoutControls();
+    this.renderAddBlockControl();
+
+    const list = this.contentEl.createDiv({ cls: 'variable-links-card-layout-list' });
+    list.addEventListener('dragover', (event) => {
+      if (!this.draggedBlockId) return;
+      event.preventDefault();
+    });
+    list.addEventListener('drop', (event) => {
+      if (!this.draggedBlockId || event.target !== list) return;
+      event.preventDefault();
+      this.dropBlockAt(this.blocks.length);
+    });
+    if (!this.blocks.length) {
+      list.createDiv({
+        cls: 'variable-links-card-layout-empty',
+        text: 'No blocks yet. Add a block to build this Info Card.',
+      });
+    }
+    this.blocks.forEach((block, index) => this.renderBlock(list, block, index));
+
+    const previewSection = this.contentEl.createDiv({ cls: 'variable-links-card-preview-section' });
+    previewSection.createEl('h3', { text: 'Live preview' });
+    this.previewHost = previewSection.createDiv({ cls: 'variable-links-card-preview-host' });
+    this.schedulePreview(0);
+
+    const options = this.contentEl.createDiv({ cls: 'variable-links-card-layout-options' });
+    const livePreviewLabel = options.createEl('label');
+    const livePreviewInput = livePreviewLabel.createEl('input', { type: 'checkbox' });
+    livePreviewInput.checked = this.disableLivePreviewHover;
+    livePreviewInput.addEventListener('change', () => {
+      this.recordHistory();
+      this.disableLivePreviewHover = livePreviewInput.checked;
+    });
+    livePreviewLabel.createSpan({ text: 'Disable live preview hover for this card' });
+
+    const footer = this.contentEl.createDiv({ cls: 'variable-links-card-layout-footer' });
+    footer.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
+      .addEventListener('click', () => this.close());
+    const saveButton = footer.createEl('button', {
+      text: 'Save info card',
+      cls: 'mod-cta',
+      attr: { type: 'button' },
+    });
+    saveButton.addEventListener('click', () => {
+      saveButton.disabled = true;
+      void this.onSave(this.currentCard()).then(() => this.close()).catch((error: unknown) => {
+        saveButton.disabled = false;
+        new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    });
+  }
+
+  private renderLayoutControls(): void {
+    const controls = this.contentEl.createDiv({ cls: 'variable-links-card-layout-settings' });
+    const mode = this.addSelect(controls, 'Layout:', [
+      { value: 'stack', label: 'Stack' },
+      { value: 'grid', label: 'Grid' },
+    ], this.layoutMode);
+    mode.addEventListener('change', () => {
+      this.mutate(() => { this.layoutMode = mode.value === 'grid' ? 'grid' : 'stack'; });
+    });
+
+    const columns = this.addSelect(controls, 'Grid columns:', [1, 2, 3, 4].map((value) => ({
+      value: String(value),
+      label: String(value),
+    })), String(this.gridColumns));
+    columns.disabled = this.layoutMode !== 'grid';
+    columns.addEventListener('change', () => {
+      this.mutate(() => { this.gridColumns = Number(columns.value) as CardGridColumns; });
+    });
+
+    const gapRow = controls.createDiv({ cls: 'variable-links-card-layout-setting' });
+    gapRow.createEl('label', { text: 'Spacing:' });
+    const gap = gapRow.createEl('input', {
+      type: 'range',
+      attr: { min: '0', max: '24', step: '2', 'aria-label': 'Layout spacing' },
+    });
+    gap.value = String(this.layoutGap);
+    const gapValue = gapRow.createEl('output', { text: `${this.layoutGap}px` });
+    let recorded = false;
+    gap.addEventListener('input', () => {
+      if (!recorded) {
+        this.recordHistory();
+        recorded = true;
+      }
+      this.layoutGap = Number(gap.value);
+      gapValue.textContent = `${this.layoutGap}px`;
+      this.schedulePreview();
+    });
+  }
+
+  private renderAddBlockControl(): void {
     const addRow = this.contentEl.createDiv({ cls: 'variable-links-card-layout-add' });
     const typeSelect = addRow.createEl('select', { attr: { 'aria-label': 'Block type' } });
     const blockTypes: Array<{ type: CardBlock['type']; label: string }> = [
@@ -169,56 +295,49 @@ class InfoCardLayoutModal extends Modal {
     }
     addRow.createEl('button', { text: 'Add block', attr: { type: 'button' } })
       .addEventListener('click', () => {
-        const type = typeSelect.value as CardBlock['type'];
-        this.blocks.push(createCardBlock(type));
-        this.render();
+        this.mutate(() => this.blocks.push(createCardBlock(typeSelect.value as CardBlock['type'])));
       });
-
-    const list = this.contentEl.createDiv({ cls: 'variable-links-card-layout-list' });
-    if (!this.blocks.length) {
-      list.createDiv({
-        cls: 'variable-links-card-layout-empty',
-        text: 'No blocks yet. Add a block to build this Info Card.',
-      });
-    }
-    this.blocks.forEach((block, index) => this.renderBlock(list, block, index));
-
-    const options = this.contentEl.createDiv({ cls: 'variable-links-card-layout-options' });
-    const livePreviewLabel = options.createEl('label');
-    const livePreviewInput = livePreviewLabel.createEl('input', { type: 'checkbox' });
-    livePreviewInput.checked = this.disableLivePreviewHover;
-    livePreviewInput.addEventListener('change', () => {
-      this.disableLivePreviewHover = livePreviewInput.checked;
-    });
-    livePreviewLabel.createSpan({ text: 'Disable live preview hover for this card' });
-
-    const footer = this.contentEl.createDiv({ cls: 'variable-links-card-layout-footer' });
-    footer.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
-      .addEventListener('click', () => this.close());
-    const saveButton = footer.createEl('button', {
-      text: 'Save info card',
-      cls: 'mod-cta',
-      attr: { type: 'button' },
-    });
-    saveButton.addEventListener('click', () => {
-      saveButton.disabled = true;
-      const blocks = normalizeCardBlocks(this.blocks) ?? [];
-      void this.onSave({
-        blocks: cloneCardBlocks(blocks),
-        useBlockLayout: true,
-        disableLivePreviewHover: this.disableLivePreviewHover || undefined,
-      }).then(() => this.close()).catch((error: unknown) => {
-        saveButton.disabled = false;
-        new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
-      });
-    });
   }
 
   private renderBlock(parent: HTMLElement, block: CardBlock, index: number): void {
     const item = parent.createDiv({ cls: 'variable-links-card-layout-block' });
+    item.dataset.blockId = block.id;
+    item.addEventListener('dragover', (event) => {
+      if (!this.draggedBlockId || this.draggedBlockId === block.id) return;
+      event.preventDefault();
+      event.stopPropagation();
+      item.addClass('is-drag-target');
+    });
+    item.addEventListener('dragleave', () => item.removeClass('is-drag-target'));
+    item.addEventListener('drop', (event) => {
+      if (!this.draggedBlockId || this.draggedBlockId === block.id) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const after = event.clientY > item.getBoundingClientRect().top + item.offsetHeight / 2;
+      this.dropBlockAt(index + (after ? 1 : 0));
+    });
+
     const heading = item.createDiv({ cls: 'variable-links-card-layout-block-heading' });
-    heading.createEl('strong', { text: this.blockLabel(block) });
+    const title = heading.createDiv({ cls: 'variable-links-card-layout-block-title' });
+    const dragHandle = title.createEl('button', {
+      text: 'Drag',
+      cls: 'variable-links-card-drag-handle',
+      attr: { type: 'button', draggable: 'true', 'aria-label': `Drag ${this.blockLabel(block)}` },
+    });
+    dragHandle.addEventListener('dragstart', (event) => {
+      this.draggedBlockId = block.id;
+      event.dataTransfer?.setData('text/plain', block.id);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+      item.addClass('is-dragging');
+    });
+    dragHandle.addEventListener('dragend', () => {
+      this.draggedBlockId = null;
+      item.removeClass('is-dragging');
+    });
+    title.createEl('strong', { text: this.blockLabel(block) });
+
     const controls = heading.createDiv({ cls: 'variable-links-card-layout-controls' });
+    if (this.layoutMode === 'grid') this.renderBlockWidthControl(controls, block);
     this.addMoveButton(controls, 'Move up', index === 0, () => this.moveBlock(index, -1));
     this.addMoveButton(
       controls,
@@ -227,14 +346,11 @@ class InfoCardLayoutModal extends Modal {
       () => this.moveBlock(index, 1),
     );
     controls.createEl('button', { text: 'Remove', attr: { type: 'button' } })
-      .addEventListener('click', () => {
-        this.blocks.splice(index, 1);
-        this.render();
-      });
+      .addEventListener('click', () => this.mutate(() => { this.blocks.splice(index, 1); }));
 
     if (block.type === 'title') {
       const input = this.addModalInput(item, 'Title text:', block.text, 'Info Card title');
-      input.addEventListener('input', () => { block.text = input.value; });
+      this.bindTextEdit(input, (value) => { block.text = value; });
     } else if (block.type === 'note') {
       const input = this.addModalTextarea(
         item,
@@ -242,19 +358,39 @@ class InfoCardLayoutModal extends Modal {
         block.markdown,
         'Write a note for this card',
       );
-      input.addEventListener('input', () => { block.markdown = input.value; });
+      this.bindTextEdit(input, (value) => { block.markdown = value; });
     } else if (block.type === 'property') {
       this.renderStandalonePropertyEditor(item, block, index);
     } else if (block.type === 'property-table') {
       this.renderPropertyTableEditor(item, block, index);
     } else if (block.type === 'divider') {
       item.createEl('hr');
-    } else if (!this.hasSourceFile) {
+    } else if (!this.sourceFilePath) {
       item.createDiv({
         cls: 'variable-links-hint-text',
         text: 'This block will appear after the variable has a file link.',
       });
     }
+  }
+
+  private renderBlockWidthControl(parent: HTMLElement, block: CardBlock): void {
+    const width = parent.createEl('select', { attr: { 'aria-label': 'Block width' } });
+    const options: Array<{ value: CardBlockWidth | 'auto'; label: string }> = [
+      { value: 'auto', label: 'Auto width' },
+      { value: 'full', label: 'Full width' },
+      { value: 'half', label: 'Half width' },
+      { value: 'third', label: 'Third width' },
+      { value: 'quarter', label: 'Quarter width' },
+    ];
+    for (const option of options) {
+      width.createEl('option', { value: option.value, text: option.label });
+    }
+    width.value = block.width ?? 'auto';
+    width.addEventListener('change', () => {
+      this.mutate(() => {
+        block.width = width.value === 'auto' ? undefined : width.value as CardBlockWidth;
+      });
+    });
   }
 
   private renderStandalonePropertyEditor(
@@ -263,27 +399,25 @@ class InfoCardLayoutModal extends Modal {
     index: number,
   ): void {
     const input = this.addPropertyInput(parent, block.property);
-    input.addEventListener('input', () => { block.property.reference = input.value; });
-    const groupButton = parent.createEl('button', {
-      text: 'Put in property table',
-      attr: { type: 'button' },
-    });
-    groupButton.addEventListener('click', () => {
-      const table = this.blocks.find(
-        (candidate): candidate is CardPropertyTableBlock => candidate.type === 'property-table',
-      );
-      if (table) {
-        table.properties.push(block.property);
-        this.blocks.splice(index, 1);
-      } else {
-        this.blocks.splice(index, 1, {
-          id: createCardBlock('property-table').id,
-          type: 'property-table',
-          properties: [block.property],
+    this.bindTextEdit(input, (value) => { block.property.reference = value; });
+    parent.createEl('button', { text: 'Put in property table', attr: { type: 'button' } })
+      .addEventListener('click', () => {
+        this.mutate(() => {
+          const table = this.blocks.find(
+            (candidate): candidate is CardPropertyTableBlock => candidate.type === 'property-table',
+          );
+          if (table) {
+            table.properties.push(block.property);
+            this.blocks.splice(index, 1);
+          } else {
+            this.blocks.splice(index, 1, {
+              id: createCardBlock('property-table').id,
+              type: 'property-table',
+              properties: [block.property],
+            });
+          }
         });
-      }
-      this.render();
-    });
+      });
   }
 
   private renderPropertyTableEditor(
@@ -291,44 +425,141 @@ class InfoCardLayoutModal extends Modal {
     block: CardPropertyTableBlock,
     blockIndex: number,
   ): void {
+    const tableSettings = parent.createDiv({ cls: 'variable-links-card-table-settings' });
+    const columns = this.addSelect(tableSettings, 'Columns:', [1, 2, 3, 4].map((value) => ({
+      value: String(value),
+      label: String(value),
+    })), String(block.columns ?? 1));
+    columns.addEventListener('change', () => {
+      this.mutate(() => { block.columns = Number(columns.value) as CardGridColumns; });
+    });
+    const rowMode = this.addSelect(tableSettings, 'Rows:', [
+      { value: 'auto', label: 'Automatic' },
+      { value: 'fixed', label: 'Fixed minimum' },
+    ], block.rowMode ?? 'auto');
+    rowMode.addEventListener('change', () => {
+      this.mutate(() => { block.rowMode = rowMode.value === 'fixed' ? 'fixed' : undefined; });
+    });
+    if (block.rowMode === 'fixed') {
+      const rows = tableSettings.createDiv({ cls: 'variable-links-card-layout-setting' });
+      rows.createEl('label', { text: 'Minimum rows:' });
+      const rowCount = rows.createEl('input', {
+        type: 'number',
+        attr: { min: '1', max: '12', step: '1' },
+      });
+      rowCount.value = String(block.rows ?? 1);
+      rowCount.addEventListener('change', () => {
+        this.mutate(() => {
+          block.rows = Math.min(12, Math.max(1, Number(rowCount.value) || 1));
+        });
+      });
+    }
+
     const properties = parent.createDiv({ cls: 'variable-links-card-layout-properties' });
+    properties.addEventListener('dragover', (event) => {
+      if (!this.draggedProperty) return;
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    properties.addEventListener('drop', (event) => {
+      if (!this.draggedProperty || event.target !== properties) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.dropProperty(block.id, block.properties.length);
+    });
     if (!block.properties.length) {
       properties.createDiv({ cls: 'variable-links-hint-text', text: 'This table has no properties.' });
     }
     block.properties.forEach((property, propertyIndex) => {
-      const row = properties.createDiv({ cls: 'variable-links-card-layout-property-row' });
-      const input = this.addPropertyInput(row, property);
-      input.addEventListener('input', () => { property.reference = input.value; });
-      const controls = row.createDiv({ cls: 'variable-links-card-layout-controls' });
-      this.addMoveButton(controls, 'Move up', propertyIndex === 0, () => {
-        this.moveProperty(block, propertyIndex, -1);
+      this.renderPropertyRow(properties, block, blockIndex, property, propertyIndex);
+    });
+    parent.createEl('button', { text: 'Add property', attr: { type: 'button' } })
+      .addEventListener('click', () => {
+        this.mutate(() => block.properties.push(createPropertyEntry()));
       });
-      this.addMoveButton(
-        controls,
-        'Move down',
-        propertyIndex === block.properties.length - 1,
-        () => this.moveProperty(block, propertyIndex, 1),
-      );
-      controls.createEl('button', { text: 'Move out', attr: { type: 'button' } })
-        .addEventListener('click', () => {
+    if (block.rowMode === 'fixed') {
+      parent.createDiv({
+        cls: 'variable-links-hint-text',
+        text: 'Extra properties add rows instead of being hidden.',
+      });
+    }
+  }
+
+  private renderPropertyRow(
+    parent: HTMLElement,
+    block: CardPropertyTableBlock,
+    blockIndex: number,
+    property: CardPropertyEntry,
+    propertyIndex: number,
+  ): void {
+    const row = parent.createDiv({ cls: 'variable-links-card-layout-property-row' });
+    row.addEventListener('dragover', (event) => {
+      if (!this.draggedProperty || this.draggedProperty.propertyId === property.id) return;
+      event.preventDefault();
+      event.stopPropagation();
+      row.addClass('is-drag-target');
+    });
+    row.addEventListener('dragleave', () => row.removeClass('is-drag-target'));
+    row.addEventListener('drop', (event) => {
+      if (!this.draggedProperty || this.draggedProperty.propertyId === property.id) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const after = event.clientY > row.getBoundingClientRect().top + row.offsetHeight / 2;
+      this.dropProperty(block.id, propertyIndex + (after ? 1 : 0));
+    });
+    const propertyHeading = row.createDiv({ cls: 'variable-links-card-layout-property-heading' });
+    const dragHandle = propertyHeading.createEl('button', {
+      text: 'Drag',
+      cls: 'variable-links-card-drag-handle',
+      attr: { type: 'button', draggable: 'true', 'aria-label': 'Drag property' },
+    });
+    dragHandle.addEventListener('dragstart', (event) => {
+      this.draggedProperty = { blockId: block.id, propertyId: property.id };
+      event.dataTransfer?.setData('text/plain', property.id);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+      row.addClass('is-dragging');
+    });
+    dragHandle.addEventListener('dragend', () => {
+      this.draggedProperty = null;
+      row.removeClass('is-dragging');
+    });
+    propertyHeading.createSpan({ text: `Cell ${propertyIndex + 1}` });
+    const input = this.addPropertyInput(row, property);
+    this.bindTextEdit(input, (value) => { property.reference = value; });
+    const controls = row.createDiv({ cls: 'variable-links-card-layout-controls' });
+    this.addMoveButton(controls, 'Move left', propertyIndex === 0, () => {
+      this.moveProperty(block, propertyIndex, -1);
+    });
+    this.addMoveButton(
+      controls,
+      'Move right',
+      propertyIndex === block.properties.length - 1,
+      () => this.moveProperty(block, propertyIndex, 1),
+    );
+    if ((block.columns ?? 1) > 1) {
+      const column = controls.createEl('select', { attr: { 'aria-label': 'Move to column' } });
+      for (let index = 0; index < (block.columns ?? 1); index++) {
+        column.createEl('option', { value: String(index), text: `Column ${index + 1}` });
+      }
+      column.value = String(propertyIndex % (block.columns ?? 1));
+      column.addEventListener('change', () => {
+        this.movePropertyToColumn(block, propertyIndex, Number(column.value));
+      });
+    }
+    controls.createEl('button', { text: 'Move out', attr: { type: 'button' } })
+      .addEventListener('click', () => {
+        this.mutate(() => {
           block.properties.splice(propertyIndex, 1);
           this.blocks.splice(blockIndex + 1, 0, {
             id: createCardBlock('property').id,
             type: 'property',
             property,
           });
-          this.render();
         });
-      controls.createEl('button', { text: 'Remove', attr: { type: 'button' } })
-        .addEventListener('click', () => {
-          block.properties.splice(propertyIndex, 1);
-          this.render();
-        });
-    });
-    parent.createEl('button', { text: 'Add property', attr: { type: 'button' } })
+      });
+    controls.createEl('button', { text: 'Remove', attr: { type: 'button' } })
       .addEventListener('click', () => {
-        block.properties.push(createPropertyEntry());
-        this.render();
+        this.mutate(() => { block.properties.splice(propertyIndex, 1); });
       });
   }
 
@@ -373,6 +604,37 @@ class InfoCardLayoutModal extends Modal {
     return input;
   }
 
+  private addSelect(
+    parent: HTMLElement,
+    label: string,
+    options: Array<{ value: string; label: string }>,
+    value: string,
+  ): HTMLSelectElement {
+    const row = parent.createDiv({ cls: 'variable-links-card-layout-setting' });
+    row.createEl('label', { text: label });
+    const select = row.createEl('select');
+    for (const option of options) {
+      select.createEl('option', { value: option.value, text: option.label });
+    }
+    select.value = value;
+    return select;
+  }
+
+  private bindTextEdit(
+    input: HTMLInputElement | HTMLTextAreaElement,
+    update: (value: string) => void,
+  ): void {
+    let recorded = false;
+    input.addEventListener('input', () => {
+      if (!recorded) {
+        this.recordHistory();
+        recorded = true;
+      }
+      update(input.value);
+      this.schedulePreview();
+    });
+  }
+
   private addMoveButton(
     parent: HTMLElement,
     text: string,
@@ -387,9 +649,22 @@ class InfoCardLayoutModal extends Modal {
   private moveBlock(index: number, direction: -1 | 1): void {
     const destination = index + direction;
     if (destination < 0 || destination >= this.blocks.length) return;
-    const [block] = this.blocks.splice(index, 1);
-    if (block) this.blocks.splice(destination, 0, block);
-    this.render();
+    this.mutate(() => {
+      const [block] = this.blocks.splice(index, 1);
+      if (block) this.blocks.splice(destination, 0, block);
+    });
+  }
+
+  private dropBlockAt(destination: number): void {
+    const source = this.blocks.findIndex((block) => block.id === this.draggedBlockId);
+    if (source === -1) return;
+    this.mutate(() => {
+      const [block] = this.blocks.splice(source, 1);
+      if (!block) return;
+      const adjusted = source < destination ? destination - 1 : destination;
+      this.blocks.splice(Math.max(0, Math.min(adjusted, this.blocks.length)), 0, block);
+    });
+    this.draggedBlockId = null;
   }
 
   private moveProperty(
@@ -399,9 +674,128 @@ class InfoCardLayoutModal extends Modal {
   ): void {
     const destination = index + direction;
     if (destination < 0 || destination >= block.properties.length) return;
-    const [property] = block.properties.splice(index, 1);
-    if (property) block.properties.splice(destination, 0, property);
+    this.mutate(() => {
+      const [property] = block.properties.splice(index, 1);
+      if (property) block.properties.splice(destination, 0, property);
+    });
+  }
+
+  private movePropertyToColumn(
+    block: CardPropertyTableBlock,
+    propertyIndex: number,
+    columnIndex: number,
+  ): void {
+    const columns = block.columns ?? 1;
+    const rowStart = Math.floor(propertyIndex / columns) * columns;
+    const destination = Math.min(rowStart + columnIndex, block.properties.length - 1);
+    if (destination === propertyIndex) return;
+    this.mutate(() => {
+      const [property] = block.properties.splice(propertyIndex, 1);
+      if (property) block.properties.splice(destination, 0, property);
+    });
+  }
+
+  private dropProperty(targetBlockId: string, destination: number): void {
+    if (!this.draggedProperty) return;
+    const sourceBlock = this.blocks.find(
+      (block): block is CardPropertyTableBlock => (
+        block.type === 'property-table' && block.id === this.draggedProperty?.blockId
+      ),
+    );
+    const targetBlock = this.blocks.find(
+      (block): block is CardPropertyTableBlock => (
+        block.type === 'property-table' && block.id === targetBlockId
+      ),
+    );
+    if (!sourceBlock || !targetBlock) return;
+    const source = sourceBlock.properties.findIndex(
+      (property) => property.id === this.draggedProperty?.propertyId,
+    );
+    if (source === -1) return;
+    this.mutate(() => {
+      const [property] = sourceBlock.properties.splice(source, 1);
+      if (!property) return;
+      const adjusted = sourceBlock === targetBlock && source < destination
+        ? destination - 1
+        : destination;
+      targetBlock.properties.splice(
+        Math.max(0, Math.min(adjusted, targetBlock.properties.length)),
+        0,
+        property,
+      );
+    });
+    this.draggedProperty = null;
+  }
+
+  private mutate(change: () => void): void {
+    const scrollPosition = this.getScrollContainer().scrollTop;
+    this.recordHistory();
+    change();
     this.render();
+    this.restoreScrollPosition(scrollPosition);
+  }
+
+  private recordHistory(): void {
+    this.history.push(this.snapshot());
+    if (this.history.length > 50) this.history.shift();
+    if (this.undoButton) this.undoButton.disabled = false;
+  }
+
+  private undo(): void {
+    const previous = this.history.pop();
+    if (!previous) return;
+    const scrollPosition = this.getScrollContainer().scrollTop;
+    this.blocks.splice(0, this.blocks.length, ...cloneCardBlocks(previous.blocks));
+    this.layoutMode = previous.layoutMode;
+    this.gridColumns = previous.gridColumns;
+    this.layoutGap = previous.layoutGap;
+    this.disableLivePreviewHover = previous.disableLivePreviewHover;
+    this.render();
+    this.restoreScrollPosition(scrollPosition);
+  }
+
+  private getScrollContainer(): HTMLElement {
+    return this.contentEl.closest<HTMLElement>('.modal-content') ?? this.contentEl;
+  }
+
+  private restoreScrollPosition(scrollPosition: number): void {
+    const scrollContainer = this.getScrollContainer();
+    scrollContainer.scrollTop = scrollPosition;
+    window.requestAnimationFrame(() => {
+      if (scrollContainer.isConnected) scrollContainer.scrollTop = scrollPosition;
+    });
+  }
+
+  private snapshot(): InfoCardEditorState {
+    return {
+      blocks: cloneCardBlocks(this.blocks),
+      layoutMode: this.layoutMode,
+      gridColumns: this.gridColumns,
+      layoutGap: this.layoutGap,
+      disableLivePreviewHover: this.disableLivePreviewHover,
+    };
+  }
+
+  private currentCard(): CardConfig {
+    return {
+      blocks: cloneCardBlocks(normalizeCardBlocks(this.blocks) ?? []),
+      useBlockLayout: true,
+      layoutMode: this.layoutMode,
+      gridColumns: this.gridColumns,
+      layoutGap: this.layoutGap,
+      disableLivePreviewHover: this.disableLivePreviewHover || undefined,
+    };
+  }
+
+  private schedulePreview(delay = 80): void {
+    if (this.previewTimer !== null) window.clearTimeout(this.previewTimer);
+    this.previewTimer = window.setTimeout(() => {
+      this.previewTimer = null;
+      const host = this.previewHost;
+      if (!host?.isConnected) return;
+      host.empty();
+      void this.previewCard.renderPreview(host, this.sourceFilePath, this.currentCard());
+    }, delay);
   }
 
   private blockLabel(block: CardBlock): string {
@@ -1039,8 +1433,11 @@ export class VariablePropertiesView extends ItemView {
         text: 'Build the card from movable content blocks shown on hover in reading view or live preview.',
       });
       const summary = parent.createDiv({ cls: 'variable-links-card-layout-summary' });
+      const layoutSummary = card.layoutMode === 'grid'
+        ? `Grid · ${card.gridColumns ?? 2} columns`
+        : 'Stack';
       summary.createEl('strong', {
-        text: `${blocks.length} ${blocks.length === 1 ? 'block' : 'blocks'} configured`,
+        text: `${blocks.length} ${blocks.length === 1 ? 'block' : 'blocks'} · ${layoutSummary}`,
       });
       if (blocks.length) {
         summary.createDiv({
@@ -1065,7 +1462,7 @@ export class VariablePropertiesView extends ItemView {
           this.app,
           name,
           card,
-          hasCardSource,
+          filePathFromLink(cardSourceFile),
           (input) => this.attachFieldSuggestions(input, cardSourceFile),
           async (nextCard) => saveCard({ ...card, ...nextCard, useBlockLayout: true }),
         ).open();

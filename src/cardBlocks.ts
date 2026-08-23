@@ -3,8 +3,14 @@ export interface CardPropertyEntry {
   reference: string;
 }
 
+export type CardLayoutMode = 'stack' | 'grid';
+export type CardBlockWidth = 'full' | 'half' | 'third' | 'quarter';
+export type CardGridColumns = 1 | 2 | 3 | 4;
+export type CardTableRowMode = 'auto' | 'fixed';
+
 interface CardBlockBase {
   id: string;
+  width?: CardBlockWidth;
 }
 
 export interface CardTitleBlock extends CardBlockBase {
@@ -25,6 +31,9 @@ export interface CardPropertyBlock extends CardBlockBase {
 export interface CardPropertyTableBlock extends CardBlockBase {
   type: 'property-table';
   properties: CardPropertyEntry[];
+  columns?: CardGridColumns;
+  rowMode?: CardTableRowMode;
+  rows?: number;
 }
 
 export interface CardDividerBlock extends CardBlockBase {
@@ -52,6 +61,9 @@ export interface LegacyCardFields {
 export interface CardLayoutFields extends LegacyCardFields {
   blocks?: CardBlock[];
   useBlockLayout?: boolean;
+  layoutMode?: CardLayoutMode;
+  gridColumns?: CardGridColumns;
+  layoutGap?: number;
 }
 
 export function createCardBlockId(prefix = 'block'): string {
@@ -139,12 +151,18 @@ export function normalizeCardBlocks(value: unknown): CardBlock[] | undefined {
     if (!isRecord(raw) || typeof raw.type !== 'string') continue;
     const id = uniqueId(raw.id, raw.type, usedBlockIds);
     if (raw.type === 'title') {
-      blocks.push({ id, type: 'title', text: typeof raw.text === 'string' ? raw.text : '' });
+      blocks.push({
+        id,
+        type: 'title',
+        text: typeof raw.text === 'string' ? raw.text : '',
+        ...normalizeBlockWidth(raw.width),
+      });
     } else if (raw.type === 'note') {
       blocks.push({
         id,
         type: 'note',
         markdown: typeof raw.markdown === 'string' ? raw.markdown : '',
+        ...normalizeBlockWidth(raw.width),
       });
     } else if (raw.type === 'property') {
       const property = normalizePropertyEntry(raw.property, usedPropertyIds);
@@ -154,6 +172,7 @@ export function normalizeCardBlocks(value: unknown): CardBlock[] | undefined {
           blocks.push({
             id: index === 0 ? id : uniqueId(undefined, 'property', usedBlockIds),
             type: 'property',
+            ...normalizeBlockWidth(raw.width),
             property: {
               id: index === 0
                 ? property.id
@@ -176,14 +195,45 @@ export function normalizeCardBlocks(value: unknown): CardBlock[] | undefined {
               reference,
             })))
         : [];
-      blocks.push({ id, type: 'property-table', properties });
+      blocks.push({
+        id,
+        type: 'property-table',
+        properties,
+        ...normalizeBlockWidth(raw.width),
+        columns: normalizeGridColumns(raw.columns),
+        rowMode: raw.rowMode === 'fixed' ? 'fixed' : undefined,
+        rows: normalizeTableRows(raw.rows),
+      });
     } else if (raw.type === 'divider') {
-      blocks.push({ id, type: 'divider' });
+      blocks.push({ id, type: 'divider', ...normalizeBlockWidth(raw.width) });
     } else if (raw.type === 'source') {
-      blocks.push({ id, type: 'source' });
+      blocks.push({ id, type: 'source', ...normalizeBlockWidth(raw.width) });
     }
   }
   return blocks;
+}
+
+export function normalizeGridColumns(value: unknown): CardGridColumns | undefined {
+  const number = typeof value === 'number' ? value : Number(value);
+  return number === 1 || number === 2 || number === 3 || number === 4 ? number : undefined;
+}
+
+export function normalizeLayoutGap(value: unknown): number | undefined {
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number)) return undefined;
+  return Math.min(24, Math.max(0, Math.round(number)));
+}
+
+export function normalizeTableRows(value: unknown): number | undefined {
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number)) return undefined;
+  return Math.min(12, Math.max(1, Math.round(number)));
+}
+
+function normalizeBlockWidth(value: unknown): { width?: CardBlockWidth } {
+  return value === 'full' || value === 'half' || value === 'third' || value === 'quarter'
+    ? { width: value }
+    : {};
 }
 
 function normalizePropertyEntry(

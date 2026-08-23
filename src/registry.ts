@@ -4,7 +4,12 @@ import {
   type VariableAppearance,
 } from './appearance';
 import type { CardConfig } from './card';
-import { deriveLegacyCardFields, normalizeCardBlocks } from './cardBlocks';
+import {
+  deriveLegacyCardFields,
+  normalizeCardBlocks,
+  normalizeGridColumns,
+  normalizeLayoutGap,
+} from './cardBlocks';
 import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
 
@@ -496,6 +501,11 @@ export class Registry {
       blocks,
       useBlockLayout: value.useBlockLayout === true
         || (value.useBlockLayout !== false && Boolean(blocks && !hasLegacyFields)),
+      layoutMode: value.layoutMode === 'grid'
+        ? 'grid'
+        : value.layoutMode === 'stack' ? 'stack' : undefined,
+      gridColumns: normalizeGridColumns(value.gridColumns),
+      layoutGap: normalizeLayoutGap(value.layoutGap),
       disableLivePreviewHover: value.disableLivePreviewHover === true,
     };
   }

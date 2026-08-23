@@ -2,16 +2,12 @@ import { App, MarkdownRenderChild, MarkdownRenderer, TFile, parseYaml } from 'ob
 import {
   getActiveCardBlocks,
   type CardBlock,
+  type CardLayoutFields,
   type CardPropertyEntry,
+  type CardPropertyTableBlock,
 } from './cardBlocks';
 
-export interface CardConfig {
-  blocks?: CardBlock[];
-  useBlockLayout?: boolean;
-  title?: string;
-  note?: string;
-  fields?: string[];
-  showSourceLink?: boolean;
+export interface CardConfig extends CardLayoutFields {
   disableLivePreviewHover?: boolean;
 }
 
@@ -40,33 +36,9 @@ export class InfoCard {
     pointer: CardPointerPosition,
   ): Promise<void> {
     if (this.destroyed) return;
-    this.hideImmediate();
-    const blocks = getActiveCardBlocks(cardConfig).filter((block) => {
-      if (block.type === 'title') return Boolean(block.text);
-      if (block.type === 'note') return Boolean(block.markdown);
-      if (block.type === 'property-table') return block.properties.length > 0;
-      if (block.type === 'source') return Boolean(sourceFilePath);
-      return true;
-    });
-    if (!blocks.length) return;
-    const generation = this.generation;
-
-    const container = createDiv({ cls: 'variable-links-card' });
-    this.el = container;
-    const renderChild = new MarkdownRenderChild(container);
-    this.renderChild = renderChild;
-    renderChild.load();
-    const hydrate: Array<() => Promise<void>> = [];
-    for (const block of blocks) {
-      this.renderBlock(
-        block,
-        container,
-        sourceFilePath,
-        renderChild,
-        hydrate,
-        generation,
-      );
-    }
+    const rendering = this.createCard(sourceFilePath, cardConfig);
+    if (!rendering) return;
+    const { container, hydrate, generation } = rendering;
 
     if (!this.isCurrent(container, generation)) return;
     targetEl.ownerDocument.body.appendChild(container);
@@ -83,8 +55,84 @@ export class InfoCard {
     }
   }
 
+  async renderPreview(
+    parent: HTMLElement,
+    sourceFilePath: string,
+    cardConfig: CardConfig,
+  ): Promise<void> {
+    if (this.destroyed) return;
+    const rendering = this.createCard(sourceFilePath, cardConfig, true);
+    if (!rendering) {
+      parent.createDiv({ cls: 'variable-links-card-preview-empty', text: 'Nothing to preview yet.' });
+      return;
+    }
+    const { container, hydrate, generation } = rendering;
+    parent.appendChild(container);
+    for (const render of hydrate) {
+      await render();
+      if (!this.isCurrent(container, generation)) return;
+    }
+  }
+
+  private createCard(
+    sourceFilePath: string,
+    cardConfig: CardConfig,
+    preview = false,
+  ): { container: HTMLElement; hydrate: Array<() => Promise<void>>; generation: number } | null {
+    this.hideImmediate();
+    const blocks = getActiveCardBlocks(cardConfig).filter((block) => {
+      if (block.type === 'title') return Boolean(block.text);
+      if (block.type === 'note') return Boolean(block.markdown);
+      if (block.type === 'property-table') return block.properties.length > 0;
+      if (block.type === 'source') return Boolean(sourceFilePath);
+      return true;
+    });
+    if (!blocks.length) return null;
+    const generation = this.generation;
+    const useBlockLayout = cardConfig.useBlockLayout === true;
+    const layoutMode = useBlockLayout && cardConfig.layoutMode === 'grid' ? 'grid' : 'stack';
+    const gridColumns = cardConfig.gridColumns ?? 2;
+    const layoutGap = cardConfig.layoutGap ?? (layoutMode === 'grid' ? 8 : 0);
+    const classes = ['variable-links-card'];
+    if (useBlockLayout) {
+      classes.push(
+        `variable-links-card-layout-${layoutMode}`,
+        `variable-links-card-grid-columns-${gridColumns}`,
+      );
+    } else {
+      classes.push('variable-links-card-simple');
+    }
+    if (preview) classes.push('variable-links-card-preview');
+    const container = createDiv({ cls: classes.join(' ') });
+    if (useBlockLayout) {
+      container.style.setProperty('--variable-links-card-layout-gap', `${layoutGap}px`);
+    }
+    this.el = container;
+    const renderChild = new MarkdownRenderChild(container);
+    this.renderChild = renderChild;
+    renderChild.load();
+    const hydrate: Array<() => Promise<void>> = [];
+    for (const block of blocks) {
+      const host = layoutMode === 'grid'
+        ? container.createDiv({ cls: 'variable-links-card-block' })
+        : container;
+      if (layoutMode === 'grid') host.dataset.width = block.width ?? 'auto';
+      this.renderBlock(
+        block,
+        host,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
+    }
+    return { container, hydrate, generation };
+  }
+
   private renderBlock(
     block: CardBlock,
+    host: HTMLElement,
     container: HTMLElement,
     sourceFilePath: string,
     renderChild: MarkdownRenderChild,
@@ -92,14 +140,14 @@ export class InfoCard {
     generation: number,
   ): void {
     if (block.type === 'title') {
-      if (block.text) container.createDiv({ cls: 'variable-links-card-title', text: block.text });
+      if (block.text) host.createDiv({ cls: 'variable-links-card-title', text: block.text });
       return;
     }
     if (block.type === 'note') {
       if (!block.markdown) return;
       const noteEl = createDiv({ cls: 'variable-links-card-note' });
       noteEl.textContent = '…';
-      container.appendChild(noteEl);
+      host.appendChild(noteEl);
       hydrate.push(async () => {
         noteEl.replaceChildren();
         await MarkdownRenderer.render(
@@ -115,6 +163,7 @@ export class InfoCard {
     if (block.type === 'property') {
       this.renderStandaloneProperty(
         block.property,
+        host,
         container,
         sourceFilePath,
         renderChild,
@@ -125,31 +174,23 @@ export class InfoCard {
     }
     if (block.type === 'property-table') {
       if (!block.properties.length) return;
-      const table = createEl('table', { cls: 'variable-links-card-fields-table' });
-      const tbody = createEl('tbody');
-      for (const property of block.properties) {
-        const row = createEl('tr');
-        this.renderPropertyCells(
-          property,
-          row,
-          sourceFilePath,
-          renderChild,
-          hydrate,
-          container,
-          generation,
-        );
-        tbody.appendChild(row);
-      }
-      table.appendChild(tbody);
-      container.appendChild(table);
+      this.renderPropertyTable(
+        block,
+        host,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
       return;
     }
     if (block.type === 'divider') {
-      container.createEl('hr', { cls: 'variable-links-card-divider' });
+      host.createEl('hr', { cls: 'variable-links-card-divider' });
       return;
     }
     if (block.type === 'source' && sourceFilePath) {
-      const source = container.createDiv({ cls: 'variable-links-card-source' });
+      const source = host.createDiv({ cls: 'variable-links-card-source' });
       const link = source.createEl('a', { text: 'Open source', href: '#' });
       link.addEventListener('click', (event) => {
         event.preventDefault();
@@ -160,6 +201,7 @@ export class InfoCard {
 
   private renderStandaloneProperty(
     property: CardPropertyEntry,
+    host: HTMLElement,
     container: HTMLElement,
     sourceFilePath: string,
     renderChild: MarkdownRenderChild,
@@ -174,7 +216,7 @@ export class InfoCard {
     });
     const value = createDiv({ cls: 'variable-links-card-property-value', text: '…' });
     wrapper.append(name, value);
-    container.appendChild(wrapper);
+    host.appendChild(wrapper);
     this.queuePropertyHydration(
       parsed,
       value,
@@ -183,6 +225,50 @@ export class InfoCard {
       hydrate,
       generation,
     );
+  }
+
+  private renderPropertyTable(
+    block: CardPropertyTableBlock,
+    host: HTMLElement,
+    container: HTMLElement,
+    sourceFilePath: string,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    generation: number,
+  ): void {
+    const columns = block.columns ?? 1;
+    const contentRows = Math.ceil(block.properties.length / columns);
+    const rowCount = block.rowMode === 'fixed'
+      ? Math.max(contentRows, block.rows ?? 1)
+      : contentRows;
+    const table = createEl('table', { cls: 'variable-links-card-fields-table' });
+    table.dataset.columns = String(columns);
+    const tbody = createEl('tbody');
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+      const row = createEl('tr');
+      for (let columnIndex = 0; columnIndex < columns; columnIndex++) {
+        const property = block.properties[rowIndex * columns + columnIndex];
+        if (property) {
+          this.renderPropertyCells(
+            property,
+            row,
+            sourceFilePath,
+            renderChild,
+            hydrate,
+            container,
+            generation,
+          );
+        } else {
+          const emptyCell = createEl('td', { cls: 'variable-links-card-field-empty' });
+          emptyCell.colSpan = 2;
+          emptyCell.setAttribute('aria-hidden', 'true');
+          row.appendChild(emptyCell);
+        }
+      }
+      tbody.appendChild(row);
+    }
+    table.appendChild(tbody);
+    host.appendChild(table);
   }
 
   private renderPropertyCells(

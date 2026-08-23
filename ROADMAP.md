@@ -42,7 +42,7 @@ This document records planned improvements to Variable Links. Plans may change a
 #### Suggested implementation order
 
 1. **Completed:** Add the block-based card format, multiple notes, movable property items, migration, and non-drag movement controls.
-2. Add drag-and-drop ordering, Stack and Grid layouts, column spans, Property tables, live preview, and undo.
+2. **Completed:** Add drag-and-drop ordering, Stack and Grid layouts, column spans, Property tables, live preview, and undo.
 3. Add card and block styling, starter layouts, restore controls, and accessibility and compatibility testing.
 
 ## 1.3.0

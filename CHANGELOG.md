@@ -13,6 +13,9 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added direct editing of text, number, and true/false values stored in linked note properties.
 - Added a larger block-based Info Card editor with multiple Notes, standalone Properties, Property tables, Dividers, Source links, and accessible movement controls.
 - Added a Card-tab checkbox for switching between the original simple editor and the block layout editor.
+- Added Stack and responsive Grid Info Card layouts with one to four automatic columns, adjustable spacing, and per-block width controls.
+- Added drag-and-drop ordering, an in-editor live preview, and up to 50 steps of undo while editing a card layout.
+- Added one-to-four-column Property tables with automatic or fixed minimum rows and controls for moving property cells within or between tables.
 
 ### Changed
 
@@ -30,6 +33,13 @@ All notable user-visible changes to Variable Links are recorded here.
 - Moved the Info Card field-format instructions beneath the Fields input as hint text.
 - Existing Info Cards can seed the block layout while preserving their original content order and initial appearance, and both editor configurations are retained when switching.
 - Separated comma-delimited entries in block Property controls so linked `[[File]]#property` values resolve correctly.
+- Grid Info Cards collapse to a single column when the available card width becomes narrow.
+
+### Fixed
+
+- Kept the Info Card editor at its current scroll position after dropping or moving layout items.
+- Kept cards using the original simple editor out of the new Grid and Stack layout styling.
+- Prevented original and Stack cards from collapsing to a narrow strip under responsive Grid sizing.
 
 ## 1.1.1 - 2026-08-22
 
