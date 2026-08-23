@@ -25,6 +25,7 @@ All notable user-visible changes to Variable Links are recorded here.
 
 ### Changed
 
+- Replaced Card item movement text with compact top, up, down, and end arrow controls that retain tooltips and accessible names.
 - Made the Edit Variable and Variable Appearance sections independently collapsible in the Properties panel.
 - Improved the visual separation of section titles in the Variable Link Properties panel.
 - Live Preview Info Card delays can now be adjusted in quarter-second increments starting at one second.

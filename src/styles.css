@@ -1006,6 +1006,12 @@
   padding: 3px 7px;
 }
 
+.variable-links-card-move-button {
+  min-width: 28px;
+  font-size: var(--font-ui-medium);
+  line-height: 1;
+}
+
 .variable-links-card-layout-field {
   display: grid;
   grid-template-columns: minmax(100px, max-content) minmax(0, 1fr);
@@ -1038,7 +1044,7 @@
 }
 
 .variable-links-card-layout-property-heading {
-  justify-content: flex-start;
+  justify-content: space-between;
   margin-bottom: 4px;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);

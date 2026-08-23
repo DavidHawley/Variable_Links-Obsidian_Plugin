@@ -623,13 +623,9 @@ class InfoCardLayoutModal extends Modal {
 
     const controls = heading.createDiv({ cls: 'variable-links-card-layout-controls' });
     if (this.layoutMode === 'grid') this.renderBlockWidthControl(controls, block);
-    this.addMoveButton(controls, 'Move up', index === 0, () => this.moveBlock(index, -1));
-    this.addMoveButton(
-      controls,
-      'Move down',
-      index === this.blocks.length - 1,
-      () => this.moveBlock(index, 1),
-    );
+    this.renderMovementControls(controls, index, this.blocks.length, (destination) => {
+      this.moveBlock(index, destination);
+    });
     controls.createEl('button', { text: 'Remove', attr: { type: 'button' } })
       .addEventListener('click', () => this.mutate(() => { this.blocks.splice(index, 1); }));
 
@@ -912,6 +908,15 @@ class InfoCardLayoutModal extends Modal {
       cls: 'variable-links-card-editor-item-type',
       text: property.editorLabel ? `Property · Cell ${propertyIndex + 1}` : '',
     });
+    const movementControls = propertyHeading.createDiv({
+      cls: 'variable-links-card-layout-controls',
+    });
+    this.renderMovementControls(
+      movementControls,
+      propertyIndex,
+      block.properties.length,
+      (destination) => this.moveProperty(block, propertyIndex, destination),
+    );
     if (collapsed) return;
     const editorLabelInput = this.addModalInput(
       row,
@@ -932,15 +937,6 @@ class InfoCardLayoutModal extends Modal {
     const input = this.addPropertyInput(row, property);
     this.bindTextEdit(input, (value) => { property.reference = value; });
     const controls = row.createDiv({ cls: 'variable-links-card-layout-controls' });
-    this.addMoveButton(controls, 'Move left', propertyIndex === 0, () => {
-      this.moveProperty(block, propertyIndex, -1);
-    });
-    this.addMoveButton(
-      controls,
-      'Move right',
-      propertyIndex === block.properties.length - 1,
-      () => this.moveProperty(block, propertyIndex, 1),
-    );
     if ((block.columns ?? 1) > 1) {
       const column = controls.createEl('select', { attr: { 'aria-label': 'Move to column' } });
       for (let index = 0; index < (block.columns ?? 1); index++) {
@@ -1129,20 +1125,43 @@ class InfoCardLayoutModal extends Modal {
     });
   }
 
+  private renderMovementControls(
+    parent: HTMLElement,
+    index: number,
+    length: number,
+    moveTo: (destination: number) => void,
+  ): void {
+    const atStart = index === 0;
+    const atEnd = index === length - 1;
+    this.addMoveButton(parent, '⇈', 'Move to top', atStart, () => moveTo(0));
+    this.addMoveButton(parent, '↑', 'Move up', atStart, () => moveTo(index - 1));
+    this.addMoveButton(parent, '↓', 'Move down', atEnd, () => moveTo(index + 1));
+    this.addMoveButton(parent, '⇊', 'Move to end', atEnd, () => moveTo(length - 1));
+  }
+
   private addMoveButton(
     parent: HTMLElement,
-    text: string,
+    icon: string,
+    label: string,
     disabled: boolean,
     move: () => void,
   ): void {
-    const button = parent.createEl('button', { text, attr: { type: 'button' } });
+    const button = parent.createEl('button', {
+      text: icon,
+      cls: 'variable-links-card-move-button',
+      attr: {
+        type: 'button',
+        title: label,
+        'aria-label': label,
+      },
+    });
     button.disabled = disabled;
     button.addEventListener('click', move);
   }
 
-  private moveBlock(index: number, direction: -1 | 1): void {
-    const destination = index + direction;
+  private moveBlock(index: number, destination: number): void {
     if (destination < 0 || destination >= this.blocks.length) return;
+    if (destination === index) return;
     this.mutate(() => {
       const [block] = this.blocks.splice(index, 1);
       if (block) this.blocks.splice(destination, 0, block);
@@ -1164,10 +1183,10 @@ class InfoCardLayoutModal extends Modal {
   private moveProperty(
     block: CardPropertyTableBlock,
     index: number,
-    direction: -1 | 1,
+    destination: number,
   ): void {
-    const destination = index + direction;
     if (destination < 0 || destination >= block.properties.length) return;
+    if (destination === index) return;
     this.mutate(() => {
       const [property] = block.properties.splice(index, 1);
       if (property) block.properties.splice(destination, 0, property);
