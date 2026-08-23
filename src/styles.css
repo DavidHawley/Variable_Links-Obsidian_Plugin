@@ -123,6 +123,25 @@
   font-weight: var(--font-semibold);
 }
 
+.variable-links-panel-editor > summary,
+.variable-links-panel-editor form > h5 {
+  box-sizing: border-box;
+  width: calc(100% + 24px);
+  margin-left: -12px;
+  padding: 6px 12px;
+  background: var(--background-secondary);
+  border-top: 1px solid var(--background-modifier-border);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.variable-links-panel-editor > summary {
+  margin-bottom: 8px;
+}
+
+.variable-links-panel-editor form > h5 {
+  margin: 12px 0 8px;
+}
+
 .variable-links-panel-field {
   display: grid;
   grid-template-columns: fit-content(42%) minmax(0, 1fr);
