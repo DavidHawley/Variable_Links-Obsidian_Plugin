@@ -2,7 +2,13 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
-## 1.2.0 - Unreleased
+## 1.2.1 - Unreleased
+
+### Fixed
+
+- Updated the Variable Link selector immediately when a new variable is created from editor suggestions.
+
+## 1.2.0 - 2026-08-23
 
 ### Added
 

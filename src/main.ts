@@ -128,7 +128,12 @@ export default class VariableLinksPlugin extends Plugin {
       this.registerVariableContextMenu();
       this.caretTracker = new CaretTracker(this.app, this, this.registry, this.resolver);
       this.caretTracker.start();
-      this.suggest = new VariableSuggest(this.app, this.indexer, this.registry);
+      this.suggest = new VariableSuggest(
+        this.app,
+        this.indexer,
+        this.registry,
+        async () => this.refreshPanelViews(),
+      );
       this.registerEditorSuggest(this.suggest);
 
       this.registerEvent(this.app.vault.on('modify', (file) => {
