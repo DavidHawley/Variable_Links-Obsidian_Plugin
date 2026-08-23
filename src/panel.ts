@@ -2,6 +2,7 @@ import {
   ItemView,
   MarkdownRenderChild,
   MarkdownRenderer,
+  Menu,
   Modal,
   Notice,
   TFile,
@@ -49,6 +50,24 @@ export const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
 const CREATE_FIXED_VALUE = 'create:fixed';
 const CREATE_PROPERTY_VALUE = 'create:property';
 const VARIABLE_OPTION_PREFIX = 'variable:';
+
+interface CardPropertyAppearanceClipboard {
+  labelPosition?: CardPropertyEntry['labelPosition'];
+  alignment?: CardPropertyEntry['alignment'];
+  labelWidth?: number;
+}
+
+interface CardAppearanceClipboard {
+  blockStyle?: CardBlockStyle;
+  propertyStyle?: CardPropertyAppearanceClipboard;
+}
+
+interface CardAppearanceTarget {
+  block?: CardBlock;
+  property?: CardPropertyEntry;
+}
+
+let cardAppearanceClipboard: CardAppearanceClipboard | null = null;
 
 function emptyDefinition(type: VariableType = 'property'): VariableDefinition {
   return { type, file: '', property: '', value: type === 'fixed' ? '' : undefined };
@@ -565,6 +584,10 @@ class InfoCardLayoutModal extends Modal {
 
   private renderBlock(parent: HTMLElement, block: CardBlock, index: number): void {
     const item = parent.createDiv({ cls: 'variable-links-card-layout-block' });
+    this.attachAppearanceContextMenu(item, {
+      block,
+      property: block.type === 'property' ? block.property : undefined,
+    });
     const collapsed = this.collapsedBlockIds.has(block.id);
     item.toggleClass('is-collapsed', collapsed);
     item.dataset.blockId = block.id;
@@ -854,6 +877,7 @@ class InfoCardLayoutModal extends Modal {
     propertyIndex: number,
   ): void {
     const row = parent.createDiv({ cls: 'variable-links-card-layout-property-row' });
+    this.attachAppearanceContextMenu(row, { property });
     const collapsed = this.collapsedPropertyIds.has(property.id);
     row.toggleClass('is-collapsed', collapsed);
     row.addEventListener('dragover', (event) => {
@@ -1122,6 +1146,78 @@ class InfoCardLayoutModal extends Modal {
       }
       const value = input.value.trim().slice(0, 80) || undefined;
       update(value);
+    });
+  }
+
+  private attachAppearanceContextMenu(
+    element: HTMLElement,
+    target: CardAppearanceTarget,
+  ): void {
+    element.addEventListener('contextmenu', (event) => {
+      const eventTarget = event.target;
+      if (eventTarget instanceof HTMLElement
+        && eventTarget.closest('input, textarea, select, button, a')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.showAppearanceContextMenu(event, target);
+    });
+  }
+
+  private showAppearanceContextMenu(
+    event: MouseEvent,
+    target: CardAppearanceTarget,
+  ): void {
+    const menu = new Menu();
+    menu.addItem((item) => {
+      item.setTitle('Copy appearance').setIcon('copy').onClick(() => {
+        this.copyAppearance(target);
+      });
+    });
+    menu.addItem((item) => {
+      item
+        .setTitle('Paste appearance')
+        .setIcon('clipboard-paste')
+        .setDisabled(!this.hasCompatibleAppearance(target));
+      if (this.hasCompatibleAppearance(target)) {
+        item.onClick(() => this.pasteAppearance(target));
+      }
+    });
+    menu.showAtMouseEvent(event);
+  }
+
+  private copyAppearance(target: CardAppearanceTarget): void {
+    const clipboard: CardAppearanceClipboard = {};
+    if (target.block) clipboard.blockStyle = { ...(target.block.style ?? {}) };
+    if (target.property) {
+      clipboard.propertyStyle = {
+        labelPosition: target.property.labelPosition,
+        alignment: target.property.alignment,
+        labelWidth: target.property.labelWidth,
+      };
+    }
+    cardAppearanceClipboard = clipboard;
+  }
+
+  private hasCompatibleAppearance(target: CardAppearanceTarget): boolean {
+    if (!cardAppearanceClipboard) return false;
+    return Boolean(
+      (target.block && cardAppearanceClipboard.blockStyle)
+      || (target.property && cardAppearanceClipboard.propertyStyle),
+    );
+  }
+
+  private pasteAppearance(target: CardAppearanceTarget): void {
+    const clipboard = cardAppearanceClipboard;
+    if (!clipboard || !this.hasCompatibleAppearance(target)) return;
+    this.mutate(() => {
+      if (target.block && clipboard.blockStyle) {
+        target.block.style = normalizeCardBlockStyle({ ...clipboard.blockStyle });
+      }
+      if (target.property && clipboard.propertyStyle) {
+        target.property.labelPosition = clipboard.propertyStyle.labelPosition;
+        target.property.alignment = clipboard.propertyStyle.alignment;
+        target.property.labelWidth = clipboard.propertyStyle.labelWidth;
+      }
     });
   }
 
