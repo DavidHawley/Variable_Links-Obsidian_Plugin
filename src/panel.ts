@@ -21,11 +21,22 @@ import {
   toFileLink,
 } from './linkSyntax';
 import type VariableLinksPlugin from './main';
-import type { VariableDefinition } from './registry';
+import {
+  getVariableType,
+  type VariableDefinition,
+  type VariableType,
+} from './registry';
+import type { ResolveResult } from './resolver';
 
 export const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
 
-const EMPTY_DEFINITION: VariableDefinition = { file: '', property: '' };
+const CREATE_FIXED_VALUE = 'create:fixed';
+const CREATE_PROPERTY_VALUE = 'create:property';
+const VARIABLE_OPTION_PREFIX = 'variable:';
+
+function emptyDefinition(type: VariableType = 'property'): VariableDefinition {
+  return { type, file: '', property: '', value: type === 'fixed' ? '' : undefined };
+}
 
 interface PropertySuggestion {
   file: TFile;
@@ -61,6 +72,44 @@ class DeleteVariableModal extends Modal {
   }
 }
 
+class ChangeVariableTypeModal extends Modal {
+  constructor(
+    app: App,
+    private readonly currentType: VariableType,
+    private readonly nextType: VariableType,
+    private readonly onConfirm: () => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const currentLabel = this.currentType === 'fixed' ? 'Fixed value' : 'Property value';
+    const nextLabel = this.nextType === 'fixed' ? 'Fixed value' : 'Property value';
+    this.contentEl.createEl('h3', { text: 'Change variable type?' });
+    this.contentEl.createEl('p', {
+      text: `Change this variable from ${currentLabel} to ${nextLabel}?`,
+    });
+    this.contentEl.createEl('p', {
+      text: this.nextType === 'fixed'
+        ? 'It will stop reading its displayed value from a note property after you save.'
+        : 'It will read its displayed value from the configured note property after you save.',
+    });
+    this.contentEl.createEl('p', {
+      text: 'The inactive settings will be preserved in case you switch back later.',
+    });
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
+    actions.createEl('button', { text: 'Change type', cls: 'mod-cta' }).addEventListener('click', () => {
+      this.close();
+      this.onConfirm();
+    });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 export class VariablePropertiesView extends ItemView {
   private panelContentEl: HTMLElement | null = null;
   private selectedVariableName: string | null = null;
@@ -69,6 +118,7 @@ export class VariablePropertiesView extends ItemView {
   private timers = new Set<number>();
   private markdownChild: MarkdownRenderChild | null = null;
   private activeTab: PanelTab = 'link';
+  private creatingVariableType: VariableType | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -108,6 +158,7 @@ export class VariablePropertiesView extends ItemView {
   }
 
   async selectVariable(name: string): Promise<void> {
+    this.creatingVariableType = null;
     this.selectedVariableName = name.trim() || null;
     await this.refresh();
   }
@@ -128,9 +179,11 @@ export class VariablePropertiesView extends ItemView {
 
     const last = this.plugin.caretTracker?.lastTouched;
     const names = Array.from(registry.data.keys()).sort((left, right) => left.localeCompare(right));
-    const activeName = this.selectedVariableName ?? last?.name ?? '';
+    const activeName = this.creatingVariableType
+      ? ''
+      : this.selectedVariableName ?? last?.name ?? '';
     const storedDefinition = activeName ? registry.getVariable(activeName) : undefined;
-    const definition = storedDefinition ?? EMPTY_DEFINITION;
+    const definition = storedDefinition ?? emptyDefinition(this.creatingVariableType ?? 'property');
 
     const header = container.createDiv({ cls: 'variable-links-panel-header' });
     header.createEl('h2', { text: 'Variable link properties' });
@@ -149,18 +202,35 @@ export class VariablePropertiesView extends ItemView {
     const toolbar = container.createDiv({ cls: 'variable-links-panel-toolbar' });
     const select = toolbar.createEl('select');
     select.createEl('option', {
-      text: activeName && !definition.file ? `[New] ${activeName}` : 'Select a variable link…',
+      text: activeName && !storedDefinition ? `[New] ${activeName}` : 'Select a variable link…',
       value: '',
     });
-    for (const name of names) select.createEl('option', { text: name, value: name });
-    select.value = definition.file ? activeName : '';
+    const createGroup = select.createEl('optgroup', { attr: { label: 'Create' } });
+    createGroup.createEl('option', { text: 'New fixed value', value: CREATE_FIXED_VALUE });
+    createGroup.createEl('option', { text: 'New property value', value: CREATE_PROPERTY_VALUE });
+    const variableGroup = select.createEl('optgroup', { attr: { label: 'Variables' } });
+    for (const name of names) {
+      variableGroup.createEl('option', { text: name, value: `${VARIABLE_OPTION_PREFIX}${name}` });
+    }
+    select.value = this.creatingVariableType
+      ? this.creatingVariableType === 'fixed' ? CREATE_FIXED_VALUE : CREATE_PROPERTY_VALUE
+      : storedDefinition ? `${VARIABLE_OPTION_PREFIX}${activeName}` : '';
     select.addEventListener('change', () => {
-      this.selectedVariableName = select.value || null;
+      const value = select.value;
+      if (value === CREATE_FIXED_VALUE || value === CREATE_PROPERTY_VALUE) {
+        this.creatingVariableType = value === CREATE_FIXED_VALUE ? 'fixed' : 'property';
+        this.selectedVariableName = null;
+      } else {
+        this.creatingVariableType = null;
+        this.selectedVariableName = value.startsWith(VARIABLE_OPTION_PREFIX)
+          ? value.slice(VARIABLE_OPTION_PREFIX.length)
+          : null;
+      }
       void this.refresh();
     });
 
     const setButton = toolbar.createEl('button', { text: 'Set token' });
-    setButton.disabled = !activeName || !definition.file || !last;
+    setButton.disabled = !activeName || !storedDefinition || !last;
     setButton.addEventListener('click', () => {
       if (setButton.disabled || !last) return;
       const token = `{{${activeName}}}`;
@@ -173,7 +243,7 @@ export class VariablePropertiesView extends ItemView {
     });
 
     const deleteButton = toolbar.createEl('button', { text: 'Delete' });
-    deleteButton.disabled = !activeName || !definition.file;
+    deleteButton.disabled = !activeName || !storedDefinition;
     deleteButton.addEventListener('click', () => {
       if (deleteButton.disabled) return;
       new DeleteVariableModal(this.app, activeName, () => void this.deleteVariable(activeName)).open();
@@ -188,6 +258,14 @@ export class VariablePropertiesView extends ItemView {
       cls: 'variable-links-panel-pane variable-links-panel-infocard',
       attr: { role: 'tabpanel' },
     });
+    const propertiesContent = propertiesPane.createDiv({ cls: 'variable-links-panel-pane-content' });
+    const propertiesSaveHost = propertiesPane.createDiv({
+      cls: 'variable-links-panel-sticky-save',
+    });
+    propertiesSaveHost.hidden = true;
+    const cardContent = cardPane.createDiv({ cls: 'variable-links-panel-pane-content' });
+    const cardSaveHost = cardPane.createDiv({ cls: 'variable-links-panel-sticky-save' });
+    cardSaveHost.hidden = true;
     const showTab = (tab: PanelTab): void => {
       this.activeTab = tab;
       const showLink = tab === 'link';
@@ -217,28 +295,56 @@ export class VariablePropertiesView extends ItemView {
     showTab(this.activeTab);
 
     if (!activeName) {
-      propertiesPane.createEl('p', {
-        text: 'No variable selected. Add a variable below or place the caret in a {{token}}.',
-      });
-      this.renderVariableForm(propertiesPane, '', EMPTY_DEFINITION, 'Add a variable');
-      cardPane.createEl('p', { text: 'Select or create a variable to configure its info card.' });
+      if (this.creatingVariableType) {
+        const label = this.creatingVariableType === 'fixed' ? 'fixed value' : 'property value';
+        this.renderVariableForm(
+          propertiesContent,
+          '',
+          definition,
+          `Add ${label}`,
+          undefined,
+          propertiesSaveHost,
+        );
+        cardContent.createEl('p', { text: 'Save the variable before configuring its info card.' });
+      } else {
+        propertiesContent.createEl('p', {
+          text: 'Select a variable or choose a new variable type from the dropdown.',
+        });
+        cardContent.createEl('p', { text: 'Select or create a variable to configure its info card.' });
+      }
       return;
     }
 
-    const result = definition.file ? await this.plugin.resolver?.resolve(activeName) : null;
+    const result = storedDefinition ? await this.plugin.resolver?.resolve(activeName) : null;
     if (!this.isCurrent(generation)) return;
-    const variableHeading = propertiesPane.createDiv({
+    const summaryTable = propertiesContent.createEl('table', {
+      cls: 'variable-links-panel-summary-table',
+    });
+    const summaryBody = summaryTable.createEl('tbody');
+    const variableRow = summaryBody.createEl('tr');
+    variableRow.createEl('th', { text: 'Variable link:', attr: { scope: 'row' } });
+    const variableCell = variableRow.createEl('td');
+    const variableHeading = variableCell.createDiv({
       cls: 'variable-links-panel-variable-heading',
     });
     variableHeading.createEl('h5', { text: `{{${activeName}}}` });
-    if (storedDefinition) this.renderFavoriteControl(variableHeading, activeName, storedDefinition);
-    const valueText = result?.ok ? String(result.value) : '[Missing]';
-    const valueEl = propertiesPane.createDiv({ cls: 'variable-links-panel-value' });
-    await MarkdownRenderer.render(this.app, valueText, valueEl, '', markdownChild);
+    if (storedDefinition) {
+      this.renderFavoriteControl(variableHeading, activeName, storedDefinition);
+    }
+    const valueText = result?.ok ? this.formatResolvedValue(result.value) : '[Missing]';
+    const valueRow = summaryBody.createEl('tr');
+    valueRow.createEl('th', { text: 'Value:', attr: { scope: 'row' } });
+    const valueEl = valueRow.createEl('td', { cls: 'variable-links-panel-value' });
+    if (result?.ok && valueText === '') valueEl.createSpan({ text: '(Empty)', cls: 'mod-muted' });
+    else await MarkdownRenderer.render(this.app, valueText, valueEl, '', markdownChild);
     if (!this.isCurrent(generation)) return;
 
-    const actions = propertiesPane.createDiv({ cls: 'variable-links-panel-actions' });
-    const fileLinkTarget = filePathFromLink(definition.link ?? definition.file);
+    const actionsRow = summaryBody.createEl('tr');
+    actionsRow.createEl('th', { text: 'Actions:', attr: { scope: 'row' } });
+    const actions = actionsRow.createEl('td', { cls: 'variable-links-panel-actions' });
+    const fileLinkTarget = filePathFromLink(
+      definition.link ?? (getVariableType(definition) === 'property' ? definition.file : ''),
+    );
     const openLinkButton = actions.createEl('button', { text: 'Open file link' });
     openLinkButton.disabled = !fileLinkTarget;
     openLinkButton.addEventListener('click', () => {
@@ -255,13 +361,16 @@ export class VariablePropertiesView extends ItemView {
     });
 
     this.renderVariableForm(
-      propertiesPane,
+      propertiesContent,
       activeName,
       definition,
-      definition.file ? 'Edit mapping' : 'Set up this variable',
+      storedDefinition ? 'Edit variable' : 'Set up this variable',
+      result ?? undefined,
+      propertiesSaveHost,
     );
-    if (definition.file) this.renderInfoCardForm(cardPane, activeName, definition);
-    else cardPane.createEl('p', { text: 'Save the variable mapping before configuring its info card.' });
+    if (storedDefinition) {
+      this.renderInfoCardForm(cardContent, activeName, definition, cardSaveHost);
+    } else cardContent.createEl('p', { text: 'Save the variable before configuring its info card.' });
   }
 
   private async deleteVariable(name: string): Promise<void> {
@@ -287,7 +396,25 @@ export class VariablePropertiesView extends ItemView {
     name: string,
     definition: VariableDefinition,
     title: string,
+    resolvedResult: ResolveResult | undefined,
+    saveHost: HTMLElement,
   ): void {
+    const existingVariable = name ? this.plugin.registry?.getVariable(name) : undefined;
+    let activeType = getVariableType(definition);
+    let hasFixedValue = definition.value !== undefined;
+    let markFormDirty = (): void => {};
+    const typeRow = parent.createDiv({ cls: 'variable-links-panel-field variable-links-panel-type-field' });
+    typeRow.createEl('label', { text: 'Variable type:' });
+    const typeInput = typeRow.createEl('select');
+    typeInput.createEl('option', { text: 'Fixed value', value: 'fixed' });
+    typeInput.createEl('option', { text: 'Property value', value: 'property' });
+    typeInput.value = activeType;
+    const typeStatus = parent.createDiv({
+      cls: 'variable-links-panel-type-status',
+      text: 'Unsaved change — save properties to apply.',
+    });
+    typeStatus.hidden = true;
+
     const section = parent.createEl('details', { cls: 'variable-links-panel-editor' });
     section.open = true;
     section.createEl('summary', { text: title });
@@ -299,10 +426,30 @@ export class VariablePropertiesView extends ItemView {
       formatPropertyLink(definition.file, definition.property),
       '[[People/John Smith]]#company',
     );
+    const propertyLinkRow = propertyLinkInput.parentElement;
+    const fixedValueInput = this.addInput(
+      form,
+      'Value',
+      definition.value ?? '',
+      'Value displayed by this variable',
+    );
+    const fixedValueRow = fixedValueInput.parentElement;
+    const linkedValueRow = form.createDiv({
+      cls: 'variable-links-panel-linked-value',
+      attr: { 'data-variable-links-ignore-dirty': 'true' },
+    });
+    this.renderLinkedPropertyValue(
+      linkedValueRow,
+      name,
+      existingVariable ?? undefined,
+      resolvedResult,
+    );
     const fileLinkInput = this.addInput(
       form,
       'File link',
-      toFileLink(definition.link ?? definition.file),
+      toFileLink(
+        definition.link ?? (activeType === 'property' ? definition.file : ''),
+      ),
       '[[People/John Smith]]',
     );
     this.attachPropertyLinkSuggestions(propertyLinkInput, (fileLink) => {
@@ -315,7 +462,40 @@ export class VariablePropertiesView extends ItemView {
       definition.display ?? '',
       'e.g. John Smith',
     );
-    const existingVariable = name ? this.plugin.registry?.getVariable(name) : undefined;
+    const updateTypeFields = (): void => {
+      if (propertyLinkRow) propertyLinkRow.hidden = activeType !== 'property';
+      if (fixedValueRow) fixedValueRow.hidden = activeType !== 'fixed';
+      linkedValueRow.hidden = activeType !== 'property';
+      typeInput.value = activeType;
+      typeStatus.hidden = !existingVariable || activeType === getVariableType(existingVariable);
+    };
+    const applyType = (nextType: VariableType): void => {
+      if (nextType === 'fixed' && !hasFixedValue) {
+        fixedValueInput.value = resolvedResult?.ok
+          ? this.formatResolvedValue(resolvedResult.value)
+          : '';
+        hasFixedValue = true;
+      }
+      activeType = nextType;
+      updateTypeFields();
+      markFormDirty();
+    };
+    typeInput.addEventListener('change', () => {
+      const nextType: VariableType = typeInput.value === 'fixed' ? 'fixed' : 'property';
+      typeInput.value = activeType;
+      if (nextType === activeType) return;
+      if (!existingVariable) {
+        applyType(nextType);
+        return;
+      }
+      new ChangeVariableTypeModal(
+        this.app,
+        activeType,
+        nextType,
+        () => applyType(nextType),
+      ).open();
+    });
+    updateTypeFields();
     let favoriteInput: HTMLInputElement | null = null;
     if (!existingVariable) {
       const favoriteRow = form.createDiv({ cls: 'variable-links-panel-checkbox' });
@@ -342,7 +522,7 @@ export class VariablePropertiesView extends ItemView {
     const boldInput = this.addInlineCheckbox(emphasisRow, 'Bold', appearance.bold === true);
     const italicInput = this.addInlineCheckbox(emphasisRow, 'Italic', appearance.italic === true);
     const decorationRow = form.createDiv({ cls: 'variable-links-panel-field' });
-    decorationRow.createEl('label', { text: 'Decoration' });
+    decorationRow.createEl('label', { text: 'Decoration:' });
     const decorationInput = decorationRow.createEl('select');
     decorationInput.createEl('option', { text: 'Underline', value: 'underline' });
     decorationInput.createEl('option', { text: 'Highlight', value: 'highlight' });
@@ -360,7 +540,7 @@ export class VariablePropertiesView extends ItemView {
     });
     colorInput.value = appearance.color ?? this.plugin.settings.defaultAppearanceColor;
     const opacityRow = form.createDiv({ cls: 'variable-links-panel-opacity' });
-    opacityRow.createEl('label', { text: 'Decoration opacity' });
+    opacityRow.createEl('label', { text: 'Decoration opacity:' });
     const opacityInput = opacityRow.createEl('input', {
       type: 'range',
       attr: { min: '0', max: '100', step: '1' },
@@ -390,6 +570,7 @@ export class VariablePropertiesView extends ItemView {
         customColorInput.checked = true;
         colorInput.value = color;
         updateAppearanceControls();
+        markFormDirty();
       });
       return button;
     });
@@ -423,50 +604,65 @@ export class VariablePropertiesView extends ItemView {
       useDefaultsInput.checked = true;
       setAppearanceControls(defaultAppearance);
       updateAppearanceControls();
+      markFormDirty();
     });
     themeColorButton.addEventListener('click', () => {
       customColorInput.checked = false;
       updateAppearanceControls();
+      markFormDirty();
     });
     decorationInput.addEventListener('change', updateAppearanceControls);
     customColorInput.addEventListener('change', updateAppearanceControls);
     updateAppearanceControls();
 
-    this.addSaveButton(form, name ? 'Save properties' : 'Add variable', async () => {
-      const registry = this.plugin.registry;
-      if (!registry) throw new Error('The registry is unavailable.');
-      const newName = nameInput.value.trim();
-      const propertyLink = parsePropertyLink(propertyLinkInput.value);
-      const nextAppearance: VariableAppearance = {};
-      if (boldInput.checked) nextAppearance.bold = true;
-      if (italicInput.checked) nextAppearance.italic = true;
-      const decoration = decorationInput.value as VariableDecoration;
-      if (decoration !== 'underline') nextAppearance.decoration = decoration;
-      if (decoration !== 'none' && customColorInput.checked) {
-        nextAppearance.color = colorInput.value;
-      }
-      const opacity = Number(opacityInput.value);
-      if (decoration !== 'none' && opacity !== 100) nextAppearance.opacity = opacity;
-      const favorite = existingVariable
-        ? registry.getVariable(name)?.favorite === true
-        : favoriteInput?.checked === true;
-      await registry.saveVariable(newName, {
-        file: propertyLink.file,
-        property: propertyLink.property,
-        link: fileLinkInput.value.trim() ? toFileLink(fileLinkInput.value) : undefined,
-        display: displayInput.value,
-        favorite,
-        appearance: useDefaultsInput.checked ? undefined : nextAppearance,
-      }, definition.file ? name : undefined);
-      const touched = this.plugin.caretTracker?.lastTouched;
-      if (touched?.name === name && newName !== name) {
-        touched.name = newName;
-        touched.def = registry.getVariable(newName);
-      }
-      this.selectedVariableName = newName;
-      new Notice(`Variable Links: saved {{${newName}}}`);
-      await this.refresh();
-    });
+    markFormDirty = this.addSaveButton(
+      form,
+      existingVariable ? 'Save properties' : 'Add variable',
+      saveHost,
+      async () => {
+        const registry = this.plugin.registry;
+        if (!registry) throw new Error('The registry is unavailable.');
+        const newName = nameInput.value.trim();
+        const propertyLinkText = propertyLinkInput.value.trim();
+        let propertyLink = { file: '', property: '' };
+        if (propertyLinkText) propertyLink = parsePropertyLink(propertyLinkText);
+        else if (activeType === 'property') {
+          throw new Error('A property link is required for a Property value variable.');
+        }
+        const nextAppearance: VariableAppearance = {};
+        if (boldInput.checked) nextAppearance.bold = true;
+        if (italicInput.checked) nextAppearance.italic = true;
+        const decoration = decorationInput.value as VariableDecoration;
+        if (decoration !== 'underline') nextAppearance.decoration = decoration;
+        if (decoration !== 'none' && customColorInput.checked) {
+          nextAppearance.color = colorInput.value;
+        }
+        const opacity = Number(opacityInput.value);
+        if (decoration !== 'none' && opacity !== 100) nextAppearance.opacity = opacity;
+        const favorite = existingVariable
+          ? registry.getVariable(name)?.favorite === true
+          : favoriteInput?.checked === true;
+        await registry.saveVariable(newName, {
+          type: activeType,
+          file: propertyLink.file,
+          property: propertyLink.property,
+          value: hasFixedValue ? fixedValueInput.value : undefined,
+          link: fileLinkInput.value.trim() ? toFileLink(fileLinkInput.value) : undefined,
+          display: displayInput.value,
+          favorite,
+          appearance: useDefaultsInput.checked ? undefined : nextAppearance,
+        }, existingVariable ? name : undefined);
+        const touched = this.plugin.caretTracker?.lastTouched;
+        if (touched?.name === name && newName !== name) {
+          touched.name = newName;
+          touched.def = registry.getVariable(newName);
+        }
+        this.creatingVariableType = null;
+        this.selectedVariableName = newName;
+        new Notice(`Variable Links: saved {{${newName}}}`);
+        await this.refresh();
+      },
+    );
   }
 
   private renderFavoriteControl(
@@ -504,8 +700,12 @@ export class VariablePropertiesView extends ItemView {
     parent: HTMLElement,
     name: string,
     definition: VariableDefinition,
+    saveHost: HTMLElement,
   ): void {
     const card = definition.card ?? {};
+    const fixedValue = getVariableType(definition) === 'fixed';
+    const cardSourceFile = fixedValue ? definition.link ?? '' : definition.file;
+    const hasCardSource = Boolean(filePathFromLink(cardSourceFile));
     parent.createEl('p', { text: 'Shown when hovering over this variable in reading view or live preview.' });
     const form = parent.createEl('form', { cls: 'variable-links-panel-card-editor' });
     const titleInput = this.addInput(form, 'Title', card.title ?? '', 'e.g. John Smith');
@@ -517,21 +717,28 @@ export class VariablePropertiesView extends ItemView {
     );
     const fieldsInput = this.addInput(
       form,
-      'Fields (property, [[File]]#property, or either with :Display name)',
+      'Fields',
       card.fields?.join(', ') ?? '',
       'email:Email address, [[Projects/Plan]]#due:Due date',
     );
-    this.attachFieldSuggestions(fieldsInput, definition.file);
+    fieldsInput.parentElement?.createDiv({
+      cls: 'variable-links-hint-text variable-links-panel-field-hint',
+      text: 'Property, [[File]]#property, or either with :Display name.',
+    });
+    this.attachFieldSuggestions(fieldsInput, cardSourceFile);
     const sourceRow = form.createDiv({ cls: 'variable-links-panel-checkbox' });
     const sourceInput = sourceRow.createEl('input', { type: 'checkbox' });
     sourceInput.checked = card.showSourceLink === true;
-    sourceRow.createEl('label', { text: 'Show “open source” link' });
+    sourceInput.disabled = !hasCardSource;
+    sourceRow.createEl('label', {
+      text: fixedValue ? 'Show “open file link”' : 'Show “open source” link',
+    });
     const livePreviewRow = form.createDiv({ cls: 'variable-links-panel-checkbox' });
     const livePreviewInput = livePreviewRow.createEl('input', { type: 'checkbox' });
     livePreviewInput.checked = card.disableLivePreviewHover === true;
     livePreviewRow.createEl('label', { text: 'Disable live preview hover for this card' });
 
-    this.addSaveButton(form, 'Save info card', async () => {
+    this.addSaveButton(form, 'Save info card', saveHost, async () => {
       const registry = this.plugin.registry;
       if (!registry) throw new Error('The registry is unavailable.');
       const fields = fieldsInput.value.split(',').map((field) => field.trim()).filter(Boolean);
@@ -550,14 +757,233 @@ export class VariablePropertiesView extends ItemView {
     });
   }
 
-  private addSaveButton(form: HTMLFormElement, text: string, save: () => Promise<void>): void {
-    const button = form.createEl('button', {
+  private renderLinkedPropertyValue(
+    parent: HTMLElement,
+    variableName: string,
+    storedDefinition: VariableDefinition | undefined,
+    result: ResolveResult | undefined,
+  ): void {
+    parent.createEl('label', { text: 'Linked value:' });
+    if (!storedDefinition) {
+      parent.createDiv({
+        cls: 'variable-links-hint-text',
+        text: 'Save this variable before editing its linked value.',
+      });
+      return;
+    }
+    if (getVariableType(storedDefinition) !== 'property') {
+      parent.createDiv({
+        cls: 'variable-links-hint-text',
+        text: 'Save the Property value type before editing its linked value.',
+      });
+      return;
+    }
+    if (!result?.ok || !result.sourceFile || !result.property) {
+      parent.createDiv({
+        cls: 'variable-links-hint-text',
+        text: result?.error ?? 'The linked value is unavailable.',
+      });
+      return;
+    }
+
+    const sourceFile = result.sourceFile;
+    const property = result.property;
+    const originalValue = result.value;
+    const editableType = typeof originalValue;
+    const supported = editableType === 'string'
+      || editableType === 'number'
+      || editableType === 'boolean';
+    const display = parent.createDiv({ cls: 'variable-links-panel-linked-value-display' });
+    const value = display.createDiv({
+      cls: 'variable-links-panel-linked-value-text',
+      attr: {
+        title: supported ? 'Double-click to edit the linked property value' : '',
+        tabindex: supported ? '0' : '-1',
+      },
+    });
+    value.textContent = this.formatResolvedValue(originalValue) || '(Empty)';
+    parent.createDiv({
+      cls: 'variable-links-hint-text',
+      text: `Edits the saved property ${sourceFile.path}#${property}. Save Property link changes first to edit a different source.`,
+    });
+    if (!supported) {
+      display.createSpan({
+        cls: 'variable-links-hint-text',
+        text: 'Lists and structured values are read-only.',
+      });
+      return;
+    }
+
+    const editButton = display.createEl('button', {
+      text: 'Edit',
+      attr: { type: 'button', 'aria-label': `Edit linked value for ${variableName}` },
+    });
+    const editor = parent.createDiv({ cls: 'variable-links-panel-linked-value-editor' });
+    editor.hidden = true;
+    let editorControl: HTMLInputElement | HTMLSelectElement;
+    if (editableType === 'boolean') {
+      const select = editor.createEl('select');
+      select.createEl('option', { text: 'True', value: 'true' });
+      select.createEl('option', { text: 'False', value: 'false' });
+      select.value = originalValue === true ? 'true' : 'false';
+      editorControl = select;
+    } else {
+      const input = editor.createEl('input', {
+        type: editableType === 'number' ? 'number' : 'text',
+      });
+      input.value = this.formatResolvedValue(originalValue);
+      editorControl = input;
+    }
+    const editorActions = editor.createDiv({ cls: 'variable-links-panel-linked-value-actions' });
+    const saveButton = editorActions.createEl('button', {
+      text: 'Save linked value',
+      cls: 'mod-cta',
+      attr: { type: 'button' },
+    });
+    const cancelButton = editorActions.createEl('button', {
+      text: 'Cancel',
+      attr: { type: 'button' },
+    });
+    const startEditing = (): void => {
+      display.hidden = true;
+      editor.hidden = false;
+      editorControl.focus();
+      if (editorControl instanceof HTMLInputElement) editorControl.select();
+    };
+    const cancelEditing = (): void => {
+      editorControl.value = editableType === 'boolean'
+        ? originalValue === true ? 'true' : 'false'
+        : this.formatResolvedValue(originalValue);
+      editor.hidden = true;
+      display.hidden = false;
+      editButton.focus();
+    };
+    const saveLinkedValue = async (): Promise<void> => {
+      saveButton.disabled = true;
+      cancelButton.disabled = true;
+      try {
+        const nextValue = this.parseLinkedPropertyValue(editorControl.value, editableType);
+        await this.updateLinkedPropertyValue(
+          sourceFile,
+          property,
+          originalValue,
+          nextValue,
+        );
+        new Notice(`Variable Links: updated linked value for {{${variableName}}}`);
+        this.plugin.livePreviewRenderer?.refresh();
+        await this.refresh();
+      } catch (error) {
+        new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+        saveButton.disabled = false;
+        cancelButton.disabled = false;
+      }
+    };
+    value.addEventListener('dblclick', startEditing);
+    value.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      startEditing();
+    });
+    editButton.addEventListener('click', startEditing);
+    cancelButton.addEventListener('click', cancelEditing);
+    saveButton.addEventListener('click', () => void saveLinkedValue());
+    editorControl.addEventListener('keydown', (event) => {
+      const keyboardEvent = event as KeyboardEvent;
+      if (keyboardEvent.key === 'Escape') {
+        keyboardEvent.preventDefault();
+        cancelEditing();
+      } else if (keyboardEvent.key === 'Enter') {
+        keyboardEvent.preventDefault();
+        void saveLinkedValue();
+      }
+    });
+  }
+
+  private parseLinkedPropertyValue(value: string, type: string): string | number | boolean {
+    if (type === 'boolean') return value === 'true';
+    if (type === 'number') {
+      const number = Number(value);
+      if (!value.trim() || !Number.isFinite(number)) {
+        throw new Error('Enter a valid number before saving the linked value.');
+      }
+      return number;
+    }
+    return value;
+  }
+
+  private async updateLinkedPropertyValue(
+    file: TFile,
+    property: string,
+    originalValue: unknown,
+    nextValue: string | number | boolean,
+  ): Promise<void> {
+    const metadataRefresh = this.waitForMetadataRefresh(file);
+    await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+      if (!Object.is(frontmatter[property], originalValue)) {
+        throw new Error('The linked value changed after the panel loaded. Refresh and try again.');
+      }
+      frontmatter[property] = nextValue;
+    });
+    await metadataRefresh;
+  }
+
+  private waitForMetadataRefresh(file: TFile): Promise<void> {
+    return new Promise((resolve) => {
+      let finished = false;
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        window.clearTimeout(timer);
+        this.app.metadataCache.offref(eventRef);
+        resolve();
+      };
+      const eventRef = this.app.metadataCache.on('changed', (changedFile) => {
+        if (changedFile.path === file.path) finish();
+      });
+      const timer = window.setTimeout(finish, 1000);
+    });
+  }
+
+  private formatResolvedValue(value: unknown): string {
+    if (Array.isArray(value)) return value.map(String).join(', ');
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'string'
+      || typeof value === 'number'
+      || typeof value === 'boolean'
+      || typeof value === 'bigint') return String(value);
+    return JSON.stringify(value) ?? '';
+  }
+
+  private addSaveButton(
+    form: HTMLFormElement,
+    text: string,
+    saveHost: HTMLElement,
+    save: () => Promise<void>,
+  ): () => void {
+    const formId = `variable-links-panel-form-${this.refreshGeneration}-${text.toLowerCase().replace(/\s+/g, '-')}`;
+    form.id = formId;
+    saveHost.empty();
+    saveHost.hidden = false;
+    const button = saveHost.createEl('button', {
       text,
       cls: 'mod-cta',
-      attr: { type: 'submit' },
+      attr: { type: 'submit', form: formId },
     });
+    button.disabled = true;
+    const markDirty = (): void => {
+      button.disabled = false;
+    };
+    const markDirtyFromEvent = (event: Event): void => {
+      const target = event.target;
+      if (target instanceof HTMLElement
+        && target.closest('[data-variable-links-ignore-dirty="true"]')) return;
+      markDirty();
+    };
+    form.addEventListener('input', markDirtyFromEvent);
+    form.addEventListener('change', markDirtyFromEvent);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
+      if (button.disabled) return;
       button.disabled = true;
       void save()
         .catch((error: unknown) => {
@@ -567,6 +993,7 @@ export class VariablePropertiesView extends ItemView {
           button.disabled = false;
         });
     });
+    return markDirty;
   }
 
   private addInput(
@@ -576,7 +1003,7 @@ export class VariablePropertiesView extends ItemView {
     placeholder: string,
   ): HTMLInputElement {
     const row = form.createDiv({ cls: 'variable-links-panel-field' });
-    row.createEl('label', { text: label });
+    row.createEl('label', { text: `${label}:` });
     const input = row.createEl('input', { type: 'text', placeholder });
     input.value = value;
     return input;
@@ -588,8 +1015,10 @@ export class VariablePropertiesView extends ItemView {
     value: string,
     placeholder: string,
   ): HTMLTextAreaElement {
-    const row = form.createDiv({ cls: 'variable-links-panel-field' });
-    row.createEl('label', { text: label });
+    const row = form.createDiv({
+      cls: 'variable-links-panel-field variable-links-panel-textarea-field',
+    });
+    row.createEl('label', { text: `${label}:` });
     const input = row.createEl('textarea', { attr: { placeholder, rows: '4' } });
     input.value = value;
     return input;
@@ -699,6 +1128,7 @@ export class VariablePropertiesView extends ItemView {
 
     const choose = (item: T): void => {
       chooseItem(item);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
       menu.replaceChildren();

@@ -8,11 +8,23 @@ All notable user-visible changes to Variable Links are recorded here.
 
 - Added a configurable Info Card hover delay for Reading View.
 - Added a context-menu submenu for switching complete Variable Link tokens, with favorites listed first.
+- Added Fixed value variables with optional file links alongside the existing Property value variables.
+- Added variable-type creation choices and confirmed, reversible type switching in the properties panel.
+- Added direct editing of text, number, and true/false values stored in linked note properties.
 
 ### Changed
 
 - Live Preview Info Card delays can now be adjusted in quarter-second increments starting at one second.
 - Moved the Favorite control beside the selected Variable Link name and made changes save immediately.
+- Moved variable type selection above the editor and made the active Value or Property link field occupy the same position.
+- Removed the redundant variable-type label from the panel heading.
+- Organized the selected variable, resolved value, and actions in a visible summary table.
+- Simplified the Actions row border so only its top divider remains visible.
+- Kept the Properties and Info Card save buttons visible above the bottom-left of their panels while scrolling.
+- Updated rendered tokens immediately after their linked property value is edited from the panel.
+- Aligned panel field labels beside controls when space allows, stacked them in narrow panels, and limited Fixed values to a single line.
+- Added consistent punctuation to field labels and kept multiline text areas beneath their labels.
+- Moved the Info Card field-format instructions beneath the Fields input as hint text.
 
 ## 1.1.1 - 2026-08-22
 

@@ -1,5 +1,5 @@
 import { App, TFile, parseYaml } from 'obsidian';
-import Registry from './registry';
+import Registry, { getVariableType } from './registry';
 
 export interface ResolveResult {
   ok: boolean;
@@ -23,6 +23,15 @@ export class Resolver {
     const def = this.registry.getVariable(variableName);
     if (!def) {
       return { ok: false, error: `Variable '${variableName}' not found in registry` };
+    }
+
+    if (getVariableType(def) === 'fixed') {
+      return {
+        ok: true,
+        value: def.value ?? '',
+        type: 'string',
+        sourceFile: null,
+      };
     }
 
     const rawFile = def.file;

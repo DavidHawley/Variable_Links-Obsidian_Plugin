@@ -1,5 +1,5 @@
 import { App, MarkdownView } from 'obsidian';
-import Registry from './registry';
+import Registry, { getVariableType } from './registry';
 import Resolver from './resolver';
 import Indexer from './indexer';
 import InfoCard from './card';
@@ -285,12 +285,18 @@ export class Renderer {
     const definition = this.registry.getVariable(name);
     if (!definition?.card) return;
     if (state.livePreview && definition.card.disableLivePreviewHover) return;
-    const filePath = filePathFromLink(definition.file);
-    const sourcePath = filePath ? `${filePath}.md` : definition.file;
+    const rawSource = getVariableType(definition) === 'fixed'
+      ? definition.link ?? ''
+      : definition.file;
+    const filePath = filePathFromLink(rawSource);
+    const sourcePath = filePath ? `${filePath}.md` : '';
+    const card = sourcePath
+      ? definition.card
+      : { ...definition.card, showSourceLink: false };
     await this.infoCard.showFor(
       token,
       sourcePath,
-      definition.card,
+      card,
       { clientX: state.clientX, clientY: state.clientY },
     );
   }
