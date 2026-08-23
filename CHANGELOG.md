@@ -2,7 +2,7 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
-## 1.2.2 - Unreleased
+## 1.2.2 - 2026-08-23
 
 ### Fixed
 
