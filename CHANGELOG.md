@@ -27,6 +27,7 @@ All notable user-visible changes to Variable Links are recorded here.
 
 ### Changed
 
+- The Card Designer now remembers which blocks and property rows are collapsed for each variable.
 - Replaced Card item movement text with compact top, up, down, and end arrow controls that retain tooltips and accessible names.
 - Made the Edit Variable and Variable Appearance sections independently collapsible in the Properties panel.
 - Improved the visual separation of section titles in the Variable Link Properties panel.

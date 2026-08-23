@@ -208,6 +208,9 @@ class InfoCardLayoutModal extends Modal {
     this.cardStyle = { ...(card.cardStyle ?? {}) };
     this.disableLivePreviewHover = card.disableLivePreviewHover === true;
     this.previewCard = new InfoCard(plugin.app);
+    this.restoreCollapsedItemIds(
+      plugin.settings.infoCardEditorCollapsedItems[variableName] ?? [],
+    );
     this.originalState = this.snapshot();
   }
 
@@ -1683,6 +1686,7 @@ class InfoCardLayoutModal extends Modal {
   private setItemCollapsed(collection: Set<string>, id: string, collapsed: boolean): void {
     if (collapsed) collection.add(id);
     else collection.delete(id);
+    this.persistCollapsedItemIds();
     this.rerenderPreservingScroll();
   }
 
@@ -1700,10 +1704,13 @@ class InfoCardLayoutModal extends Modal {
       this.collapsedBlockIds.clear();
       this.collapsedPropertyIds.clear();
     }
+    this.persistCollapsedItemIds();
     this.rerenderPreservingScroll();
   }
 
   private pruneCollapsedItemIds(): void {
+    const previousBlockCount = this.collapsedBlockIds.size;
+    const previousPropertyCount = this.collapsedPropertyIds.size;
     const blocks = this.allCardBlocks();
     const blockIds = new Set(blocks.map((block) => block.id));
     const propertyIds = new Set<string>();
@@ -1719,6 +1726,34 @@ class InfoCardLayoutModal extends Modal {
     for (const id of this.collapsedPropertyIds) {
       if (!propertyIds.has(id)) this.collapsedPropertyIds.delete(id);
     }
+    if (this.collapsedBlockIds.size !== previousBlockCount
+      || this.collapsedPropertyIds.size !== previousPropertyCount) {
+      this.persistCollapsedItemIds();
+    }
+  }
+
+  private restoreCollapsedItemIds(itemIds: string[]): void {
+    const savedIds = new Set(itemIds);
+    for (const block of this.allCardBlocks()) {
+      if (savedIds.has(block.id)) this.collapsedBlockIds.add(block.id);
+      if (block.type === 'property' && savedIds.has(block.property.id)) {
+        this.collapsedPropertyIds.add(block.property.id);
+      }
+      if (block.type === 'property-table') {
+        for (const property of block.properties) {
+          if (savedIds.has(property.id)) this.collapsedPropertyIds.add(property.id);
+        }
+      }
+    }
+  }
+
+  private persistCollapsedItemIds(): void {
+    const itemIds = [
+      ...this.collapsedBlockIds,
+      ...this.collapsedPropertyIds,
+    ];
+    void this.plugin.saveInfoCardEditorCollapsedItems(this.variableName, itemIds)
+      .catch(() => new Notice('Could not remember the collapsed card items.'));
   }
 
   private allCardBlocks(): CardBlock[] {

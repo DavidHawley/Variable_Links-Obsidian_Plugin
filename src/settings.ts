@@ -25,6 +25,7 @@ export interface VariableLinksSettings {
   defaultDateFormat: string;
   infoCardEditorWidth: number | null;
   infoCardEditorHeight: number | null;
+  infoCardEditorCollapsedItems: Record<string, string[]>;
 }
 
 type SettingKey = keyof VariableLinksSettings;
@@ -47,11 +48,28 @@ export const DEFAULT_SETTINGS: VariableLinksSettings = {
   defaultDateFormat: 'YYYY-MM-DD',
   infoCardEditorWidth: null,
   infoCardEditorHeight: null,
+  infoCardEditorCollapsedItems: {},
 };
 
 export function normalizeInfoCardEditorDimension(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
   return Math.round(value);
+}
+
+export function normalizeInfoCardEditorCollapsedItems(
+  value: unknown,
+): Record<string, string[]> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const normalized = Object.create(null) as Record<string, string[]>;
+  for (const [name, itemIds] of Object.entries(value)) {
+    if (!name || name.length > 200 || !Array.isArray(itemIds)) continue;
+    const ids = itemIds
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0 && item.length <= 200);
+    if (ids.length) normalized[name] = [...new Set(ids)].slice(0, 500);
+  }
+  return normalized;
 }
 
 function normalizeQuarterSecondDelay(value: unknown, fallback: number, minimum: number): number {
@@ -220,7 +238,9 @@ export class VariableLinksSettingTab extends PluginSettingTab {
 
   async setControlValue(key: string, value: unknown): Promise<void> {
     if (!this.isSettingKey(key)) return;
-    if (key === 'infoCardEditorWidth' || key === 'infoCardEditorHeight') return;
+    if (key === 'infoCardEditorWidth'
+      || key === 'infoCardEditorHeight'
+      || key === 'infoCardEditorCollapsedItems') return;
 
     if (key === 'registryFilePath' || key === 'defaultDateFormat') {
       if (typeof value !== 'string') return;

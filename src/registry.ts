@@ -318,6 +318,14 @@ export class Registry {
       throw error;
     }
 
+    if (rename && oldName) {
+      try {
+        await this.plugin.renameInfoCardEditorCollapsedItems(oldName, variableName);
+      } catch {
+        new Notice('The variable was renamed, but its card designer collapse state could not be moved.');
+      }
+    }
+
     // Once the registry write succeeds, the rename is authoritative. Derived
     // indexes may be rebuilt, but must never roll note text back independently.
     try {
@@ -358,6 +366,11 @@ export class Registry {
     await this.load();
     await this.plugin.indexer?.build();
     if (guid) await this.plugin.tokenCache?.removeGuid(guid);
+    try {
+      await this.plugin.saveInfoCardEditorCollapsedItems(variableName, []);
+    } catch {
+      new Notice('The variable was deleted, but its saved card designer collapse state could not be removed.');
+    }
     this.plugin.livePreviewRenderer?.refresh();
   }
 

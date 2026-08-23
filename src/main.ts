@@ -21,6 +21,7 @@ import Renderer from './renderer';
 import Resolver from './resolver';
 import {
   DEFAULT_SETTINGS,
+  normalizeInfoCardEditorCollapsedItems,
   normalizeInfoCardEditorDimension,
   normalizeLivePreviewHoverDelay,
   normalizeReadingViewHoverDelay,
@@ -245,6 +246,9 @@ export default class VariableLinksPlugin extends Plugin {
         : DEFAULT_SETTINGS.defaultDateFormat,
       infoCardEditorWidth: normalizeInfoCardEditorDimension(saved.infoCardEditorWidth),
       infoCardEditorHeight: normalizeInfoCardEditorDimension(saved.infoCardEditorHeight),
+      infoCardEditorCollapsedItems: normalizeInfoCardEditorCollapsedItems(
+        saved.infoCardEditorCollapsedItems,
+      ),
     };
   }
 
@@ -260,6 +264,41 @@ export default class VariableLinksPlugin extends Plugin {
       && this.settings.infoCardEditorHeight === normalizedHeight) return;
     this.settings.infoCardEditorWidth = normalizedWidth;
     this.settings.infoCardEditorHeight = normalizedHeight;
+    await this.saveSettings();
+  }
+
+  async saveInfoCardEditorCollapsedItems(
+    variableName: string,
+    itemIds: string[],
+  ): Promise<void> {
+    const nextIds = [...new Set(itemIds)].sort((left, right) => left.localeCompare(right));
+    const currentIds = this.settings.infoCardEditorCollapsedItems[variableName] ?? [];
+    if (currentIds.length === nextIds.length
+      && currentIds.every((item, index) => item === nextIds[index])) return;
+    const collapsedItems = Object.assign(
+      Object.create(null) as Record<string, string[]>,
+      this.settings.infoCardEditorCollapsedItems,
+    );
+    if (nextIds.length) collapsedItems[variableName] = nextIds;
+    else delete collapsedItems[variableName];
+    this.settings.infoCardEditorCollapsedItems = collapsedItems;
+    await this.saveSettings();
+  }
+
+  async renameInfoCardEditorCollapsedItems(
+    previousName: string,
+    nextName: string,
+  ): Promise<void> {
+    if (previousName === nextName) return;
+    const itemIds = this.settings.infoCardEditorCollapsedItems[previousName];
+    if (!itemIds) return;
+    const collapsedItems = Object.assign(
+      Object.create(null) as Record<string, string[]>,
+      this.settings.infoCardEditorCollapsedItems,
+    );
+    collapsedItems[nextName] = itemIds;
+    delete collapsedItems[previousName];
+    this.settings.infoCardEditorCollapsedItems = collapsedItems;
     await this.saveSettings();
   }
 
