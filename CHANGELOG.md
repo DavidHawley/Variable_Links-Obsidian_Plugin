@@ -2,6 +2,12 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
+## 1.2.2 - Unreleased
+
+### Fixed
+
+- Resolved Obsidian plugin-review warnings in Copy Markdown's code-block detection.
+
 ## 1.2.1 - 2026-08-23
 
 ### Added

@@ -646,7 +646,7 @@ export default class VariableLinksPlugin extends Plugin {
     }
     if (fenceCharacter) return true;
 
-    const currentLine = lines.at(-1) ?? '';
+    const currentLine = lines[lines.length - 1] ?? '';
     let inlineFenceLength = 0;
     const backticks = /`+/g;
     let run: RegExpExecArray | null;
