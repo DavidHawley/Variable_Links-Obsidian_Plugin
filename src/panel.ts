@@ -10,6 +10,16 @@ import {
 } from 'obsidian';
 import type { CardConfig } from './card';
 import {
+  cloneCardBlocks,
+  createCardBlock,
+  createPropertyEntry,
+  migrateLegacyCardBlocks,
+  normalizeCardBlocks,
+  type CardBlock,
+  type CardPropertyEntry,
+  type CardPropertyTableBlock,
+} from './cardBlocks';
+import {
   getDefaultVariableAppearance,
   type VariableAppearance,
   type VariableDecoration,
@@ -107,6 +117,297 @@ class ChangeVariableTypeModal extends Modal {
 
   onClose(): void {
     this.contentEl.empty();
+  }
+}
+
+class InfoCardLayoutModal extends Modal {
+  private readonly blocks: CardBlock[];
+  private disableLivePreviewHover: boolean;
+
+  constructor(
+    app: App,
+    private readonly variableName: string,
+    card: CardConfig,
+    private readonly hasSourceFile: boolean,
+    private readonly attachPropertySuggestions: (input: HTMLInputElement) => void,
+    private readonly onSave: (card: CardConfig) => Promise<void>,
+  ) {
+    super(app);
+    this.blocks = normalizeCardBlocks(card.blocks ?? migrateLegacyCardBlocks(card)) ?? [];
+    this.disableLivePreviewHover = card.disableLivePreviewHover === true;
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass('variable-links-card-layout-modal');
+    this.render();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private render(): void {
+    this.contentEl.empty();
+    this.contentEl.createEl('h2', { text: `Info Card layout for {{${this.variableName}}}` });
+    this.contentEl.createEl('p', {
+      cls: 'variable-links-hint-text',
+      text: 'Blocks render from top to bottom. Use the movement controls to arrange them.',
+    });
+
+    const addRow = this.contentEl.createDiv({ cls: 'variable-links-card-layout-add' });
+    const typeSelect = addRow.createEl('select', { attr: { 'aria-label': 'Block type' } });
+    const blockTypes: Array<{ type: CardBlock['type']; label: string }> = [
+      { type: 'title', label: 'Title' },
+      { type: 'note', label: 'Note' },
+      { type: 'property', label: 'Property' },
+      { type: 'property-table', label: 'Property table' },
+      { type: 'divider', label: 'Divider' },
+      { type: 'source', label: 'Source link' },
+    ];
+    for (const item of blockTypes) {
+      typeSelect.createEl('option', { text: item.label, value: item.type });
+    }
+    addRow.createEl('button', { text: 'Add block', attr: { type: 'button' } })
+      .addEventListener('click', () => {
+        const type = typeSelect.value as CardBlock['type'];
+        this.blocks.push(createCardBlock(type));
+        this.render();
+      });
+
+    const list = this.contentEl.createDiv({ cls: 'variable-links-card-layout-list' });
+    if (!this.blocks.length) {
+      list.createDiv({
+        cls: 'variable-links-card-layout-empty',
+        text: 'No blocks yet. Add a block to build this Info Card.',
+      });
+    }
+    this.blocks.forEach((block, index) => this.renderBlock(list, block, index));
+
+    const options = this.contentEl.createDiv({ cls: 'variable-links-card-layout-options' });
+    const livePreviewLabel = options.createEl('label');
+    const livePreviewInput = livePreviewLabel.createEl('input', { type: 'checkbox' });
+    livePreviewInput.checked = this.disableLivePreviewHover;
+    livePreviewInput.addEventListener('change', () => {
+      this.disableLivePreviewHover = livePreviewInput.checked;
+    });
+    livePreviewLabel.createSpan({ text: 'Disable live preview hover for this card' });
+
+    const footer = this.contentEl.createDiv({ cls: 'variable-links-card-layout-footer' });
+    footer.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
+      .addEventListener('click', () => this.close());
+    const saveButton = footer.createEl('button', {
+      text: 'Save info card',
+      cls: 'mod-cta',
+      attr: { type: 'button' },
+    });
+    saveButton.addEventListener('click', () => {
+      saveButton.disabled = true;
+      const blocks = normalizeCardBlocks(this.blocks) ?? [];
+      void this.onSave({
+        blocks: cloneCardBlocks(blocks),
+        useBlockLayout: true,
+        disableLivePreviewHover: this.disableLivePreviewHover || undefined,
+      }).then(() => this.close()).catch((error: unknown) => {
+        saveButton.disabled = false;
+        new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    });
+  }
+
+  private renderBlock(parent: HTMLElement, block: CardBlock, index: number): void {
+    const item = parent.createDiv({ cls: 'variable-links-card-layout-block' });
+    const heading = item.createDiv({ cls: 'variable-links-card-layout-block-heading' });
+    heading.createEl('strong', { text: this.blockLabel(block) });
+    const controls = heading.createDiv({ cls: 'variable-links-card-layout-controls' });
+    this.addMoveButton(controls, 'Move up', index === 0, () => this.moveBlock(index, -1));
+    this.addMoveButton(
+      controls,
+      'Move down',
+      index === this.blocks.length - 1,
+      () => this.moveBlock(index, 1),
+    );
+    controls.createEl('button', { text: 'Remove', attr: { type: 'button' } })
+      .addEventListener('click', () => {
+        this.blocks.splice(index, 1);
+        this.render();
+      });
+
+    if (block.type === 'title') {
+      const input = this.addModalInput(item, 'Title text:', block.text, 'Info Card title');
+      input.addEventListener('input', () => { block.text = input.value; });
+    } else if (block.type === 'note') {
+      const input = this.addModalTextarea(
+        item,
+        'Markdown note:',
+        block.markdown,
+        'Write a note for this card',
+      );
+      input.addEventListener('input', () => { block.markdown = input.value; });
+    } else if (block.type === 'property') {
+      this.renderStandalonePropertyEditor(item, block, index);
+    } else if (block.type === 'property-table') {
+      this.renderPropertyTableEditor(item, block, index);
+    } else if (block.type === 'divider') {
+      item.createEl('hr');
+    } else if (!this.hasSourceFile) {
+      item.createDiv({
+        cls: 'variable-links-hint-text',
+        text: 'This block will appear after the variable has a file link.',
+      });
+    }
+  }
+
+  private renderStandalonePropertyEditor(
+    parent: HTMLElement,
+    block: Extract<CardBlock, { type: 'property' }>,
+    index: number,
+  ): void {
+    const input = this.addPropertyInput(parent, block.property);
+    input.addEventListener('input', () => { block.property.reference = input.value; });
+    const groupButton = parent.createEl('button', {
+      text: 'Put in property table',
+      attr: { type: 'button' },
+    });
+    groupButton.addEventListener('click', () => {
+      const table = this.blocks.find(
+        (candidate): candidate is CardPropertyTableBlock => candidate.type === 'property-table',
+      );
+      if (table) {
+        table.properties.push(block.property);
+        this.blocks.splice(index, 1);
+      } else {
+        this.blocks.splice(index, 1, {
+          id: createCardBlock('property-table').id,
+          type: 'property-table',
+          properties: [block.property],
+        });
+      }
+      this.render();
+    });
+  }
+
+  private renderPropertyTableEditor(
+    parent: HTMLElement,
+    block: CardPropertyTableBlock,
+    blockIndex: number,
+  ): void {
+    const properties = parent.createDiv({ cls: 'variable-links-card-layout-properties' });
+    if (!block.properties.length) {
+      properties.createDiv({ cls: 'variable-links-hint-text', text: 'This table has no properties.' });
+    }
+    block.properties.forEach((property, propertyIndex) => {
+      const row = properties.createDiv({ cls: 'variable-links-card-layout-property-row' });
+      const input = this.addPropertyInput(row, property);
+      input.addEventListener('input', () => { property.reference = input.value; });
+      const controls = row.createDiv({ cls: 'variable-links-card-layout-controls' });
+      this.addMoveButton(controls, 'Move up', propertyIndex === 0, () => {
+        this.moveProperty(block, propertyIndex, -1);
+      });
+      this.addMoveButton(
+        controls,
+        'Move down',
+        propertyIndex === block.properties.length - 1,
+        () => this.moveProperty(block, propertyIndex, 1),
+      );
+      controls.createEl('button', { text: 'Move out', attr: { type: 'button' } })
+        .addEventListener('click', () => {
+          block.properties.splice(propertyIndex, 1);
+          this.blocks.splice(blockIndex + 1, 0, {
+            id: createCardBlock('property').id,
+            type: 'property',
+            property,
+          });
+          this.render();
+        });
+      controls.createEl('button', { text: 'Remove', attr: { type: 'button' } })
+        .addEventListener('click', () => {
+          block.properties.splice(propertyIndex, 1);
+          this.render();
+        });
+    });
+    parent.createEl('button', { text: 'Add property', attr: { type: 'button' } })
+      .addEventListener('click', () => {
+        block.properties.push(createPropertyEntry());
+        this.render();
+      });
+  }
+
+  private addPropertyInput(parent: HTMLElement, property: CardPropertyEntry): HTMLInputElement {
+    const input = this.addModalInput(
+      parent,
+      'Property:',
+      property.reference,
+      'email:Email address or [[Projects/Plan]]#due:Due date',
+    );
+    this.attachPropertySuggestions(input);
+    parent.createDiv({
+      cls: 'variable-links-hint-text variable-links-card-layout-property-hint',
+      text: 'Property, [[File]]#property, or either with :Display name. Comma-separated entries are saved separately.',
+    });
+    return input;
+  }
+
+  private addModalInput(
+    parent: HTMLElement,
+    label: string,
+    value: string,
+    placeholder: string,
+  ): HTMLInputElement {
+    const row = parent.createDiv({ cls: 'variable-links-card-layout-field' });
+    row.createEl('label', { text: label });
+    const input = row.createEl('input', { type: 'text', placeholder });
+    input.value = value;
+    return input;
+  }
+
+  private addModalTextarea(
+    parent: HTMLElement,
+    label: string,
+    value: string,
+    placeholder: string,
+  ): HTMLTextAreaElement {
+    const row = parent.createDiv({ cls: 'variable-links-card-layout-field' });
+    row.createEl('label', { text: label });
+    const input = row.createEl('textarea', { attr: { placeholder, rows: '4' } });
+    input.value = value;
+    return input;
+  }
+
+  private addMoveButton(
+    parent: HTMLElement,
+    text: string,
+    disabled: boolean,
+    move: () => void,
+  ): void {
+    const button = parent.createEl('button', { text, attr: { type: 'button' } });
+    button.disabled = disabled;
+    button.addEventListener('click', move);
+  }
+
+  private moveBlock(index: number, direction: -1 | 1): void {
+    const destination = index + direction;
+    if (destination < 0 || destination >= this.blocks.length) return;
+    const [block] = this.blocks.splice(index, 1);
+    if (block) this.blocks.splice(destination, 0, block);
+    this.render();
+  }
+
+  private moveProperty(
+    block: CardPropertyTableBlock,
+    index: number,
+    direction: -1 | 1,
+  ): void {
+    const destination = index + direction;
+    if (destination < 0 || destination >= block.properties.length) return;
+    const [property] = block.properties.splice(index, 1);
+    if (property) block.properties.splice(destination, 0, property);
+    this.render();
+  }
+
+  private blockLabel(block: CardBlock): string {
+    if (block.type === 'property-table') return 'Property table';
+    if (block.type === 'source') return 'Source link';
+    return block.type.charAt(0).toUpperCase() + block.type.slice(1);
   }
 }
 
@@ -706,7 +1007,84 @@ export class VariablePropertiesView extends ItemView {
     const fixedValue = getVariableType(definition) === 'fixed';
     const cardSourceFile = fixedValue ? definition.link ?? '' : definition.file;
     const hasCardSource = Boolean(filePathFromLink(cardSourceFile));
-    parent.createEl('p', { text: 'Shown when hovering over this variable in reading view or live preview.' });
+    const useBlockLayout = card.useBlockLayout === true;
+    const modeRow = parent.createDiv({ cls: 'variable-links-panel-checkbox' });
+    const modeInput = modeRow.createEl('input', { type: 'checkbox' });
+    modeInput.checked = useBlockLayout;
+    modeRow.createEl('label', { text: 'Use block layout editor' });
+    parent.createDiv({
+      cls: 'variable-links-hint-text',
+      text: 'Turn this off to use the original simple Info Card fields.',
+    });
+
+    const saveCard = async (nextCard: CardConfig): Promise<void> => {
+      const registry = this.plugin.registry;
+      if (!registry) throw new Error('The registry is unavailable.');
+      const hasSimpleContent = Boolean(
+        nextCard.title || nextCard.note || nextCard.fields?.length || nextCard.showSourceLink,
+      );
+      const hasBlocks = Boolean(nextCard.blocks?.length);
+      const hasOptions = nextCard.disableLivePreviewHover === true;
+      await registry.saveVariable(name, {
+        ...definition,
+        card: hasSimpleContent || hasBlocks || hasOptions ? nextCard : undefined,
+      });
+      new Notice(`Variable Links: Info Card saved for {{${name}}}`);
+      await this.refresh();
+    };
+
+    if (useBlockLayout) {
+      const blocks = card.blocks ?? migrateLegacyCardBlocks(card);
+      parent.createEl('p', {
+        text: 'Build the card from movable content blocks shown on hover in reading view or live preview.',
+      });
+      const summary = parent.createDiv({ cls: 'variable-links-card-layout-summary' });
+      summary.createEl('strong', {
+        text: `${blocks.length} ${blocks.length === 1 ? 'block' : 'blocks'} configured`,
+      });
+      if (blocks.length) {
+        summary.createDiv({
+          cls: 'variable-links-hint-text',
+          text: blocks.map((block) => this.cardBlockLabel(block)).join(' → '),
+        });
+      }
+      if (!hasCardSource) {
+        summary.createDiv({
+          cls: 'variable-links-hint-text',
+          text: fixedValue
+            ? 'Add a file link before using local Property or Source link blocks.'
+            : 'The configured source note is unavailable.',
+        });
+      }
+      parent.createEl('button', {
+        text: 'Open info card editor',
+        cls: 'mod-cta',
+        attr: { type: 'button' },
+      }).addEventListener('click', () => {
+        new InfoCardLayoutModal(
+          this.app,
+          name,
+          card,
+          hasCardSource,
+          (input) => this.attachFieldSuggestions(input, cardSourceFile),
+          async (nextCard) => saveCard({ ...card, ...nextCard, useBlockLayout: true }),
+        ).open();
+      });
+      modeInput.addEventListener('change', () => {
+        if (modeInput.checked) return;
+        modeInput.disabled = true;
+        void saveCard({ ...card, useBlockLayout: false }).catch((error: unknown) => {
+          modeInput.checked = true;
+          modeInput.disabled = false;
+          new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      });
+      return;
+    }
+
+    parent.createEl('p', {
+      text: 'Configure a simple info card shown on hover in reading view or live preview.',
+    });
     const form = parent.createEl('form', { cls: 'variable-links-panel-card-editor' });
     const titleInput = this.addInput(form, 'Title', card.title ?? '', 'e.g. John Smith');
     const noteInput = this.addTextarea(
@@ -738,23 +1116,40 @@ export class VariablePropertiesView extends ItemView {
     livePreviewInput.checked = card.disableLivePreviewHover === true;
     livePreviewRow.createEl('label', { text: 'Disable live preview hover for this card' });
 
-    this.addSaveButton(form, 'Save info card', saveHost, async () => {
-      const registry = this.plugin.registry;
-      if (!registry) throw new Error('The registry is unavailable.');
+    const getSimpleCard = (nextUseBlockLayout: boolean): CardConfig => {
       const fields = fieldsInput.value.split(',').map((field) => field.trim()).filter(Boolean);
-      const nextCard: CardConfig = {};
-      if (titleInput.value.trim()) nextCard.title = titleInput.value.trim();
-      if (noteInput.value.trim()) nextCard.note = noteInput.value.trim();
-      if (fields.length) nextCard.fields = fields;
-      if (sourceInput.checked) nextCard.showSourceLink = true;
-      if (livePreviewInput.checked) nextCard.disableLivePreviewHover = true;
-      await registry.saveVariable(name, {
-        ...definition,
-        card: Object.keys(nextCard).length ? nextCard : undefined,
-      });
-      new Notice(`Variable Links: info card saved for {{${name}}}`);
-      await this.refresh();
+      const simpleCard: CardConfig = {
+        ...card,
+        title: titleInput.value.trim() || undefined,
+        note: noteInput.value.trim() || undefined,
+        fields: fields.length ? fields : undefined,
+        showSourceLink: sourceInput.checked,
+        useBlockLayout: nextUseBlockLayout,
+        disableLivePreviewHover: livePreviewInput.checked || undefined,
+      };
+      if (nextUseBlockLayout && !simpleCard.blocks) {
+        simpleCard.blocks = migrateLegacyCardBlocks(simpleCard);
+      }
+      return simpleCard;
+    };
+    this.addSaveButton(form, 'Save info card', saveHost, async () => {
+      await saveCard(getSimpleCard(false));
     });
+    modeInput.addEventListener('change', () => {
+      if (!modeInput.checked) return;
+      modeInput.disabled = true;
+      void saveCard(getSimpleCard(true)).catch((error: unknown) => {
+        modeInput.checked = false;
+        modeInput.disabled = false;
+        new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    });
+  }
+
+  private cardBlockLabel(block: CardBlock): string {
+    if (block.type === 'property-table') return 'Property table';
+    if (block.type === 'source') return 'Source link';
+    return block.type.charAt(0).toUpperCase() + block.type.slice(1);
   }
 
   private renderLinkedPropertyValue(

@@ -4,6 +4,7 @@ import {
   type VariableAppearance,
 } from './appearance';
 import type { CardConfig } from './card';
+import { deriveLegacyCardFields, normalizeCardBlocks } from './cardBlocks';
 import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
 
@@ -477,11 +478,24 @@ export class Registry {
     const fields = Array.isArray(value.fields)
       ? value.fields.filter((field): field is string => typeof field === 'string')
       : undefined;
+    const title = typeof value.title === 'string' ? value.title : undefined;
+    const note = typeof value.note === 'string' ? value.note : undefined;
+    const hasShowSourceLink = Object.prototype.hasOwnProperty.call(value, 'showSourceLink');
+    const showSourceLink = value.showSourceLink === true;
+    const blocks = normalizeCardBlocks(value.blocks);
+    const hasLegacyFields = title !== undefined
+      || note !== undefined
+      || fields !== undefined
+      || hasShowSourceLink;
+    const derived = blocks && !hasLegacyFields ? deriveLegacyCardFields(blocks) : {};
     return {
-      title: typeof value.title === 'string' ? value.title : undefined,
-      note: typeof value.note === 'string' ? value.note : undefined,
-      fields,
-      showSourceLink: value.showSourceLink === true,
+      title: title ?? derived.title,
+      note: note ?? derived.note,
+      fields: fields ?? derived.fields,
+      showSourceLink: hasShowSourceLink ? showSourceLink : derived.showSourceLink,
+      blocks,
+      useBlockLayout: value.useBlockLayout === true
+        || (value.useBlockLayout !== false && Boolean(blocks && !hasLegacyFields)),
       disableLivePreviewHover: value.disableLivePreviewHover === true,
     };
   }

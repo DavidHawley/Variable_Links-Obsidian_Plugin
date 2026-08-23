@@ -1,6 +1,13 @@
 import { App, MarkdownRenderChild, MarkdownRenderer, TFile, parseYaml } from 'obsidian';
+import {
+  getActiveCardBlocks,
+  type CardBlock,
+  type CardPropertyEntry,
+} from './cardBlocks';
 
 export interface CardConfig {
+  blocks?: CardBlock[];
+  useBlockLayout?: boolean;
   title?: string;
   note?: string;
   fields?: string[];
@@ -34,6 +41,14 @@ export class InfoCard {
   ): Promise<void> {
     if (this.destroyed) return;
     this.hideImmediate();
+    const blocks = getActiveCardBlocks(cardConfig).filter((block) => {
+      if (block.type === 'title') return Boolean(block.text);
+      if (block.type === 'note') return Boolean(block.markdown);
+      if (block.type === 'property-table') return block.properties.length > 0;
+      if (block.type === 'source') return Boolean(sourceFilePath);
+      return true;
+    });
+    if (!blocks.length) return;
     const generation = this.generation;
 
     const container = createDiv({ cls: 'variable-links-card' });
@@ -42,73 +57,15 @@ export class InfoCard {
     this.renderChild = renderChild;
     renderChild.load();
     const hydrate: Array<() => Promise<void>> = [];
-
-    if (cardConfig.title) {
-      container.createDiv({ cls: 'variable-links-card-title', text: cardConfig.title });
-    }
-
-    if (cardConfig.note) {
-      const noteEl = createDiv({ cls: 'variable-links-card-note' });
-      noteEl.textContent = '…';
-      container.appendChild(noteEl);
-      hydrate.push(async () => {
-        noteEl.replaceChildren();
-        await MarkdownRenderer.render(this.app, cardConfig.note ?? '', noteEl, sourceFilePath, renderChild);
-      });
-    }
-
-    if (cardConfig.fields?.length) {
-      const table = createEl('table', { cls: 'variable-links-card-fields-table' });
-      const tbody = createEl('tbody');
-
-      for (const fieldConfig of cardConfig.fields) {
-        const external = fieldConfig.match(/^\[\[([^\]]+)\]\]#([^:]+)(?::([\s\S]*))?$/);
-        const separator = external ? -1 : fieldConfig.indexOf(':');
-        const field = (external?.[2] ?? (separator === -1 ? fieldConfig : fieldConfig.slice(0, separator))).trim();
-        const customLabel = (external?.[3] ?? (separator === -1 ? '' : fieldConfig.slice(separator + 1))).trim();
-        const fieldSourcePath = external?.[1] ?? sourceFilePath;
-
-        const row = createEl('tr');
-        const name = createEl('th', {
-          cls: 'variable-links-card-field-name',
-          text: customLabel || this.toSentenceCase(field),
-        });
-        name.scope = 'row';
-        const value = createEl('td', { cls: 'variable-links-card-field-value', text: '…' });
-        row.append(name, value);
-        tbody.appendChild(row);
-        hydrate.push(async () => {
-          const frontmatter = await this.getFrontmatter(fieldSourcePath);
-          if (!this.isCurrent(container, generation)) return;
-          const fieldValue = frontmatter?.[field];
-          if (fieldValue === undefined) {
-            value.textContent = '(Missing)';
-          } else if (Array.isArray(fieldValue)) {
-            value.textContent = fieldValue.map(String).join(', ');
-          } else if (typeof fieldValue === 'string') {
-            value.replaceChildren();
-            await MarkdownRenderer.render(this.app, fieldValue, value, fieldSourcePath, renderChild);
-          } else if (fieldValue === null
-            || typeof fieldValue === 'boolean'
-            || typeof fieldValue === 'number'
-            || typeof fieldValue === 'bigint') {
-            value.textContent = String(fieldValue);
-          } else {
-            value.textContent = JSON.stringify(fieldValue);
-          }
-        });
-      }
-      table.appendChild(tbody);
-      container.appendChild(table);
-    }
-
-    if (cardConfig.showSourceLink) {
-      const source = container.createDiv({ cls: 'variable-links-card-source' });
-      const link = source.createEl('a', { text: 'Open source', href: '#' });
-      link.addEventListener('click', (event) => {
-        event.preventDefault();
-        void this.app.workspace.openLinkText(sourceFilePath.replace(/\.md$/i, ''), '', false);
-      });
+    for (const block of blocks) {
+      this.renderBlock(
+        block,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
     }
 
     if (!this.isCurrent(container, generation)) return;
@@ -124,6 +81,186 @@ export class InfoCard {
       if (!this.isCurrent(container, generation)) return;
       this.schedulePosition(targetEl, container, pointer, generation);
     }
+  }
+
+  private renderBlock(
+    block: CardBlock,
+    container: HTMLElement,
+    sourceFilePath: string,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    generation: number,
+  ): void {
+    if (block.type === 'title') {
+      if (block.text) container.createDiv({ cls: 'variable-links-card-title', text: block.text });
+      return;
+    }
+    if (block.type === 'note') {
+      if (!block.markdown) return;
+      const noteEl = createDiv({ cls: 'variable-links-card-note' });
+      noteEl.textContent = '…';
+      container.appendChild(noteEl);
+      hydrate.push(async () => {
+        noteEl.replaceChildren();
+        await MarkdownRenderer.render(
+          this.app,
+          block.markdown,
+          noteEl,
+          sourceFilePath,
+          renderChild,
+        );
+      });
+      return;
+    }
+    if (block.type === 'property') {
+      this.renderStandaloneProperty(
+        block.property,
+        container,
+        sourceFilePath,
+        renderChild,
+        hydrate,
+        generation,
+      );
+      return;
+    }
+    if (block.type === 'property-table') {
+      if (!block.properties.length) return;
+      const table = createEl('table', { cls: 'variable-links-card-fields-table' });
+      const tbody = createEl('tbody');
+      for (const property of block.properties) {
+        const row = createEl('tr');
+        this.renderPropertyCells(
+          property,
+          row,
+          sourceFilePath,
+          renderChild,
+          hydrate,
+          container,
+          generation,
+        );
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+      container.appendChild(table);
+      return;
+    }
+    if (block.type === 'divider') {
+      container.createEl('hr', { cls: 'variable-links-card-divider' });
+      return;
+    }
+    if (block.type === 'source' && sourceFilePath) {
+      const source = container.createDiv({ cls: 'variable-links-card-source' });
+      const link = source.createEl('a', { text: 'Open source', href: '#' });
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        void this.app.workspace.openLinkText(sourceFilePath.replace(/\.md$/i, ''), '', false);
+      });
+    }
+  }
+
+  private renderStandaloneProperty(
+    property: CardPropertyEntry,
+    container: HTMLElement,
+    sourceFilePath: string,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    generation: number,
+  ): void {
+    const wrapper = createDiv({ cls: 'variable-links-card-property' });
+    const parsed = this.parsePropertyReference(property.reference, sourceFilePath);
+    const name = createDiv({
+      cls: 'variable-links-card-property-name',
+      text: parsed.label || this.toSentenceCase(parsed.field),
+    });
+    const value = createDiv({ cls: 'variable-links-card-property-value', text: '…' });
+    wrapper.append(name, value);
+    container.appendChild(wrapper);
+    this.queuePropertyHydration(
+      parsed,
+      value,
+      container,
+      renderChild,
+      hydrate,
+      generation,
+    );
+  }
+
+  private renderPropertyCells(
+    property: CardPropertyEntry,
+    row: HTMLTableRowElement,
+    sourceFilePath: string,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    container: HTMLElement,
+    generation: number,
+  ): void {
+    const parsed = this.parsePropertyReference(property.reference, sourceFilePath);
+    const name = createEl('th', {
+      cls: 'variable-links-card-field-name',
+      text: parsed.label || this.toSentenceCase(parsed.field),
+    });
+    name.scope = 'row';
+    const value = createEl('td', { cls: 'variable-links-card-field-value', text: '…' });
+    row.append(name, value);
+    this.queuePropertyHydration(
+      parsed,
+      value,
+      container,
+      renderChild,
+      hydrate,
+      generation,
+    );
+  }
+
+  private queuePropertyHydration(
+    property: { field: string; label: string; sourcePath: string },
+    value: HTMLElement,
+    container: HTMLElement,
+    renderChild: MarkdownRenderChild,
+    hydrate: Array<() => Promise<void>>,
+    generation: number,
+  ): void {
+    hydrate.push(async () => {
+      const frontmatter = await this.getFrontmatter(property.sourcePath);
+      if (!this.isCurrent(container, generation)) return;
+      const fieldValue = frontmatter?.[property.field];
+      if (fieldValue === undefined) {
+        value.textContent = '(Missing)';
+      } else if (Array.isArray(fieldValue)) {
+        value.textContent = fieldValue.map(String).join(', ');
+      } else if (typeof fieldValue === 'string') {
+        value.replaceChildren();
+        await MarkdownRenderer.render(
+          this.app,
+          fieldValue,
+          value,
+          property.sourcePath,
+          renderChild,
+        );
+      } else if (fieldValue === null
+        || typeof fieldValue === 'boolean'
+        || typeof fieldValue === 'number'
+        || typeof fieldValue === 'bigint') {
+        value.textContent = String(fieldValue);
+      } else {
+        value.textContent = JSON.stringify(fieldValue);
+      }
+    });
+  }
+
+  private parsePropertyReference(
+    reference: string,
+    sourceFilePath: string,
+  ): { field: string; label: string; sourcePath: string } {
+    const external = reference.match(/^\[\[([^\]]+)\]\]#([^:]+)(?::([\s\S]*))?$/);
+    const separator = external ? -1 : reference.indexOf(':');
+    return {
+      field: (external?.[2]
+        ?? (separator === -1 ? reference : reference.slice(0, separator))).trim(),
+      label: (external?.[3]
+        ?? (separator === -1 ? '' : reference.slice(separator + 1))).trim(),
+      sourcePath: external?.[1] ?? sourceFilePath,
+    };
   }
 
   private schedulePosition(

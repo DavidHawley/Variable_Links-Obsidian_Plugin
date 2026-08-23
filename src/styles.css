@@ -73,12 +73,17 @@
 }
 
 .variable-links-card-title {
-  margin: -8px -8px 8px;
+  margin: 8px -8px;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--background-secondary) 88%, black 12%);
   color: var(--text-on-accent, var(--text-normal));
   font-size: var(--font-ui-medium);
   font-weight: var(--font-bold);
+  border-radius: 0;
+}
+
+.variable-links-card-title:first-child {
+  margin-top: -8px;
   border-radius: 6px 6px 0 0;
 }
 
@@ -121,6 +126,28 @@
 .variable-links-panel-editor summary {
   cursor: pointer;
   font-weight: var(--font-semibold);
+}
+
+.variable-links-card-property {
+  display: grid;
+  grid-template-columns: minmax(80px, max-content) minmax(0, 1fr);
+  gap: 8px;
+  margin: 6px 4px;
+}
+
+.variable-links-card-property-name {
+  font-weight: var(--font-semibold);
+}
+
+.variable-links-card-property-value,
+.variable-links-card-property-value > p {
+  margin: 0;
+}
+
+.variable-links-card-divider {
+  margin: 8px 0;
+  border: 0;
+  border-top: 1px solid var(--background-modifier-border);
 }
 
 .variable-links-panel-editor > summary,
@@ -518,6 +545,142 @@
 .variable-links-panel-theme-color {
   min-width: 0;
   padding: 3px 8px;
+}
+
+.variable-links-card-layout-summary {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+.variable-links-card-layout-modal {
+  width: min(780px, 92vw);
+}
+
+.variable-links-card-layout-modal .modal-content {
+  max-height: min(78vh, 820px);
+  overflow-y: auto;
+}
+
+.variable-links-card-layout-add,
+.variable-links-card-layout-block-heading,
+.variable-links-card-layout-controls,
+.variable-links-card-layout-footer,
+.variable-links-card-layout-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.variable-links-card-layout-add {
+  margin: 12px 0;
+}
+
+.variable-links-card-layout-add select {
+  flex: 1 1 auto;
+}
+
+.variable-links-card-layout-list {
+  display: grid;
+  gap: 10px;
+}
+
+.variable-links-card-layout-empty {
+  padding: 18px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.variable-links-card-layout-block {
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+.variable-links-card-layout-block-heading {
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.variable-links-card-layout-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.variable-links-card-layout-controls button {
+  padding: 3px 7px;
+}
+
+.variable-links-card-layout-field {
+  display: grid;
+  grid-template-columns: minmax(100px, max-content) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  position: relative;
+}
+
+.variable-links-card-layout-field input,
+.variable-links-card-layout-field textarea {
+  width: 100%;
+}
+
+.variable-links-card-layout-field textarea {
+  grid-column: 1 / -1;
+  resize: vertical;
+}
+
+.variable-links-card-layout-properties {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.variable-links-card-layout-property-row {
+  padding: 8px;
+  border-left: 3px solid var(--background-modifier-border-hover);
+  background: var(--background-primary-alt);
+}
+
+.variable-links-card-layout-property-hint {
+  margin: -4px 0 8px;
+}
+
+.variable-links-card-layout-options {
+  margin: 14px 0;
+}
+
+.variable-links-card-layout-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  justify-content: flex-end;
+  margin: 16px -16px -16px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+
+@media (max-width: 560px) {
+  .variable-links-card-layout-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .variable-links-card-layout-block-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .variable-links-card-layout-controls {
+    justify-content: flex-start;
+  }
 }
 
 .variable-links-settings-color-palette input[type='color'] {

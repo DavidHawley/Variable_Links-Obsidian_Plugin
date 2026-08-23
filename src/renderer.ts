@@ -5,6 +5,7 @@ import Indexer from './indexer';
 import InfoCard from './card';
 import { filePathFromLink } from './linkSyntax';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
+import { getActiveCardBlocks } from './cardBlocks';
 
 const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
 
@@ -186,7 +187,7 @@ export class Renderer {
     this.clearHoverExitTimer();
     const livePreview = token.classList.contains('variable-links-token-live-preview');
     const definition = this.registry.getVariable(name);
-    if (!definition?.card) return;
+    if (!definition?.card || !getActiveCardBlocks(definition.card).length) return;
     if (livePreview && (
       this.registry.plugin.settings.disableLivePreviewHover
       || definition.card.disableLivePreviewHover
@@ -283,7 +284,7 @@ export class Renderer {
     const { token, name } = state;
     if (!token.isConnected || !token.matches(':hover')) return;
     const definition = this.registry.getVariable(name);
-    if (!definition?.card) return;
+    if (!definition?.card || !getActiveCardBlocks(definition.card).length) return;
     if (state.livePreview && definition.card.disableLivePreviewHover) return;
     const rawSource = getVariableType(definition) === 'fixed'
       ? definition.link ?? ''

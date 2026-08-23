@@ -11,6 +11,8 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added Fixed value variables with optional file links alongside the existing Property value variables.
 - Added variable-type creation choices and confirmed, reversible type switching in the properties panel.
 - Added direct editing of text, number, and true/false values stored in linked note properties.
+- Added a larger block-based Info Card editor with multiple Notes, standalone Properties, Property tables, Dividers, Source links, and accessible movement controls.
+- Added a Card-tab checkbox for switching between the original simple editor and the block layout editor.
 
 ### Changed
 
@@ -26,6 +28,8 @@ All notable user-visible changes to Variable Links are recorded here.
 - Aligned panel field labels beside controls when space allows, stacked them in narrow panels, and limited Fixed values to a single line.
 - Added consistent punctuation to field labels and kept multiline text areas beneath their labels.
 - Moved the Info Card field-format instructions beneath the Fields input as hint text.
+- Existing Info Cards can seed the block layout while preserving their original content order and initial appearance, and both editor configurations are retained when switching.
+- Separated comma-delimited entries in block Property controls so linked `[[File]]#property` values resolve correctly.
 
 ## 1.1.1 - 2026-08-22
 
