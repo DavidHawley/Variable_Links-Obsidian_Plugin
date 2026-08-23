@@ -9,6 +9,12 @@ All notable user-visible changes to Variable Links are recorded here.
 - Updated the Variable Link selector immediately when a new variable is created from editor suggestions.
 - Allowed an empty Info Card to switch from the simple editor to the block layout editor.
 
+### Changed
+
+- Replaced disabled appearance override controls with a compact summary shown only while a variable uses the default appearance.
+- Updated the open Variable Properties panel immediately when default appearance settings or saved colors change.
+- Preserved each variable's custom appearance while default appearance is enabled, leaving Restore defaults as the explicit reset action.
+
 ## 1.2.0 - 2026-08-23
 
 ### Added

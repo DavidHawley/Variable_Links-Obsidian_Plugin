@@ -66,6 +66,7 @@ interface CloseableDialog {
 
 interface PluginPanelResource {
   releasePluginResources(): void;
+  refreshAppearanceSettings?(): void;
 }
 
 export default class VariableLinksPlugin extends Plugin {
@@ -195,6 +196,11 @@ export default class VariableLinksPlugin extends Plugin {
 
   releasePanel(panel: PluginPanelResource): void {
     this.openPanels.delete(panel);
+  }
+
+  refreshPanelAppearanceSettings(): void {
+    if (!this.active) return;
+    for (const panel of this.openPanels) panel.refreshAppearanceSettings?.();
   }
 
   onCaretVariableChanged(_last: LastTouched): void {
