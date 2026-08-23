@@ -4,6 +4,10 @@ All notable user-visible changes to Variable Links are recorded here.
 
 ## 1.2.1 - Unreleased
 
+### Added
+
+- Added Copy Markdown for copying a selected passage, or one right-clicked Variable Link, with resolved values and portable formatting.
+
 ### Fixed
 
 - Updated the Variable Link selector immediately when a new variable is created from editor suggestions.
