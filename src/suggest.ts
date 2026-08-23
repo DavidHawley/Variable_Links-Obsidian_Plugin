@@ -26,6 +26,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     app: App,
     private readonly indexer: Indexer,
     private readonly registry: Registry,
+    private readonly onVariableCreated: (name: string) => Promise<void>,
   ) {
     super(app);
   }
@@ -95,6 +96,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
 
   private async applySuggestion(item: SuggestItem, context: EditorSuggestContext): Promise<void> {
     let variableName = item.name;
+    let createdVariable = false;
     if (item.kind === 'property') {
       const base = (item.property ?? item.name)
         .trim()
@@ -113,6 +115,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
           property: item.property ?? item.name,
           display: item.property ?? item.name,
         });
+        createdVariable = true;
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         new Notice(`Variable Links: could not create ${variableName}: ${detail}`);
@@ -133,6 +136,13 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       ch: context.start.ch + token.length,
     });
     context.editor.focus();
+    if (createdVariable) {
+      try {
+        await this.onVariableCreated(variableName);
+      } catch {
+        new Notice('Variable links: the variable was created, but the properties panel could not be refreshed.');
+      }
+    }
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {

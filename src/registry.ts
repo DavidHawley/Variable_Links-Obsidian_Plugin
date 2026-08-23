@@ -26,6 +26,7 @@ export interface VariableDefinition {
   display?: string;
   favorite?: boolean;
   appearance?: VariableAppearance;
+  customAppearance?: VariableAppearance;
   card?: CardConfig;
   format?: string;
 }
@@ -150,6 +151,7 @@ export class Registry {
           display: typeof raw.display === 'string' ? raw.display : undefined,
           favorite: raw.favorite === true,
           appearance: normalizeVariableAppearance(raw.appearance),
+          customAppearance: normalizeVariableAppearance(raw.customAppearance),
           card: this.toCardConfig(raw.card),
           format: typeof raw.format === 'string' ? raw.format : undefined,
         };
@@ -284,6 +286,9 @@ export class Registry {
     if (Object.prototype.hasOwnProperty.call(definition, 'appearance')) {
       normalized.appearance = normalizeVariableAppearance(definition.appearance);
     }
+    if (Object.prototype.hasOwnProperty.call(definition, 'customAppearance')) {
+      normalized.customAppearance = normalizeVariableAppearance(definition.customAppearance);
+    }
     if (Object.prototype.hasOwnProperty.call(definition, 'favorite')) normalized.favorite = definition.favorite === true;
     const rename = !!oldName && oldName !== variableName;
     const tokenCache = this.plugin.tokenCache;
@@ -310,6 +315,8 @@ export class Registry {
         if (Object.prototype.hasOwnProperty.call(definition, 'appearance') && !normalized.appearance) {
           delete updated.appearance;
         }
+        if (Object.prototype.hasOwnProperty.call(definition, 'customAppearance')
+          && !normalized.customAppearance) delete updated.customAppearance;
         links[variableName] = updated;
         if (rename) delete links[oldName];
       });

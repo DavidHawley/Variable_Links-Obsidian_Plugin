@@ -1889,6 +1889,7 @@ export class VariablePropertiesView extends ItemView {
   private creatingVariableType: VariableType | null = null;
   private variableEditorOpen = true;
   private variableAppearanceOpen = true;
+  private appearanceSettingsRefresh: (() => void) | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -1927,6 +1928,7 @@ export class VariablePropertiesView extends ItemView {
   releasePluginResources(): void {
     this.active = false;
     this.refreshGeneration++;
+    this.appearanceSettingsRefresh = null;
     for (const timer of this.timers) window.clearTimeout(timer);
     this.timers.clear();
     for (const cleanup of [...this.metadataWaitCleanups]) cleanup();
@@ -1942,12 +1944,17 @@ export class VariablePropertiesView extends ItemView {
     await this.refresh();
   }
 
+  refreshAppearanceSettings(): void {
+    this.appearanceSettingsRefresh?.();
+  }
+
   async refresh(): Promise<void> {
     const container = this.panelContentEl;
     const registry = this.plugin.registry;
     if (!this.active || !container || !registry) return;
 
     const generation = ++this.refreshGeneration;
+    this.appearanceSettingsRefresh = null;
     for (const timer of this.timers) window.clearTimeout(timer);
     this.timers.clear();
     this.clearMarkdownChild();
@@ -2298,9 +2305,14 @@ export class VariablePropertiesView extends ItemView {
     const appearanceControls = appearanceSection.createDiv({
       cls: 'variable-links-panel-section-content',
     });
-    const defaultAppearance = getDefaultVariableAppearance(this.plugin.settings);
+    let defaultAppearance = getDefaultVariableAppearance(this.plugin.settings);
     const useDefaults = definition.appearance === undefined;
-    const appearance = definition.appearance ?? defaultAppearance;
+    const appearance = definition.appearance
+      ?? definition.customAppearance
+      ?? defaultAppearance;
+    let customAppearanceDraft = definition.appearance
+      ? { ...definition.appearance }
+      : definition.customAppearance ? { ...definition.customAppearance } : null;
     const defaultsRow = appearanceControls.createDiv({ cls: 'variable-links-panel-appearance-defaults' });
     const useDefaultsInput = this.addInlineCheckbox(
       defaultsRow,
@@ -2311,17 +2323,58 @@ export class VariablePropertiesView extends ItemView {
       text: 'Restore defaults',
       attr: { type: 'button' },
     });
-    const emphasisRow = appearanceControls.createDiv({ cls: 'variable-links-panel-appearance-options' });
+    const defaultsSummary = appearanceControls.createDiv({
+      cls: 'variable-links-panel-appearance-summary',
+    });
+    const renderDefaultsSummary = (value: VariableAppearance): void => {
+      defaultsSummary.empty();
+      defaultsSummary.createSpan({
+        cls: 'variable-links-panel-appearance-summary-label',
+        text: 'Appearance:',
+      });
+      let summaryPillCount = 0;
+      const addSummaryPill = (text: string, color?: string): void => {
+        const pill = defaultsSummary.createSpan({
+          cls: 'variable-links-panel-appearance-pill',
+        });
+        if (color) {
+          const swatch = pill.createSpan({
+            cls: 'variable-links-panel-appearance-pill-color',
+            attr: { 'aria-label': color },
+          });
+          swatch.style.backgroundColor = color;
+        }
+        pill.createSpan({ text });
+        summaryPillCount++;
+      };
+      if (value.bold) addSummaryPill('Bold');
+      if (value.italic) addSummaryPill('Italic');
+      const decoration = value.decoration ?? 'underline';
+      if (decoration === 'underline') addSummaryPill('Underline');
+      else if (decoration === 'highlight') addSummaryPill('Highlight');
+      if (decoration !== 'none' && value.color) addSummaryPill('Color', value.color);
+      const opacity = value.opacity ?? 100;
+      if (decoration !== 'none' && opacity !== 100) {
+        addSummaryPill(`Opacity: ${opacity}%`);
+      }
+      if (!summaryPillCount) addSummaryPill('No styling');
+    };
+    renderDefaultsSummary(defaultAppearance);
+
+    const overrideControls = appearanceControls.createDiv({
+      cls: 'variable-links-panel-appearance-overrides',
+    });
+    const emphasisRow = overrideControls.createDiv({ cls: 'variable-links-panel-appearance-options' });
     const boldInput = this.addInlineCheckbox(emphasisRow, 'Bold', appearance.bold === true);
     const italicInput = this.addInlineCheckbox(emphasisRow, 'Italic', appearance.italic === true);
-    const decorationRow = appearanceControls.createDiv({ cls: 'variable-links-panel-field' });
+    const decorationRow = overrideControls.createDiv({ cls: 'variable-links-panel-field' });
     decorationRow.createEl('label', { text: 'Decoration:' });
     const decorationInput = decorationRow.createEl('select');
     decorationInput.createEl('option', { text: 'Underline', value: 'underline' });
     decorationInput.createEl('option', { text: 'Highlight', value: 'highlight' });
     decorationInput.createEl('option', { text: 'None', value: 'none' });
     decorationInput.value = appearance.decoration ?? 'underline';
-    const colorRow = appearanceControls.createDiv({ cls: 'variable-links-panel-decoration-color' });
+    const colorRow = overrideControls.createDiv({ cls: 'variable-links-panel-decoration-color' });
     const customColorInput = this.addInlineCheckbox(
       colorRow,
       'Custom decoration color',
@@ -2332,7 +2385,7 @@ export class VariablePropertiesView extends ItemView {
       attr: { 'aria-label': 'Decoration color' },
     });
     colorInput.value = appearance.color ?? this.plugin.settings.defaultAppearanceColor;
-    const opacityRow = appearanceControls.createDiv({ cls: 'variable-links-panel-opacity' });
+    const opacityRow = overrideControls.createDiv({ cls: 'variable-links-panel-opacity' });
     opacityRow.createEl('label', { text: 'Decoration opacity:' });
     const opacityInput = opacityRow.createEl('input', {
       type: 'range',
@@ -2343,7 +2396,7 @@ export class VariablePropertiesView extends ItemView {
     opacityInput.addEventListener('input', () => {
       opacityValue.textContent = `${opacityInput.value}%`;
     });
-    const swatchRow = appearanceControls.createDiv({ cls: 'variable-links-panel-color-swatches' });
+    const swatchRow = overrideControls.createDiv({ cls: 'variable-links-panel-color-swatches' });
     const themeColorButton = swatchRow.createEl('button', {
       text: 'Theme',
       cls: 'variable-links-panel-theme-color',
@@ -2360,8 +2413,9 @@ export class VariablePropertiesView extends ItemView {
       });
       button.style.backgroundColor = color;
       button.addEventListener('click', () => {
+        const currentColor = this.plugin.settings.savedAppearanceColors[index] ?? color;
         customColorInput.checked = true;
-        colorInput.value = color;
+        colorInput.value = currentColor;
         updateAppearanceControls();
         markFormDirty();
       });
@@ -2376,6 +2430,17 @@ export class VariablePropertiesView extends ItemView {
       opacityInput.value = String(value.opacity ?? 100);
       opacityValue.textContent = `${opacityInput.value}%`;
     };
+    const getAppearanceControls = (): VariableAppearance => {
+      const value: VariableAppearance = {};
+      if (boldInput.checked) value.bold = true;
+      if (italicInput.checked) value.italic = true;
+      const decoration = decorationInput.value as VariableDecoration;
+      if (decoration !== 'underline') value.decoration = decoration;
+      if (decoration !== 'none' && customColorInput.checked) value.color = colorInput.value;
+      const opacity = Number(opacityInput.value);
+      if (decoration !== 'none' && opacity !== 100) value.opacity = opacity;
+      return value;
+    };
     const updateAppearanceControls = (): void => {
       const inherited = useDefaultsInput.checked;
       const noDecoration = decorationInput.value === 'none';
@@ -2388,14 +2453,33 @@ export class VariablePropertiesView extends ItemView {
       themeColorButton.disabled = inherited || noDecoration;
       for (const button of swatchButtons) button.disabled = inherited || noDecoration;
       restoreDefaultsButton.disabled = inherited;
+      restoreDefaultsButton.hidden = inherited;
+      defaultsSummary.hidden = !inherited;
+      overrideControls.hidden = inherited;
+    };
+    this.appearanceSettingsRefresh = () => {
+      defaultAppearance = getDefaultVariableAppearance(this.plugin.settings);
+      renderDefaultsSummary(defaultAppearance);
+      swatchButtons.forEach((button, index) => {
+        const color = this.plugin.settings.savedAppearanceColors[index];
+        if (!color) return;
+        button.style.backgroundColor = color;
+        button.title = `Saved color ${index + 1}: ${color}`;
+      });
+      if (useDefaultsInput.checked && !customAppearanceDraft) {
+        setAppearanceControls(defaultAppearance);
+      }
+      updateAppearanceControls();
     };
     useDefaultsInput.addEventListener('change', () => {
-      if (useDefaultsInput.checked) setAppearanceControls(defaultAppearance);
+      if (useDefaultsInput.checked) customAppearanceDraft = getAppearanceControls();
+      else setAppearanceControls(customAppearanceDraft ?? defaultAppearance);
       updateAppearanceControls();
     });
     restoreDefaultsButton.addEventListener('click', () => {
+      customAppearanceDraft = { ...defaultAppearance };
       useDefaultsInput.checked = true;
-      setAppearanceControls(defaultAppearance);
+      setAppearanceControls(customAppearanceDraft);
       updateAppearanceControls();
       markFormDirty();
     });
@@ -2422,16 +2506,7 @@ export class VariablePropertiesView extends ItemView {
         else if (activeType === 'property') {
           throw new Error('A property link is required for a Property value variable.');
         }
-        const nextAppearance: VariableAppearance = {};
-        if (boldInput.checked) nextAppearance.bold = true;
-        if (italicInput.checked) nextAppearance.italic = true;
-        const decoration = decorationInput.value as VariableDecoration;
-        if (decoration !== 'underline') nextAppearance.decoration = decoration;
-        if (decoration !== 'none' && customColorInput.checked) {
-          nextAppearance.color = colorInput.value;
-        }
-        const opacity = Number(opacityInput.value);
-        if (decoration !== 'none' && opacity !== 100) nextAppearance.opacity = opacity;
+        const nextAppearance = getAppearanceControls();
         const favorite = existingVariable
           ? registry.getVariable(name)?.favorite === true
           : favoriteInput?.checked === true;
@@ -2444,6 +2519,7 @@ export class VariablePropertiesView extends ItemView {
           display: displayInput.value,
           favorite,
           appearance: useDefaultsInput.checked ? undefined : nextAppearance,
+          customAppearance: nextAppearance,
         }, existingVariable ? name : undefined);
         const touched = this.plugin.caretTracker?.lastTouched;
         if (touched?.name === name && newName !== name) {
@@ -2516,7 +2592,8 @@ export class VariablePropertiesView extends ItemView {
         nextCard.title || nextCard.note || nextCard.fields?.length || nextCard.showSourceLink,
       );
       const hasBlocks = Boolean(nextCard.blocks?.length);
-      const hasOptions = nextCard.disableLivePreviewHover === true;
+      const hasOptions = nextCard.disableLivePreviewHover === true
+        || nextCard.useBlockLayout === true;
       await registry.saveVariable(name, {
         ...definition,
         card: hasSimpleContent || hasBlocks || hasOptions ? nextCard : undefined,

@@ -270,6 +270,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     if (this.isAppearanceSettingKey(key)) {
       this.variableLinksPlugin.livePreviewRenderer?.refresh();
       this.refreshDomState();
+      this.variableLinksPlugin.refreshPanelAppearanceSettings();
     }
     if (key === 'registryFilePath') {
       try {
@@ -301,7 +302,9 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         const next = [...this.variableLinksPlugin.settings.savedAppearanceColors];
         next[index] = normalizeAppearanceColor(input.value, color);
         this.variableLinksPlugin.settings.savedAppearanceColors = next;
-        void this.variableLinksPlugin.saveSettings();
+        void this.variableLinksPlugin.saveSettings().then(() => {
+          this.variableLinksPlugin.refreshPanelAppearanceSettings();
+        });
       };
       input.addEventListener('change', onChange);
       cleanups.push(() => input.removeEventListener('change', onChange));

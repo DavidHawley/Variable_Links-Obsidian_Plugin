@@ -10,11 +10,13 @@ import {
 } from 'obsidian';
 import CaretTracker, { LastTouched } from './caretTracker';
 import {
+  getEffectiveVariableAppearance,
   normalizeAppearanceColor,
   normalizeAppearanceColors,
   normalizeAppearanceOpacity,
 } from './appearance';
 import Indexer from './indexer';
+import { filePathFromLink } from './linkSyntax';
 import LivePreviewRenderer from './livePreviewRenderer';
 import { Registry } from './registry';
 import Renderer from './renderer';
@@ -66,6 +68,13 @@ interface CloseableDialog {
 
 interface PluginPanelResource {
   releasePluginResources(): void;
+  refreshAppearanceSettings?(): void;
+}
+
+interface MarkdownTokenMatch {
+  start: number;
+  end: number;
+  name: string;
 }
 
 export default class VariableLinksPlugin extends Plugin {
@@ -128,7 +137,12 @@ export default class VariableLinksPlugin extends Plugin {
       this.registerVariableContextMenu();
       this.caretTracker = new CaretTracker(this.app, this, this.registry, this.resolver);
       this.caretTracker.start();
-      this.suggest = new VariableSuggest(this.app, this.indexer, this.registry);
+      this.suggest = new VariableSuggest(
+        this.app,
+        this.indexer,
+        this.registry,
+        async () => this.refreshPanelViews(),
+      );
       this.registerEditorSuggest(this.suggest);
 
       this.registerEvent(this.app.vault.on('modify', (file) => {
@@ -190,6 +204,11 @@ export default class VariableLinksPlugin extends Plugin {
 
   releasePanel(panel: PluginPanelResource): void {
     this.openPanels.delete(panel);
+  }
+
+  refreshPanelAppearanceSettings(): void {
+    if (!this.active) return;
+    for (const panel of this.openPanels) panel.refreshAppearanceSettings?.();
   }
 
   onCaretVariableChanged(_last: LastTouched): void {
@@ -345,6 +364,7 @@ export default class VariableLinksPlugin extends Plugin {
       this.clearContextMenuResources();
       const insertionPosition = this.getContextEditorPosition(editor);
       const tokenContext = this.getContextVariableToken(editor, insertionPosition);
+      const selectedMarkdown = editor.somethingSelected() ? editor.getSelection() : null;
       const variableName = tokenContext?.name ?? null;
       const insideVariableToken = tokenContext !== null;
       const definition = variableName ? this.registry?.getVariable(variableName) : null;
@@ -375,6 +395,14 @@ export default class VariableLinksPlugin extends Plugin {
           item.setTitle(favorite ? 'Unfavorite' : 'Favorite').setIcon('star').setDisabled(!definition);
           if (definition && variableName) {
             item.onClick(() => void this.setVariableFavorite(variableName, !favorite));
+          }
+        });
+        submenu.addItem((item) => {
+          const copySource = selectedMarkdown
+            ?? (tokenContext ? editor.getRange(tokenContext.from, tokenContext.to) : null);
+          item.setTitle('Copy Markdown').setIcon('copy').setDisabled(copySource === null);
+          if (copySource !== null) {
+            item.onClick(() => void this.copyResolvedMarkdown(copySource));
           }
         });
         this.addSwitchTokenMenu(
@@ -551,6 +579,121 @@ export default class VariableLinksPlugin extends Plugin {
       ch: tokenContext.from.ch + token.length,
     });
     editor.focus();
+  }
+
+  private async copyResolvedMarkdown(source: string): Promise<void> {
+    const resolver = this.resolver;
+    const registry = this.registry;
+    if (!resolver || !registry) {
+      new Notice('Variable links: could not copy Markdown because the registry is unavailable.');
+      return;
+    }
+
+    const matches = this.findMarkdownTokenMatches(source);
+    const cache = new Map<string, Promise<string>>();
+    const replacements = await Promise.all(matches.map((match) => {
+      let replacement = cache.get(match.name);
+      if (!replacement) {
+        replacement = this.renderCopiedVariableMarkdown(match.name);
+        cache.set(match.name, replacement);
+      }
+      return replacement;
+    }));
+    let markdown = '';
+    let lastIndex = 0;
+    matches.forEach((match, index) => {
+      markdown += source.slice(lastIndex, match.start) + replacements[index];
+      lastIndex = match.end;
+    });
+    markdown += source.slice(lastIndex);
+
+    try {
+      await window.navigator.clipboard.writeText(markdown);
+      new Notice('Variable links: copied Markdown with resolved values.');
+    } catch {
+      new Notice('Variable links: could not copy Markdown.');
+    }
+  }
+
+  private findMarkdownTokenMatches(source: string): MarkdownTokenMatch[] {
+    const pattern = /\{\{\s*([^}\s]+)\s*}}/g;
+    const matches: MarkdownTokenMatch[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(source)) !== null) {
+      const name = match[1]?.trim();
+      if (!name || this.isMarkdownCodePosition(source, match.index)) continue;
+      matches.push({ start: match.index, end: pattern.lastIndex, name });
+    }
+    return matches;
+  }
+
+  private isMarkdownCodePosition(source: string, index: number): boolean {
+    const before = source.slice(0, index);
+    const lines = before.split('\n');
+    let fenceCharacter = '';
+    let fenceLength = 0;
+    for (const line of lines.slice(0, -1)) {
+      const fence = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+      if (!fence?.[1]) continue;
+      const marker = fence[1];
+      if (!fenceCharacter) {
+        fenceCharacter = marker[0] ?? '';
+        fenceLength = marker.length;
+      } else if (marker[0] === fenceCharacter && marker.length >= fenceLength) {
+        fenceCharacter = '';
+        fenceLength = 0;
+      }
+    }
+    if (fenceCharacter) return true;
+
+    const currentLine = lines.at(-1) ?? '';
+    let inlineFenceLength = 0;
+    const backticks = /`+/g;
+    let run: RegExpExecArray | null;
+    while ((run = backticks.exec(currentLine)) !== null) {
+      if (run.index > 0 && currentLine[run.index - 1] === '\\') continue;
+      if (inlineFenceLength === 0) inlineFenceLength = run[0].length;
+      else if (run[0].length === inlineFenceLength) inlineFenceLength = 0;
+    }
+    return inlineFenceLength > 0;
+  }
+
+  private async renderCopiedVariableMarkdown(variableName: string): Promise<string> {
+    const definition = this.registry?.getVariable(variableName);
+    const result = await this.resolver?.resolve(variableName).catch(() => null);
+    const value = result?.ok
+      ? this.formatCopiedValue(result.value)
+      : `[Missing: ${variableName}]`;
+    const explicitLink = filePathFromLink(definition?.link ?? '');
+    const resolvedLink = result?.sourceFile?.path.replace(/\.md$/i, '') ?? '';
+    const link = explicitLink || resolvedLink;
+    let markdown = link
+      ? `[[${this.escapeWikiLinkPart(link)}|${this.escapeWikiLinkPart(value)}]]`
+      : this.escapeMarkdownText(value);
+    const appearance = getEffectiveVariableAppearance(
+      definition?.appearance,
+      this.settings,
+    );
+    if (appearance.bold && appearance.italic) markdown = `***${markdown}***`;
+    else if (appearance.bold) markdown = `**${markdown}**`;
+    else if (appearance.italic) markdown = `*${markdown}*`;
+    const decoration = appearance.decoration ?? 'underline';
+    if (decoration === 'highlight') markdown = `==${markdown}==`;
+    else if (decoration === 'underline') markdown = `<u>${markdown}</u>`;
+    return markdown;
+  }
+
+  private formatCopiedValue(value: unknown): string {
+    if (Array.isArray(value)) return value.map(String).join(', ');
+    return String(value);
+  }
+
+  private escapeMarkdownText(value: string): string {
+    return value.replace(/([\\`*_[\]{}()#+\-.!|>~=])/g, '\\$1');
+  }
+
+  private escapeWikiLinkPart(value: string): string {
+    return value.replace(/([\\|\]])/g, '\\$1');
   }
 
   private getRecentContextClick(): ContextClick | null {
