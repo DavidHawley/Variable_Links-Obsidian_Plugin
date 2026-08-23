@@ -129,7 +129,8 @@ export class VariablePropertiesView extends ItemView {
     const last = this.plugin.caretTracker?.lastTouched;
     const names = Array.from(registry.data.keys()).sort((left, right) => left.localeCompare(right));
     const activeName = this.selectedVariableName ?? last?.name ?? '';
-    const definition = activeName ? registry.getVariable(activeName) ?? EMPTY_DEFINITION : EMPTY_DEFINITION;
+    const storedDefinition = activeName ? registry.getVariable(activeName) : undefined;
+    const definition = storedDefinition ?? EMPTY_DEFINITION;
 
     const header = container.createDiv({ cls: 'variable-links-panel-header' });
     header.createEl('h2', { text: 'Variable link properties' });
@@ -226,7 +227,11 @@ export class VariablePropertiesView extends ItemView {
 
     const result = definition.file ? await this.plugin.resolver?.resolve(activeName) : null;
     if (!this.isCurrent(generation)) return;
-    propertiesPane.createEl('h5', { text: `{{${activeName}}}` });
+    const variableHeading = propertiesPane.createDiv({
+      cls: 'variable-links-panel-variable-heading',
+    });
+    variableHeading.createEl('h5', { text: `{{${activeName}}}` });
+    if (storedDefinition) this.renderFavoriteControl(variableHeading, activeName, storedDefinition);
     const valueText = result?.ok ? String(result.value) : '[Missing]';
     const valueEl = propertiesPane.createDiv({ cls: 'variable-links-panel-value' });
     await MarkdownRenderer.render(this.app, valueText, valueEl, '', markdownChild);
@@ -310,10 +315,14 @@ export class VariablePropertiesView extends ItemView {
       definition.display ?? '',
       'e.g. John Smith',
     );
-    const favoriteRow = form.createDiv({ cls: 'variable-links-panel-checkbox' });
-    const favoriteInput = favoriteRow.createEl('input', { type: 'checkbox' });
-    favoriteInput.checked = definition.favorite === true;
-    favoriteRow.createEl('label', { text: 'Favorite' });
+    const existingVariable = name ? this.plugin.registry?.getVariable(name) : undefined;
+    let favoriteInput: HTMLInputElement | null = null;
+    if (!existingVariable) {
+      const favoriteRow = form.createDiv({ cls: 'variable-links-panel-checkbox' });
+      favoriteInput = favoriteRow.createEl('input', { type: 'checkbox' });
+      favoriteInput.checked = definition.favorite === true;
+      favoriteRow.createEl('label', { text: 'Favorite' });
+    }
 
     form.createEl('h5', { text: 'Variable appearance' });
     const defaultAppearance = getDefaultVariableAppearance(this.plugin.settings);
@@ -438,12 +447,15 @@ export class VariablePropertiesView extends ItemView {
       }
       const opacity = Number(opacityInput.value);
       if (decoration !== 'none' && opacity !== 100) nextAppearance.opacity = opacity;
+      const favorite = existingVariable
+        ? registry.getVariable(name)?.favorite === true
+        : favoriteInput?.checked === true;
       await registry.saveVariable(newName, {
         file: propertyLink.file,
         property: propertyLink.property,
         link: fileLinkInput.value.trim() ? toFileLink(fileLinkInput.value) : undefined,
         display: displayInput.value,
-        favorite: favoriteInput.checked,
+        favorite,
         appearance: useDefaultsInput.checked ? undefined : nextAppearance,
       }, definition.file ? name : undefined);
       const touched = this.plugin.caretTracker?.lastTouched;
@@ -455,6 +467,37 @@ export class VariablePropertiesView extends ItemView {
       new Notice(`Variable Links: saved {{${newName}}}`);
       await this.refresh();
     });
+  }
+
+  private renderFavoriteControl(
+    parent: HTMLElement,
+    name: string,
+    definition: VariableDefinition,
+  ): void {
+    const label = parent.createEl('label', { cls: 'variable-links-panel-heading-favorite' });
+    const input = label.createEl('input', { type: 'checkbox' });
+    input.checked = definition.favorite === true;
+    label.createSpan({ text: 'Favorite' });
+    input.addEventListener('change', () => {
+      const favorite = input.checked;
+      input.disabled = true;
+      void this.saveFavorite(name, favorite)
+        .catch((error: unknown) => {
+          input.checked = !favorite;
+          new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+        })
+        .finally(() => {
+          input.disabled = false;
+        });
+    });
+  }
+
+  private async saveFavorite(name: string, favorite: boolean): Promise<void> {
+    const registry = this.plugin.registry;
+    const definition = registry?.getVariable(name);
+    if (!registry || !definition) throw new Error(`{{${name}}} is not configured.`);
+    await registry.saveVariable(name, { ...definition, favorite });
+    new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} {{${name}}}`);
   }
 
   private renderInfoCardForm(

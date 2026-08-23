@@ -6,14 +6,6 @@ This document records planned improvements to Variable Links. Plans may change a
 
 > **Scope closed:** The planned feature set for 1.2.0 is complete. Do not add further features to this release. Changes that clarify, implement, test, or correct the items already listed may still be made. Record additional feature ideas for a later version.
 
-### Favorite control placement
-
-- Move the Favorite checkbox to the top right of the Link panel, beside the selected Variable Link name and above the mapping editor.
-- Save Favorite changes immediately without requiring the mapping form to be saved.
-- Keep a Favorite option available while creating a new variable.
-- Preserve the current Favorite state when a mapping is edited or renamed.
-- Keep the variable name and Favorite control usable when the sidebar is narrow.
-
 ### Info Card layout and style editor
 
 - Add a larger Info Card editor opened from the Card tab.

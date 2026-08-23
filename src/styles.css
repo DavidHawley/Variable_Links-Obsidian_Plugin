@@ -222,6 +222,29 @@
   margin-top: 0;
 }
 
+.variable-links-panel-variable-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.variable-links-panel-variable-heading h5 {
+  flex: 1 1 120px;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.variable-links-panel-heading-favorite {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 .variable-links-panel-field textarea {
   width: 100%;
   resize: vertical;
