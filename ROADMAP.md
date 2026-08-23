@@ -45,22 +45,6 @@ This document records planned improvements to Variable Links. Plans may change a
 2. Add drag-and-drop ordering, Stack and Grid layouts, column spans, Property tables, live preview, and undo.
 3. Add card and block styling, starter layouts, restore controls, and accessibility and compatibility testing.
 
-### Switch token submenu
-
-- Add a Switch token submenu that is enabled only when the context menu is opened inside a complete Variable Link token.
-- Keep Switch token disabled outside tokens while Insert and Insert favorite remain available.
-- Keep Insert and Insert favorite disabled inside tokens.
-- Show the current token as a disabled item at the top of the submenu.
-- List favorite variables first with a star, followed by a separator and the remaining variables in alphabetical order.
-- Do not duplicate favorite variables in the regular list.
-- Disable Switch token when no alternative configured variables are available.
-- Replace the entire existing token with the selected token as one undoable editor action.
-- Move the caret to the end of the replacement token.
-- Allow missing or deleted tokens to be switched even when Properties and Favorite are unavailable.
-- Keep submenu entries limited to variable names so the menu remains compact and stable.
-- Consider adding Search all and a Switch Variable Link token command after the basic submenu is proven usable with large registries.
-- Test Source Mode, Live Preview, keyboard navigation, missing variables, multiple tokens on one line, line boundaries, favorites ordering, insertion disabling, caret placement, and Undo.
-
 ### Fixed and property value variables
 
 - Support two user-facing variable types: **Fixed value** and **Property value**.

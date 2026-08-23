@@ -7,6 +7,7 @@ All notable user-visible changes to Variable Links are recorded here.
 ### Added
 
 - Added a configurable Info Card hover delay for Reading View.
+- Added a context-menu submenu for switching complete Variable Link tokens, with favorites listed first.
 
 ### Changed
 
