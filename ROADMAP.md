@@ -81,3 +81,35 @@ This document records planned improvements to Variable Links. Plans may change a
 - Keep the variable name, stable identifier, display name, Favorite state, appearance, card settings, and optional link data intact when its type changes.
 - Ensure only the active type's value source affects rendering and resolution.
 - Test new and existing registries, repeated type changes, canceled confirmations, unsaved changes, empty fixed values, optional file links, renamed variables, Favorites, Insert, Switch token, Source Mode, Live Preview, Reading View, and Info Cards.
+
+## 1.3.0
+
+### Custom Variable Link token syntax
+
+- Add Token prefix and Token suffix settings while keeping `{{` and `}}` as the defaults.
+- Show a live example of the resulting token format in Settings.
+- Treat configured prefix and suffix characters literally rather than as pattern syntax.
+- Centralize token parsing and formatting so Reading View, Live Preview, insertion, switching, caret detection, renaming, and token caching use the same rules.
+
+#### Validation and compatibility warnings
+
+- Require nonempty prefix and suffix values that do not contain line breaks or consist only of whitespace.
+- Prevent identical prefix and suffix values and place a reasonable length limit on both fields.
+- Prevent variable names from containing the active prefix or suffix.
+- Warn about formats that conflict with Obsidian or Markdown syntax, including wikilinks, embeds, code markers, and comments.
+- Keep the existing default format fully compatible for users who do not change the settings.
+
+#### Changing formats and migration
+
+- Show the current format, proposed format, and a sample token in a confirmation dialog before applying a change.
+- Offer Cancel, Use for new tokens only, and Migrate existing tokens actions.
+- Make Migrate existing tokens the recommended action.
+- Use the verified token cache to update only Variable Link tokens rather than replacing similar text indiscriminately.
+- Prepare changes before writing files, preserve rollback information, and leave the previous format active if migration cannot complete safely.
+- When Use for new tokens only is selected, recognize both the active and previous formats temporarily.
+- Provide a way to stop recognizing a previous format after migration or manual cleanup is complete.
+
+#### Testing
+
+- Test custom formats in Source Mode, Live Preview, Reading View, Insert, Favorites, Switch token, Properties, renaming, missing variables, token caching, and Info Cards.
+- Test multiple active and legacy formats, migration cancellation, partial-write recovery, conflicting Markdown syntax, repeated tokens, and tokens at line boundaries.
