@@ -32,6 +32,18 @@ This document records planned improvements to Variable Links. Plans may change a
 - Prefer theme-aware colors and reusable presets.
 - Keep optional advanced CSS card-level rather than attaching raw CSS to every block.
 
+#### Stack container blocks
+
+- Add a Stack container item that can group normal Card items into a distinct section.
+- Keep Stack containers separate from the card-level Stack layout mode.
+- Allow items to be dragged into, out of, and between Stack containers, with a clear highlighted drop zone.
+- Give each Stack an identifier name, an optional visible heading, and an independently collapsible editor section.
+- Support vertical and horizontal item arrangements within a Stack.
+- Add Stack-level appearance controls for background, border, padding, spacing, and corner radius.
+- Provide Move to top, Move to end, Remove from Stack, and Delete Stack actions alongside drag and drop.
+- Preserve each Stack's contents, order, layout, and appearance when the editor is closed and reopened.
+- Limit the initial implementation to one level: Stack containers may contain normal Card items but not other Stack containers.
+
 #### Compatibility and safety
 
 - Automatically migrate the existing title, note, fields, and source link into the new block layout without changing how existing cards initially appear.
@@ -44,6 +56,7 @@ This document records planned improvements to Variable Links. Plans may change a
 1. **Completed:** Add the block-based card format, multiple notes, movable property items, migration, and non-drag movement controls.
 2. **Completed:** Add drag-and-drop ordering, Stack and Grid layouts, column spans, Property tables, live preview, and undo.
 3. **Completed:** Add card and block styling, starter layouts, restore controls, and accessibility and compatibility testing.
+4. Add single-level Stack container blocks for grouping, arranging, and styling related Card items.
 
 ## 1.3.0
 
