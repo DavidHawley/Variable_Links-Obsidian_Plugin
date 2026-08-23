@@ -2516,7 +2516,8 @@ export class VariablePropertiesView extends ItemView {
         nextCard.title || nextCard.note || nextCard.fields?.length || nextCard.showSourceLink,
       );
       const hasBlocks = Boolean(nextCard.blocks?.length);
-      const hasOptions = nextCard.disableLivePreviewHover === true;
+      const hasOptions = nextCard.disableLivePreviewHover === true
+        || nextCard.useBlockLayout === true;
       await registry.saveVariable(name, {
         ...definition,
         card: hasSimpleContent || hasBlocks || hasOptions ? nextCard : undefined,

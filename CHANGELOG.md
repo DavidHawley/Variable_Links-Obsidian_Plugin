@@ -7,6 +7,7 @@ All notable user-visible changes to Variable Links are recorded here.
 ### Fixed
 
 - Updated the Variable Link selector immediately when a new variable is created from editor suggestions.
+- Allowed an empty Info Card to switch from the simple editor to the block layout editor.
 
 ## 1.2.0 - 2026-08-23
 
