@@ -162,6 +162,8 @@ class InfoCardLayoutModal extends Modal {
   private editorSize: InfoCardEditorSize | null = null;
   private editorSizeDirty = false;
   private undoButton: HTMLButtonElement | null = null;
+  private collapsedBlockIds = new Set<string>();
+  private collapsedPropertyIds = new Set<string>();
   private draggedBlockId: string | null = null;
   private draggedProperty: { blockId: string; propertyId: string } | null = null;
 
@@ -277,6 +279,7 @@ class InfoCardLayoutModal extends Modal {
 
   private render(): void {
     this.previewCard.hideImmediate();
+    this.pruneCollapsedItemIds();
     this.contentEl.empty();
     const heading = this.contentEl.createDiv({ cls: 'variable-links-card-layout-editor-heading' });
     heading.createEl('h2', { text: `Info Card layout for {{${this.variableName}}}` });
@@ -290,6 +293,19 @@ class InfoCardLayoutModal extends Modal {
       });
     headingActions.createEl('button', { text: 'Restore defaults', attr: { type: 'button' } })
       .addEventListener('click', () => this.restoreDefaults());
+    const collapseAllButton = headingActions.createEl('button', {
+      text: 'Collapse all',
+      attr: { type: 'button' },
+    });
+    collapseAllButton.disabled = this.blocks.length === 0;
+    collapseAllButton.addEventListener('click', () => this.setAllItemsCollapsed(true));
+    const expandAllButton = headingActions.createEl('button', {
+      text: 'Expand all',
+      attr: { type: 'button' },
+    });
+    expandAllButton.disabled = this.collapsedBlockIds.size === 0
+      && this.collapsedPropertyIds.size === 0;
+    expandAllButton.addEventListener('click', () => this.setAllItemsCollapsed(false));
     this.contentEl.createEl('p', {
       cls: 'variable-links-hint-text',
       text: 'Drag blocks to arrange them, or use the movement controls for keyboard access.',
@@ -549,6 +565,8 @@ class InfoCardLayoutModal extends Modal {
 
   private renderBlock(parent: HTMLElement, block: CardBlock, index: number): void {
     const item = parent.createDiv({ cls: 'variable-links-card-layout-block' });
+    const collapsed = this.collapsedBlockIds.has(block.id);
+    item.toggleClass('is-collapsed', collapsed);
     item.dataset.blockId = block.id;
     item.addEventListener('dragover', (event) => {
       if (!this.draggedBlockId || this.draggedBlockId === block.id) return;
@@ -567,6 +585,18 @@ class InfoCardLayoutModal extends Modal {
 
     const heading = item.createDiv({ cls: 'variable-links-card-layout-block-heading' });
     const title = heading.createDiv({ cls: 'variable-links-card-layout-block-title' });
+    const collapseButton = title.createEl('button', {
+      text: collapsed ? '▸' : '▾',
+      cls: 'variable-links-card-collapse-button',
+      attr: {
+        type: 'button',
+        'aria-label': `${collapsed ? 'Expand' : 'Collapse'} ${this.blockLabel(block)}`,
+        'aria-expanded': String(!collapsed),
+      },
+    });
+    collapseButton.addEventListener('click', () => {
+      this.setItemCollapsed(this.collapsedBlockIds, block.id, !collapsed);
+    });
     const dragHandle = title.createEl('button', {
       text: 'Drag',
       cls: 'variable-links-card-drag-handle',
@@ -582,7 +612,14 @@ class InfoCardLayoutModal extends Modal {
       this.draggedBlockId = null;
       item.removeClass('is-dragging');
     });
-    title.createEl('strong', { text: this.blockLabel(block) });
+    const editorHeading = title.createDiv({ cls: 'variable-links-card-editor-heading-text' });
+    const editorHeadingName = editorHeading.createEl('strong', {
+      text: this.blockEditorHeading(block, index),
+    });
+    const editorHeadingType = editorHeading.createSpan({
+      cls: 'variable-links-card-editor-item-type',
+      text: block.editorLabel ? this.blockLabel(block) : '',
+    });
 
     const controls = heading.createDiv({ cls: 'variable-links-card-layout-controls' });
     if (this.layoutMode === 'grid') this.renderBlockWidthControl(controls, block);
@@ -595,6 +632,25 @@ class InfoCardLayoutModal extends Modal {
     );
     controls.createEl('button', { text: 'Remove', attr: { type: 'button' } })
       .addEventListener('click', () => this.mutate(() => { this.blocks.splice(index, 1); }));
+
+    if (collapsed) return;
+
+    const editorLabelInput = this.addModalInput(
+      item,
+      'Editor label:',
+      block.editorLabel ?? '',
+      'Optional name shown only in the editor',
+    );
+    this.bindEditorLabel(editorLabelInput, (value) => {
+      block.editorLabel = value;
+      editorHeadingName.textContent = this.blockEditorHeading(block, index);
+      editorHeadingType.textContent = value ? this.blockLabel(block) : '';
+    });
+    item.addEventListener('input', () => {
+      if (!block.editorLabel) {
+        editorHeadingName.textContent = this.blockEditorHeading(block, index);
+      }
+    });
 
     this.renderBlockStyleControls(item, block);
 
@@ -709,6 +765,9 @@ class InfoCardLayoutModal extends Modal {
     parent.createEl('button', { text: 'Put in property table', attr: { type: 'button' } })
       .addEventListener('click', () => {
         this.mutate(() => {
+          if (!block.property.editorLabel && block.editorLabel) {
+            block.property.editorLabel = block.editorLabel;
+          }
           const table = this.blocks.find(
             (candidate): candidate is CardPropertyTableBlock => candidate.type === 'property-table',
           );
@@ -799,6 +858,8 @@ class InfoCardLayoutModal extends Modal {
     propertyIndex: number,
   ): void {
     const row = parent.createDiv({ cls: 'variable-links-card-layout-property-row' });
+    const collapsed = this.collapsedPropertyIds.has(property.id);
+    row.toggleClass('is-collapsed', collapsed);
     row.addEventListener('dragover', (event) => {
       if (!this.draggedProperty || this.draggedProperty.propertyId === property.id) return;
       event.preventDefault();
@@ -814,6 +875,18 @@ class InfoCardLayoutModal extends Modal {
       this.dropProperty(block.id, propertyIndex + (after ? 1 : 0));
     });
     const propertyHeading = row.createDiv({ cls: 'variable-links-card-layout-property-heading' });
+    const collapseButton = propertyHeading.createEl('button', {
+      text: collapsed ? '▸' : '▾',
+      cls: 'variable-links-card-collapse-button',
+      attr: {
+        type: 'button',
+        'aria-label': `${collapsed ? 'Expand' : 'Collapse'} property`,
+        'aria-expanded': String(!collapsed),
+      },
+    });
+    collapseButton.addEventListener('click', () => {
+      this.setItemCollapsed(this.collapsedPropertyIds, property.id, !collapsed);
+    });
     const dragHandle = propertyHeading.createEl('button', {
       text: 'Drag',
       cls: 'variable-links-card-drag-handle',
@@ -829,7 +902,33 @@ class InfoCardLayoutModal extends Modal {
       this.draggedProperty = null;
       row.removeClass('is-dragging');
     });
-    propertyHeading.createSpan({ text: `Cell ${propertyIndex + 1}` });
+    const editorHeading = propertyHeading.createDiv({
+      cls: 'variable-links-card-editor-heading-text',
+    });
+    const editorHeadingName = editorHeading.createEl('strong', {
+      text: this.propertyEditorHeading(property, propertyIndex),
+    });
+    const editorHeadingType = editorHeading.createSpan({
+      cls: 'variable-links-card-editor-item-type',
+      text: property.editorLabel ? `Property · Cell ${propertyIndex + 1}` : '',
+    });
+    if (collapsed) return;
+    const editorLabelInput = this.addModalInput(
+      row,
+      'Editor label:',
+      property.editorLabel ?? '',
+      'Optional name shown only in the editor',
+    );
+    this.bindEditorLabel(editorLabelInput, (value) => {
+      property.editorLabel = value;
+      editorHeadingName.textContent = this.propertyEditorHeading(property, propertyIndex);
+      editorHeadingType.textContent = value ? `Property · Cell ${propertyIndex + 1}` : '';
+    });
+    row.addEventListener('input', () => {
+      if (!property.editorLabel) {
+        editorHeadingName.textContent = this.propertyEditorHeading(property, propertyIndex);
+      }
+    });
     const input = this.addPropertyInput(row, property);
     this.bindTextEdit(input, (value) => { property.reference = value; });
     const controls = row.createDiv({ cls: 'variable-links-card-layout-controls' });
@@ -859,6 +958,7 @@ class InfoCardLayoutModal extends Modal {
           this.blocks.splice(blockIndex + 1, 0, {
             id: createCardBlock('property').id,
             type: 'property',
+            editorLabel: property.editorLabel,
             property,
           });
         });
@@ -1011,6 +1111,21 @@ class InfoCardLayoutModal extends Modal {
       }
       update(input.value);
       this.schedulePreview();
+    });
+  }
+
+  private bindEditorLabel(
+    input: HTMLInputElement,
+    update: (value: string | undefined) => void,
+  ): void {
+    let recorded = false;
+    input.addEventListener('input', () => {
+      if (!recorded) {
+        this.recordHistory();
+        recorded = true;
+      }
+      const value = input.value.trim().slice(0, 80) || undefined;
+      update(value);
     });
   }
 
@@ -1206,6 +1321,52 @@ class InfoCardLayoutModal extends Modal {
     this.restoreScrollPosition(scrollPosition);
   }
 
+  private setItemCollapsed(collection: Set<string>, id: string, collapsed: boolean): void {
+    if (collapsed) collection.add(id);
+    else collection.delete(id);
+    this.rerenderPreservingScroll();
+  }
+
+  private setAllItemsCollapsed(collapsed: boolean): void {
+    if (collapsed) {
+      for (const block of this.blocks) {
+        this.collapsedBlockIds.add(block.id);
+        if (block.type === 'property-table') {
+          for (const property of block.properties) {
+            this.collapsedPropertyIds.add(property.id);
+          }
+        }
+      }
+    } else {
+      this.collapsedBlockIds.clear();
+      this.collapsedPropertyIds.clear();
+    }
+    this.rerenderPreservingScroll();
+  }
+
+  private pruneCollapsedItemIds(): void {
+    const blockIds = new Set(this.blocks.map((block) => block.id));
+    const propertyIds = new Set<string>();
+    for (const block of this.blocks) {
+      if (block.type === 'property') propertyIds.add(block.property.id);
+      if (block.type === 'property-table') {
+        for (const property of block.properties) propertyIds.add(property.id);
+      }
+    }
+    for (const id of this.collapsedBlockIds) {
+      if (!blockIds.has(id)) this.collapsedBlockIds.delete(id);
+    }
+    for (const id of this.collapsedPropertyIds) {
+      if (!propertyIds.has(id)) this.collapsedPropertyIds.delete(id);
+    }
+  }
+
+  private rerenderPreservingScroll(): void {
+    const scrollPosition = this.getScrollContainer().scrollTop;
+    this.render();
+    this.restoreScrollPosition(scrollPosition);
+  }
+
   private recordHistory(): void {
     this.history.push(this.snapshot());
     if (this.history.length > 50) this.history.shift();
@@ -1278,6 +1439,35 @@ class InfoCardLayoutModal extends Modal {
     if (block.type === 'property-table') return 'Property table';
     if (block.type === 'source') return 'Source link';
     return block.type.charAt(0).toUpperCase() + block.type.slice(1);
+  }
+
+  private blockEditorHeading(block: CardBlock, index: number): string {
+    if (block.editorLabel) return block.editorLabel;
+    if (block.type === 'title') {
+      return `Title — ${this.editorExcerpt(block.text, `Item ${index + 1}`)}`;
+    }
+    if (block.type === 'note') {
+      return `Note — ${this.editorExcerpt(block.markdown, `Item ${index + 1}`)}`;
+    }
+    if (block.type === 'property') {
+      return `Property — ${this.editorExcerpt(block.property.reference, `Item ${index + 1}`)}`;
+    }
+    if (block.type === 'property-table') {
+      const count = block.properties.length;
+      return `Property table — ${count} ${count === 1 ? 'property' : 'properties'}`;
+    }
+    return this.blockLabel(block);
+  }
+
+  private propertyEditorHeading(property: CardPropertyEntry, index: number): string {
+    if (property.editorLabel) return property.editorLabel;
+    return `Property ${index + 1} — ${this.editorExcerpt(property.reference, 'Unconfigured')}`;
+  }
+
+  private editorExcerpt(value: string, fallback: string): string {
+    const text = value.replace(/\s+/g, ' ').trim();
+    if (!text) return fallback;
+    return text.length > 48 ? `${text.slice(0, 47)}…` : text;
   }
 }
 

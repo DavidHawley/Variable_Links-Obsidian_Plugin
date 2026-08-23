@@ -1,6 +1,7 @@
 export interface CardPropertyEntry {
   id: string;
   reference: string;
+  editorLabel?: string;
   label?: string;
   labelPosition?: CardLabelPosition;
   alignment?: CardTextAlignment;
@@ -39,6 +40,7 @@ export interface CardBlockStyle {
 
 interface CardBlockBase {
   id: string;
+  editorLabel?: string;
   width?: CardBlockWidth;
   style?: CardBlockStyle;
 }
@@ -306,10 +308,16 @@ export function normalizeCardBlockStyle(value: unknown): CardBlockStyle | undefi
 }
 
 function normalizeBlockBase(value: Record<string, unknown>): {
+  editorLabel?: string;
   width?: CardBlockWidth;
   style?: CardBlockStyle;
 } {
-  const base: { width?: CardBlockWidth; style?: CardBlockStyle } = {};
+  const base: {
+    editorLabel?: string;
+    width?: CardBlockWidth;
+    style?: CardBlockStyle;
+  } = {};
+  base.editorLabel = normalizeEditorLabel(value.editorLabel);
   if (value.width === 'full'
     || value.width === 'half'
     || value.width === 'third'
@@ -328,6 +336,7 @@ function normalizePropertyEntry(
   return {
     id: uniqueId(value.id, 'property', usedIds),
     reference: typeof value.reference === 'string' ? value.reference : '',
+    editorLabel: normalizeEditorLabel(value.editorLabel),
     label: typeof value.label === 'string' && value.label.trim() ? value.label.trim() : undefined,
     labelPosition: value.labelPosition === 'above' || value.labelPosition === 'hidden'
       ? value.labelPosition
@@ -335,6 +344,12 @@ function normalizePropertyEntry(
     alignment: isTextAlignment(value.alignment) ? value.alignment : undefined,
     labelWidth: normalizeNumber(value.labelWidth, 20, 70),
   };
+}
+
+function normalizeEditorLabel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const label = value.trim();
+  return label ? label.slice(0, 80) : undefined;
 }
 
 function normalizeNumber(

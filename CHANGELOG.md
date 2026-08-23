@@ -6,6 +6,7 @@ All notable user-visible changes to Variable Links are recorded here.
 
 ### Added
 
+- Added persistent editor labels, independently collapsible Card items, and Collapse all/Expand all controls to the Info Card editor.
 - Added horizontal and vertical resizing to the Info Card editor window, with its size remembered when reopened.
 - Added a configurable Info Card hover delay for Reading View.
 - Added a context-menu submenu for switching complete Variable Link tokens, with favorites listed first.
