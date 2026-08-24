@@ -2,6 +2,12 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
+## 1.2.4 - 2026-08-24
+
+### Fixed
+
+- Kept already-linked note properties available in editor suggestions while ranking properties without an existing mapping first.
+
 ## 1.2.3 - 2026-08-23
 
 ### Fixed
