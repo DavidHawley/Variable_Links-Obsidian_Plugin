@@ -15,6 +15,16 @@ These instructions apply to the entire repository.
 - When a patch release reaches `main`, merge the updated `main` into the active feature branch.
 - Delete version branches after their release is merged and published.
 
+### Permanent roadmap branch
+
+- Keep a permanent branch named `Roadmap`. Never delete it after a merge or release.
+- Edit `ROADMAP.md` only on the `Roadmap` branch. Never edit it directly on `main`, `fixes/*`, `features/*`, release, or other working branches.
+- Keep planning-only roadmap changes on `Roadmap`; do not mix plugin implementation changes into roadmap commits.
+- Immediately before any fix, feature, or other update branch is ready to be merged, merge the latest `Roadmap` branch into that update branch as the final integration step.
+- After merging `Roadmap` into an update branch, resolve any conflicts, rerun the required validation, and do not add further implementation changes without repeating the final roadmap merge check.
+- After an update reaches `main`, merge the latest `main` back into `Roadmap` so the permanent branch stays current with released code and project guidance.
+- If roadmap edits are accidentally made on another branch, move them to `Roadmap` and restore `ROADMAP.md` on the other branch before continuing.
+
 ## Versioning
 
 - Follow semantic versioning:
