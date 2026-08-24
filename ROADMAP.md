@@ -60,6 +60,10 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.3.0
 
+> **Target release date: September 4, 2026.** Use September 3 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-syntax, dynamic date/time, and contextual-help work described below.
+
+> **Planning gate:** Before implementation begins, review the complete 1.3 roadmap with the user and iterate on any unclear behavior, format rules, interface choices, scope, or implementation order. Begin development only after the user approves the revised plan.
+
 ### Custom Variable Link token syntax
 
 - Add Token prefix and Token suffix settings while keeping `{{` and `}}` as the defaults.
@@ -89,3 +93,54 @@ This document records planned improvements to Variable Links. Plans may change a
 
 - Test custom formats in Source Mode, Live Preview, Reading View, Insert, Favorites, Switch token, Properties, renaming, missing variables, token caching, and Info Cards.
 - Test multiple active and legacy formats, migration cancellation, partial-write recovery, conflicting Markdown syntax, repeated tokens, and tokens at line boundaries.
+
+### Dynamic date and time tokens
+
+- Add `{{DATE}}`, using the existing default date format setting.
+- Add `{{TIME}}`, using `HH:mm:ss` as its initial default format.
+- Support an inline format override, including `{{DATE:DD/MM/YYYY HH:mm:ss}}`, `{{DATE:MM-DD-YY}}`, and `{{TIME:hh:mm:ss A}}`.
+- Keep formats case-sensitive so `MM` means month and `mm` means minutes.
+- Support full, abbreviated, and single-letter weekdays using `WW`, `www`, and `w`.
+- Support useful date and time parts, month names, 12-hour and 24-hour clocks, AM/PM, and escaped literal text.
+- Apply the active custom token prefix and suffix to built-in tokens as well as registered variables.
+- Reserve the built-in DATE and TIME forms and warn when an existing registered variable conflicts with them.
+- Keep built-in tokens out of variable properties, favorites, renaming, Info Cards, and registry editing.
+
+#### Rendering and automatic updates
+
+- Use one shared formatter and resolver in Reading View, Live Preview, suggestions, context menus, insertion, and Copy Markdown.
+- Keep date and time tokens raw in Source Mode, code, YAML, math, comments, link destinations, raw HTML, and other protected Markdown contexts.
+- Refresh visible tokens only as often as their formats require: every second for seconds, every minute for hours or minutes, and at the date boundary for date-only values.
+- Use a single plugin-owned scheduler and release its timers and listeners when the plugin unloads.
+- Show a clear warning for unsupported or incomplete formats instead of producing misleading output.
+
+#### Insertion and testing
+
+- Put DATE, TIME, and common formatted examples near the top of token suggestions.
+- Add an Insert date or time section to relevant insertion menus and place the caret in the editable portion of a format template.
+- Make Copy Markdown copy the displayed date or time value in prose while preserving raw syntax in protected content.
+- Test 12-hour and 24-hour time, leading zeroes, seconds, minute and day changes, month and weekday names, invalid formats, local timezones, custom delimiters, plugin reload, and timer cleanup.
+
+### Contextual help controls
+
+- Add a small, consistently styled, keyboard-accessible circled `?` button beside settings and editor controls that need additional explanation.
+- Open a focused popup or modal when the button is clicked; do not depend on hovering to reveal the help.
+- Allow the popup to close with its close button, Escape, or a click outside it, and return keyboard focus to the originating help button.
+- Keep each explanation brief, with examples or a link to a more complete in-plugin reference when the subject is too large for a small popup.
+- Add help controls throughout the plugin wherever a label and short description do not adequately explain the behavior, consequences, accepted syntax, or interaction.
+- Prioritize token prefix and suffix migration, date and time formats, variable types, property links, appearance inheritance, live-preview delays, Card layout modes, Stack containers, and advanced Card styling.
+- Do not add help buttons to self-explanatory actions such as Save, Cancel, Move, or Delete unless testing shows that their behavior is unclear.
+- Ensure the buttons and popups work with desktop, mobile, keyboard navigation, screen readers, narrow panels, and different Obsidian themes.
+
+#### Date and time format help
+
+- Place a help button beside the default date and time format settings and beside inline format controls.
+- Show a live preview using the current local date and time.
+- Include a format-reference table, copyable examples, literal-text instructions, and a clear explanation of case-sensitive parts such as `MM` and `mm`.
+- Validate formats as they are entered and use the help popup to explain any unsupported or ambiguous part.
+
+#### Final help review
+
+- Review every Settings section, Variable Link Properties section, Card editor section, and relevant menu before the 1.3 smoke test.
+- Add missing help controls where a new user could not reasonably predict the result of a setting.
+- Check that the help remains useful without obscuring the normal workflow or crowding narrow layouts.
