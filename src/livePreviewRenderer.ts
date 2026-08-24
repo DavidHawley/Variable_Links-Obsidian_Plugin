@@ -1,5 +1,6 @@
-import { App, Editor, MarkdownView } from 'obsidian';
-import { Extension, RangeSetBuilder, StateEffect } from '@codemirror/state';
+import { App, Editor, editorLivePreviewField, MarkdownView } from 'obsidian';
+import { syntaxTree } from '@codemirror/language';
+import { EditorState, Extension, RangeSetBuilder, StateEffect } from '@codemirror/state';
 import {
   Decoration,
   DecorationSet,
@@ -14,6 +15,15 @@ import { applyVariableAppearance, getEffectiveVariableAppearance } from './appea
 const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
 const refreshVariableLinks = StateEffect.define<void>();
 
+const NON_PROSE_NODE_FRAGMENTS = [
+  'code',
+  'comment',
+  'frontmatter',
+  'html',
+  'math',
+  'yaml',
+];
+
 interface EditorWithCodeMirror extends Editor {
   cm?: EditorView;
 }
@@ -27,6 +37,48 @@ type MarkdownViewInternals = MarkdownView & {
   editor: EditorWithCodeMirror;
   previewMode?: PreviewMode;
 };
+
+function isLivePreview(state: EditorState): boolean {
+  return state.field(editorLivePreviewField, false) === true;
+}
+
+function isNonProseSyntaxNode(name: string): boolean {
+  const normalized = name.replace(/[-_]/g, '').toLowerCase();
+  return normalized === 'url'
+    || normalized.includes('linkdestination')
+    || NON_PROSE_NODE_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+}
+
+function isInsideNonProseSyntax(state: EditorState, from: number, to: number): boolean {
+  const position = Math.min(from + 1, Math.max(from, to - 1));
+  let node = syntaxTree(state).resolve(position, 1);
+  while (true) {
+    if (isNonProseSyntaxNode(node.name)) return true;
+    const parent = node.parent;
+    if (!parent) return false;
+    node = parent;
+  }
+}
+
+function isInsideWikiLinkTarget(state: EditorState, from: number, to: number): boolean {
+  const line = state.doc.lineAt(from);
+  if (to > line.to) return false;
+  const relativeFrom = from - line.from;
+  const relativeTo = to - line.from;
+  const before = line.text.slice(0, relativeFrom);
+  const open = before.lastIndexOf('[[');
+  if (open === -1 || open < before.lastIndexOf(']]')) return false;
+  const close = line.text.indexOf(']]', relativeTo);
+  if (close === -1) return false;
+  const alias = line.text.indexOf('|', open + 2);
+  return alias === -1 || relativeFrom < alias;
+}
+
+function shouldRenderToken(state: EditorState, from: number, to: number): boolean {
+  return isLivePreview(state)
+    && !isInsideNonProseSyntax(state, from, to)
+    && !isInsideWikiLinkTarget(state, from, to);
+}
 
 export default class LivePreviewRenderer {
   private revision = 0;
@@ -102,7 +154,7 @@ export default class LivePreviewRenderer {
 
     const buildDecorations = (view: EditorView): DecorationSet => {
       const builder = new RangeSetBuilder<Decoration>();
-      if (!this.active) return builder.finish();
+      if (!this.active || !isLivePreview(view.state)) return builder.finish();
       const text = view.state.doc.toString();
       const selection = view.state.selection.main;
       let match: RegExpExecArray | null;
@@ -113,6 +165,7 @@ export default class LivePreviewRenderer {
         const from = match.index;
         const to = TOKEN_REGEX.lastIndex;
         if (selection.from <= to && selection.to >= from) continue;
+        if (!shouldRenderToken(view.state, from, to)) continue;
         builder.add(from, to, Decoration.replace({
           widget: new VariableWidget(name.trim(), this.revision, renderVariable),
         }));
@@ -131,7 +184,12 @@ export default class LivePreviewRenderer {
         const refreshRequested = update.transactions.some((transaction) =>
           transaction.effects.some((effect) => effect.is(refreshVariableLinks))
         );
-        if (update.docChanged || update.selectionSet || update.viewportChanged || refreshRequested) {
+        const livePreviewChanged = isLivePreview(update.startState) !== isLivePreview(update.state);
+        if (update.docChanged
+          || update.selectionSet
+          || update.viewportChanged
+          || refreshRequested
+          || livePreviewChanged) {
           this.decorations = buildDecorations(update.view);
         }
       }

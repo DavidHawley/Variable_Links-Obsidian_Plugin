@@ -2,6 +2,12 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
+## 1.2.3 - Unreleased
+
+### Fixed
+
+- Kept Variable Links raw in code and other non-prose Markdown contexts in Live Preview and Source mode.
+
 ## 1.2.2 - 2026-08-23
 
 ### Fixed
