@@ -14,6 +14,7 @@ import Registry, { getVariableType, type VariableType } from './registry';
 interface SuggestItem {
   name: string;
   kind: 'variable' | 'property';
+  alreadyMapped?: boolean;
   display?: string;
   file?: string;
   property?: string;
@@ -69,12 +70,21 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
           && entry.filePath === file.path
           && entry.def.property === property
         );
-        if (!alreadyMapped) {
-          properties.push({ name: property, kind: 'property', file: file.path, property });
-        }
+        properties.push({
+          name: property,
+          kind: 'property',
+          file: file.path,
+          property,
+          alreadyMapped,
+        });
       }
     }
-    return [...variables.filter(matches), ...properties.filter(matches)].slice(0, 100);
+    const propertyMatches = properties.filter(matches);
+    return [
+      ...variables.filter(matches),
+      ...propertyMatches.filter((item) => !item.alreadyMapped),
+      ...propertyMatches.filter((item) => item.alreadyMapped),
+    ].slice(0, 100);
   }
 
   renderSuggestion(item: SuggestItem, el: HTMLElement): void {
