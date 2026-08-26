@@ -2,6 +2,12 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
+## 1.2.5 - Unreleased
+
+### Fixed
+
+- Reloaded Variable Links throughout the plugin whenever a visible, hidden, or externally edited registry file changes.
+
 ## 1.2.4 - 2026-08-24
 
 ### Fixed

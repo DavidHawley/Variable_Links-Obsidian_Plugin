@@ -5,7 +5,6 @@ import {
   MenuItem,
   Notice,
   Plugin,
-  TFile,
   WorkspaceLeaf,
 } from 'obsidian';
 import CaretTracker, { LastTouched } from './caretTracker';
@@ -144,13 +143,6 @@ export default class VariableLinksPlugin extends Plugin {
         async () => this.refreshPanelViews(),
       );
       this.registerEditorSuggest(this.suggest);
-
-      this.registerEvent(this.app.vault.on('modify', (file) => {
-        if (!this.active || !(file instanceof TFile)) return;
-        if (file.path === this.registry?.registryFile?.path) {
-          this.schedule(() => void this.indexer?.build(), 100);
-        }
-      }));
     } catch (error) {
       new Notice(`Variable Links failed to load: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -213,6 +205,16 @@ export default class VariableLinksPlugin extends Plugin {
 
   onCaretVariableChanged(_last: LastTouched): void {
     if (this.active) void this.refreshPanelViews();
+  }
+
+  async refreshAfterRegistryReload(): Promise<void> {
+    if (!this.active) return;
+    await this.indexer?.build();
+    if (!this.active) return;
+    await this.tokenCache?.rebuild();
+    if (!this.active) return;
+    this.livePreviewRenderer?.refresh();
+    await this.refreshPanelViews();
   }
 
   async loadSettings(): Promise<void> {

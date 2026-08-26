@@ -275,6 +275,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     if (key === 'registryFilePath') {
       try {
         await this.variableLinksPlugin.registry?.load();
+        await this.variableLinksPlugin.refreshAfterRegistryReload();
       } catch (error) {
         new Notice(`Failed to load registry: ${error instanceof Error ? error.message : String(error)}`);
       }
