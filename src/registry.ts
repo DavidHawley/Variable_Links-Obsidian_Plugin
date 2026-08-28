@@ -16,6 +16,8 @@ import type { VariableLinksSettings } from './settings';
 
 export type VariableType = 'property' | 'fixed';
 
+const REGISTRY_POLL_INTERVAL_MS = 1000;
+
 export interface VariableDefinition {
   guid?: string;
   type?: VariableType;
@@ -44,6 +46,10 @@ export class Registry {
   registryPath: string = '';
   private modifyEvent: EventRef | null = null;
   private reloadTimer: number | null = null;
+  private pollTimer: number | null = null;
+  private watchedPath = '';
+  private watchedContent: string | null = null;
+  private pollInProgress = false;
   private active = true;
   private generation = 0;
 
@@ -95,10 +101,11 @@ export class Registry {
 
   async load() {
     if (!this.active) return;
-    const generation = this.generation;
+    const generation = ++this.generation;
     this.settings = this.plugin.settings;
     const path = this.settings.registryFilePath.replace(/\\/g, '/');
     if (!path) {
+      this.stopWatchingRegistry();
       new Notice('Registry file path is not set.');
       return;
     }
@@ -114,6 +121,7 @@ export class Registry {
     this.registryFile = file;
     const content = file ? await this.app.vault.read(file) : await adapter.read(path);
     if (!this.isCurrent(generation)) return;
+    this.watchRegistry(path, content);
 
     // Try to parse registry using intelligent handling based on extension and content
     const parsed = this.parseRegistryFromContent(content, path);
@@ -168,22 +176,6 @@ export class Registry {
       if (!this.isCurrent(generation)) return;
     }
 
-    // register vault change listener to reload registry when the file is modified
-    if (this.modifyEvent) {
-      this.app.vault.offref(this.modifyEvent);
-      this.modifyEvent = null;
-    }
-    if (file) {
-      this.modifyEvent = this.app.vault.on('modify', (f) => {
-        if (!this.active || !this.registryFile || f.path !== this.registryFile.path) return;
-        if (this.reloadTimer) window.clearTimeout(this.reloadTimer);
-        this.reloadTimer = window.setTimeout(() => {
-          this.reloadTimer = null;
-          if (this.active) void this.load();
-        }, 50);
-      });
-    }
-
   }
 
   unload() {
@@ -193,14 +185,87 @@ export class Registry {
       window.clearTimeout(this.reloadTimer);
       this.reloadTimer = null;
     }
-    if (this.modifyEvent) {
-      this.app.vault.offref(this.modifyEvent);
-      this.modifyEvent = null;
-    }
+    this.stopWatchingRegistry();
   }
 
   private isCurrent(generation: number) {
     return this.active && this.generation === generation;
+  }
+
+  private watchRegistry(path: string, content: string): void {
+    if (this.watchedPath === path) {
+      this.watchedContent = content;
+      return;
+    }
+
+    this.stopWatchingRegistry();
+    if (!this.active) return;
+    this.watchedPath = path;
+    this.watchedContent = content;
+    this.modifyEvent = this.app.vault.on('modify', (file) => {
+      if (!this.active || file.path !== this.watchedPath) return;
+      this.scheduleRegistryCheck();
+    });
+    this.pollTimer = window.setInterval(() => {
+      void this.reloadIfRegistryChanged();
+    }, REGISTRY_POLL_INTERVAL_MS);
+  }
+
+  private stopWatchingRegistry(): void {
+    if (this.modifyEvent) {
+      this.app.vault.offref(this.modifyEvent);
+      this.modifyEvent = null;
+    }
+    if (this.pollTimer !== null) {
+      window.clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    if (this.reloadTimer !== null) {
+      window.clearTimeout(this.reloadTimer);
+      this.reloadTimer = null;
+    }
+    this.watchedPath = '';
+    this.watchedContent = null;
+    this.pollInProgress = false;
+  }
+
+  private scheduleRegistryCheck(): void {
+    if (!this.active) return;
+    if (this.reloadTimer !== null) window.clearTimeout(this.reloadTimer);
+    this.reloadTimer = window.setTimeout(() => {
+      this.reloadTimer = null;
+      void this.reloadIfRegistryChanged();
+    }, 50);
+  }
+
+  private async reloadIfRegistryChanged(): Promise<void> {
+    const path = this.watchedPath;
+    if (!this.active || !path || this.pollInProgress) return;
+    this.pollInProgress = true;
+    try {
+      const adapter = this.app.vault.adapter;
+      if (!await adapter.exists(path)) return;
+      const content = await adapter.read(path);
+      if (!this.active || this.watchedPath !== path || content === this.watchedContent) return;
+      this.watchedContent = content;
+      await this.reloadAfterFileChange();
+    } catch {
+      // A later poll or vault event retries transient adapter failures.
+    } finally {
+      this.pollInProgress = false;
+    }
+  }
+
+  private async reloadAfterFileChange(): Promise<void> {
+    if (!this.active) return;
+    try {
+      await this.load();
+      if (this.active) await this.plugin.refreshAfterRegistryReload();
+    } catch (error) {
+      if (this.active) {
+        new Notice(`Variable Links: could not reload the registry: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 
   getVariable(name: string) {

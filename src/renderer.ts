@@ -70,6 +70,8 @@ export class Renderer {
       if ((n.nodeValue || '').includes('{{')) nodes.push(n as Text);
     }
 
+    const resolutions: Promise<void>[] = [];
+    const replacements: Array<{ textNode: Text; fragment: DocumentFragment }> = [];
     for (const textNode of nodes) {
       const text = textNode.nodeValue || '';
       let match: RegExpExecArray | null;
@@ -95,17 +97,23 @@ export class Renderer {
         );
         frag.appendChild(placeholder);
 
-        // resolve async and then update placeholder
-        void this.resolvePlaceholder(varName, placeholder);
+        // Resolve while the fragment is detached so table cells do not reflow
+        // from a placeholder to their final value during scrolling.
+        resolutions.push(this.resolvePlaceholder(varName, placeholder));
 
         lastIndex = TOKEN_REGEX.lastIndex;
       }
       if (!any) continue;
       const rest = text.slice(lastIndex);
       if (rest) frag.appendChild(document.createTextNode(rest));
-      textNode.parentNode?.replaceChild(frag, textNode);
+      replacements.push({ textNode, fragment: frag });
     }
 
+    await Promise.all(resolutions);
+    if (!this.enabled) return;
+    for (const { textNode, fragment } of replacements) {
+      textNode.parentNode?.replaceChild(fragment, textNode);
+    }
   }
 
   unload(): void {
