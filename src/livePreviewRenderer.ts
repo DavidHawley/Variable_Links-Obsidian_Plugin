@@ -155,20 +155,31 @@ export default class LivePreviewRenderer {
     const buildDecorations = (view: EditorView): DecorationSet => {
       const builder = new RangeSetBuilder<Decoration>();
       if (!this.active || !isLivePreview(view.state)) return builder.finish();
-      const text = view.state.doc.toString();
       const selection = view.state.selection.main;
-      let match: RegExpExecArray | null;
-      TOKEN_REGEX.lastIndex = 0;
-      while ((match = TOKEN_REGEX.exec(text)) !== null) {
-        const name = match[1];
-        if (!name) continue;
-        const from = match.index;
-        const to = TOKEN_REGEX.lastIndex;
-        if (selection.from <= to && selection.to >= from) continue;
-        if (!shouldRenderToken(view.state, from, to)) continue;
-        builder.add(from, to, Decoration.replace({
-          widget: new VariableWidget(name.trim(), this.revision, renderVariable),
-        }));
+      const visibleLineRanges: Array<{ from: number; to: number }> = [];
+      for (const range of view.visibleRanges) {
+        const from = view.state.doc.lineAt(range.from).from;
+        const to = view.state.doc.lineAt(range.to).to;
+        const previous = visibleLineRanges[visibleLineRanges.length - 1];
+        if (previous && from <= previous.to) previous.to = Math.max(previous.to, to);
+        else visibleLineRanges.push({ from, to });
+      }
+
+      for (const range of visibleLineRanges) {
+        const text = view.state.sliceDoc(range.from, range.to);
+        let match: RegExpExecArray | null;
+        TOKEN_REGEX.lastIndex = 0;
+        while ((match = TOKEN_REGEX.exec(text)) !== null) {
+          const name = match[1];
+          if (!name) continue;
+          const from = range.from + match.index;
+          const to = range.from + TOKEN_REGEX.lastIndex;
+          if (selection.from <= to && selection.to >= from) continue;
+          if (!shouldRenderToken(view.state, from, to)) continue;
+          builder.add(from, to, Decoration.replace({
+            widget: new VariableWidget(name.trim(), this.revision, renderVariable),
+          }));
+        }
       }
       return builder.finish();
     };

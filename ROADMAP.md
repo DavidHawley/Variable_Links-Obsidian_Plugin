@@ -164,3 +164,77 @@ This document records planned improvements to Variable Links. Plans may change a
 - Review every Settings section, Variable Link Properties section, Card editor section, and relevant menu before the 1.3 smoke test.
 - Add missing help controls where a new user could not reasonably predict the result of a setting.
 - Check that the help remains useful without obscuring the normal workflow or crowding narrow layouts.
+
+## 1.4.0
+
+> **Planning gate:** Review and iterate on the complete Card type, template, rule, and population behavior before implementation begins. Keep the first version declarative and understandable rather than adding a scripting language.
+
+### Rule-based Info Card templates
+
+- Add reusable Info Card templates that users can name, describe, preview, and apply to multiple Variable Links.
+- Let a template define the Card layout, blocks, tables, labels, appearance, and population rules without being tied to one variable.
+- Add user-defined Card types such as Person, Place, Project, Event, or any custom category.
+- Keep Card types separate from the existing Fixed value and Property value variable types.
+- Allow each Card type to have a default template while permitting multiple templates for the same type.
+- Allow a Variable Link to use an automatically selected Card type or a manual Card type override.
+- Preserve existing Info Cards exactly until the user explicitly applies a template or enables automatic application.
+
+#### Template manager
+
+- Add a template manager for creating a blank template, saving the current Card as a template, duplicating, renaming, reordering, previewing, and deleting templates.
+- Give every template a stable internal identifier so renaming it does not break Card types or rules.
+- Let users choose whether saving a Card as a template includes its layout, appearance, content blocks, population rules, or any combination of those parts.
+- Show which Card types and rules use a template before allowing it to be deleted.
+- Keep a deleted or modified template from damaging existing Cards by storing the applied Card configuration independently.
+- Support both the original simple Card layout and the block layout, while making block layouts the more capable template format.
+
+#### Card type and rule builder
+
+- Add an understandable rule builder with enabled/disabled rules, drag ordering, and explicit priority.
+- Allow rules to match variable type, variable name, source file or folder, linked property name, file link presence, note tags, and selected frontmatter properties or values.
+- Support Match all and Match any condition groups without allowing arbitrary executable code.
+- Let a matching rule assign a Card type, choose a template, and define how the template should be populated.
+- Stop after the first matching rule by default, with a deliberate option to continue to compatible lower-priority rules.
+- Make a manual Card type or template selection override automatic rules until the user chooses to resume automatic matching.
+- Include a rule tester that explains which rule matched a selected Variable Link and why higher-priority rules did not match.
+
+#### Automatic population
+
+- Evaluate Card rules when a new Variable Link is created and when the user explicitly asks to re-evaluate an existing Card.
+- Provide user-selectable behavior for automatic application, confirmation before applying, or suggestion only.
+- Let templates populate content from the variable name, display name, resolved value, variable type, source file, source path, property name, optional file link, tags, and selected note properties.
+- Allow template property blocks and tables to use explicit property names, include and exclude lists, or simple name-pattern rules.
+- Let population rules hide an optional block, leave it empty, or use fallback text when its source value is unavailable.
+- Treat applying a template as a snapshot: later template or rule changes must not silently rewrite existing customized Cards.
+- Add explicit Re-evaluate rules and Reapply template actions for users who want to update an existing Card.
+
+#### Applying and reapplying templates
+
+- Preview the resulting Card and summarize the proposed changes before replacing existing content or appearance.
+- Offer Fill missing items only as the safest default for an existing Card.
+- Also offer Replace layout, Replace appearance, and Replace the complete Card as deliberate choices.
+- Preserve an undoable copy of the prior Card configuration whenever a template is applied or reapplied.
+- Support applying a template to one Variable Link first, then add a separately confirmed bulk-application workflow after the single-Card behavior is proven safe.
+
+#### Card editor integration
+
+- Add Card type, Applied template, and Rule status controls to the Card properties panel.
+- Add Apply template, Re-evaluate rules, Resume automatic matching, and Save as template actions in appropriate Card editor menus.
+- Clearly distinguish a manually selected template from one chosen by an automatic rule.
+- Keep template and rule controls usable in narrow panels, on mobile, with keyboard navigation, and with screen readers.
+- Add the contextual `?` help controls established in 1.3 wherever template inheritance, matching, or replacement behavior needs explanation.
+
+#### Compatibility and testing
+
+- Test existing simple and block-layout Cards to confirm they remain unchanged until the user acts.
+- Test template creation, duplication, renaming, deletion warnings, stable identifiers, previews, and undo restoration.
+- Test rule priority, Match all and Match any groups, manual overrides, no-match behavior, disabled rules, and rule explanations.
+- Test missing properties, renamed files and variables, changed tags, fixed and property variables, deleted templates, and registry reloads.
+- Test single-Card and bulk application, each replacement mode, narrow layouts, mobile, themes, keyboard operation, and plugin unload cleanup.
+
+#### Suggested implementation order
+
+1. Define Card types and the reusable template format, then add the template manager and Save as template workflow.
+2. Add manual template application, previews, replacement modes, and undo before enabling automation.
+3. Add the declarative rule builder, priorities, manual overrides, and rule explanations.
+4. Add automatic population, explicit re-evaluation, and the optional bulk workflow after single-Card smoke testing succeeds.
