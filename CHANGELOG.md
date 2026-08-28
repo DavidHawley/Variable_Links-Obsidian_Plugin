@@ -2,11 +2,12 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
-## 1.2.5 - Unreleased
+## 1.2.5 - 2026-08-28
 
 ### Fixed
 
 - Reloaded Variable Links throughout the plugin whenever a visible, hidden, or externally edited registry file changes.
+- Kept long notes scrolling smoothly by avoiding unnecessary Variable Link rerenders and table layout shifts.
 
 ## 1.2.4 - 2026-08-24
 

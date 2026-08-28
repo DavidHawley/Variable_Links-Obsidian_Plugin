@@ -113,8 +113,8 @@ export default class VariableLinksPlugin extends Plugin {
 
       this.resolver = new Resolver(this.app, this.registry);
       this.renderer = new Renderer(this.app, this.registry, this.resolver, this.indexer);
-      this.registerMarkdownPostProcessor((element) => {
-        if (this.renderer) void this.renderer.processElement(element);
+      this.registerMarkdownPostProcessor(async (element) => {
+        if (this.renderer) await this.renderer.processElement(element);
       });
 
       this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver);
