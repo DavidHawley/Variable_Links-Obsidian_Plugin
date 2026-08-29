@@ -60,7 +60,7 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.3.0
 
-> **Target release date: September 4, 2026.** Use September 3 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-syntax, captured date/time, named-creation, and contextual-help work described below.
+> **Target release date: September 24, 2026.** Use September 23 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-syntax, captured date/time, named-creation, and contextual-help work described below.
 
 > **Planning gate:** Before implementation begins, review the complete 1.3 roadmap with the user and iterate on any unclear behavior, format rules, interface choices, scope, or implementation order. Begin development only after the user approves the revised plan.
 
