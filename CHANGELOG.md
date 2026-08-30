@@ -2,6 +2,17 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
+## 1.2.6 - 2026-08-30
+
+### Added
+
+- Updated a note's token-cache entries whenever the note is opened.
+- Added an Update token cache button to Settings for manually rescanning the vault.
+
+### Fixed
+
+- Updated Variable Link file pointers automatically when their referenced note is moved or renamed.
+
 ## 1.2.5 - 2026-08-28
 
 ### Fixed

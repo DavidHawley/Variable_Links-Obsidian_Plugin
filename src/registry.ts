@@ -13,6 +13,7 @@ import {
 } from './cardBlocks';
 import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
+import { filePathFromLink } from './linkSyntax';
 
 export type VariableType = 'property' | 'fixed';
 
@@ -272,12 +273,59 @@ export class Registry {
     return this.data.get(name) ?? null;
   }
 
+  async updateFileReferences(oldPath: string, newPath: string): Promise<number> {
+    if (!this.active) return 0;
+    const updates = new Map<string, { file?: string; link?: string }>();
+    for (const [name, definition] of this.data) {
+      const update: { file?: string; link?: string } = {};
+      if (getVariableType(definition) === 'property') {
+        const file = this.movedFileLink(definition.file, oldPath, newPath);
+        if (file !== null) update.file = file;
+      }
+      const link = this.movedFileLink(definition.link ?? '', oldPath, newPath);
+      if (link !== null) update.link = link;
+      if (Object.keys(update).length) updates.set(name, update);
+    }
+    if (!updates.size) return 0;
+
+    await this.mutateRegistryLinks((links) => {
+      for (const [name, update] of updates) {
+        const stored = links[name];
+        if (!this.isRecord(stored)) continue;
+        if (update.file !== undefined) stored.file = update.file;
+        if (update.link !== undefined) stored.link = update.link;
+      }
+    });
+    await this.load();
+    return updates.size;
+  }
+
   private createGuid(): string {
     if (typeof window.crypto?.randomUUID === 'function') return window.crypto.randomUUID();
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
       const random = Math.random() * 16 | 0;
       return (character === 'x' ? random : (random & 0x3 | 0x8)).toString(16);
     });
+  }
+
+  private movedFileLink(value: string, oldPath: string, newPath: string): string | null {
+    const currentPath = filePathFromLink(value);
+    const previousPath = filePathFromLink(oldPath);
+    const nextPath = filePathFromLink(newPath);
+    if (!currentPath || !previousPath || !nextPath
+      || currentPath.toLowerCase() !== previousPath.toLowerCase()) return null;
+
+    const trimmed = value.trim();
+    const wikiLink = trimmed.match(/^\[\[([^\]]+)\]\]$/);
+    if (wikiLink?.[1]) {
+      const inner = wikiLink[1];
+      const aliasIndex = inner.indexOf('|');
+      const linkedPath = (aliasIndex === -1 ? inner : inner.slice(0, aliasIndex)).trim();
+      const alias = aliasIndex === -1 ? '' : inner.slice(aliasIndex);
+      const extension = /\.md$/i.test(linkedPath) ? '.md' : '';
+      return `[[${nextPath}${extension}${alias}]]`;
+    }
+    return /\.md$/i.test(trimmed) ? `${nextPath}.md` : nextPath;
   }
 
   private async mutateRegistryLinks(mutator: (links: Record<string, unknown>) => void): Promise<void> {
