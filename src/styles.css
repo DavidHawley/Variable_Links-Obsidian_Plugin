@@ -1375,6 +1375,21 @@
   width: min(100%, 680px);
 }
 
+.variable-links-autolink-setting-item.setting-item {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.variable-links-autolink-setting-item.setting-item > .setting-item-info,
+.variable-links-autolink-setting-item.setting-item > .setting-item-control {
+  width: 100%;
+}
+
+.variable-links-autolink-setting-item.setting-item > .setting-item-control {
+  justify-content: flex-start;
+  margin-top: 8px;
+}
+
 .variable-links-autolink-profile {
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
@@ -1383,7 +1398,18 @@
 
 .variable-links-autolink-profile > summary {
   cursor: pointer;
-  font-weight: var(--font-semibold);
+  text-align: left;
+}
+
+.variable-links-autolink-profile-title {
+  color: var(--h4-color);
+  font-family: var(--h4-font);
+  font-size: var(--h4-size);
+  font-style: var(--h4-style);
+  font-variant: var(--h4-variant);
+  font-weight: var(--h4-weight);
+  letter-spacing: var(--h4-letter-spacing);
+  line-height: var(--h4-line-height);
 }
 
 .variable-links-autolink-profile-fields {
@@ -1399,14 +1425,27 @@
   gap: 8px;
 }
 
+.variable-links-autolink-profile-field > span:first-child {
+  justify-self: end;
+  text-align: right;
+}
+
 .variable-links-autolink-profile-field[hidden],
 .variable-links-autolink-profile-actions > button[hidden] {
   display: none;
 }
 
 .variable-links-autolink-profile-field.variable-links-autolink-profile-checkbox {
-  grid-template-columns: auto minmax(0, 1fr);
-  justify-content: start;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(160px, 1fr);
+}
+
+.variable-links-autolink-profile-field.variable-links-autolink-profile-checkbox > input {
+  justify-self: end;
+}
+
+.variable-links-autolink-profile-field.variable-links-autolink-profile-checkbox > span {
+  justify-self: start;
+  text-align: left;
 }
 
 .variable-links-autolink-profile-field > input:not([type="checkbox"]),
@@ -1438,5 +1477,14 @@
 @media (max-width: 520px) {
   .variable-links-autolink-profile-field {
     grid-template-columns: 1fr;
+  }
+
+  .variable-links-autolink-profile-field > span:first-child {
+    justify-self: start;
+    text-align: left;
+  }
+
+  .variable-links-autolink-profile-field.variable-links-autolink-profile-checkbox {
+    grid-template-columns: auto minmax(0, 1fr);
   }
 }

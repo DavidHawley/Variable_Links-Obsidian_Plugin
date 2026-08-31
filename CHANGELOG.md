@@ -16,6 +16,11 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added a read-only Autolink profile preview showing matched notes, note-level overrides, missing properties, misspellings, and naming collisions before any registry changes are allowed.
 - Added per-profile controls to disable note overrides or replace the four standard override property names, with validation, reset controls, and preview explanations.
 - Added a separately confirmed Autolink action that creates only safe, non-conflicting property-backed Variable Links and records their profile ownership for later synchronization.
+- Added a confirmation prompt before deleting an Autolink profile, including notice that its generated Variable Links remain in the registry.
+
+### Changed
+
+- Stacked the Autolink profile description above its full-width editor, aligned the profile fields around a clear center seam, and gave collapsible profile titles H4 styling.
 
 ## 1.2.6 - 2026-08-30
 

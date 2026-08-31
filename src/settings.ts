@@ -146,6 +146,44 @@ class TokenSyntaxChangeModal extends Modal {
   }
 }
 
+class DeleteAutolinkProfileModal extends Modal {
+  constructor(
+    private readonly plugin: VariableLinksPlugin,
+    private readonly profileName: string,
+    private readonly managedVariableCount: number,
+    private readonly onConfirm: () => void,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    this.contentEl.createEl('h3', { text: 'Delete autolink profile?' });
+    this.contentEl.createEl('p', { text: `Delete “${this.profileName}”?` });
+    this.contentEl.createEl('p', {
+      text: this.managedVariableCount
+        ? `${this.managedVariableCount} Variable Link${this.managedVariableCount === 1 ? '' : 's'} created by this profile will remain in the registry and continue to work.`
+        : 'Deleting the profile does not remove any Variable Links.',
+    });
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
+      .addEventListener('click', () => this.close());
+    actions.createEl('button', {
+      text: 'Delete profile',
+      cls: 'mod-warning',
+      attr: { type: 'button' },
+    }).addEventListener('click', () => {
+      this.close();
+      this.onConfirm();
+    });
+  }
+
+  onClose(): void {
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+  }
+}
+
 export function normalizeInfoCardEditorDimension(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
   return Math.round(value);
@@ -212,8 +250,11 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         items: [
           {
             name: 'Profiles',
-            desc: 'Configure reusable file or folder scopes. Scanning and generated Variable Links are added in the next checkpoint.',
-            render: (setting) => this.renderAutolinkProfiles(setting.controlEl),
+            desc: 'Configure reusable file or folder scopes, preview their matches, and safely add non-conflicting Variable Links.',
+            render: (setting) => {
+              setting.settingEl.addClass('variable-links-autolink-setting-item');
+              return this.renderAutolinkProfiles(setting.controlEl);
+            },
           },
         ],
       },
@@ -500,7 +541,8 @@ export class VariableLinksSettingTab extends PluginSettingTab {
   ): void {
     const details = host.createEl('details', { cls: 'variable-links-autolink-profile' });
     details.open = true;
-    details.createEl('summary', { text: profile.name });
+    const summary = details.createEl('summary');
+    summary.createSpan({ text: profile.name, cls: 'variable-links-autolink-profile-title' });
     const body = details.createDiv({ cls: 'variable-links-autolink-profile-fields' });
     const field = (labelText: string): HTMLLabelElement => {
       const label = body.createEl('label', { cls: 'variable-links-autolink-profile-field' });
@@ -676,13 +718,24 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       });
     });
     listen(remove, 'click', () => {
-      remove.disabled = true;
-      void this.variableLinksPlugin.registry?.saveAutolinkProfiles(
-        profiles.filter((candidate) => candidate.id !== profile.id),
-      ).then(() => rerender()).catch((error: unknown) => {
-        remove.disabled = false;
-        new Notice(`Variable Links: could not delete the profile: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      const registry = this.variableLinksPlugin.registry;
+      if (!registry) return;
+      const managedVariableCount = [...registry.data.values()]
+        .filter((definition) => definition.managed?.profileId === profile.id).length;
+      new DeleteAutolinkProfileModal(
+        this.variableLinksPlugin,
+        profile.name,
+        managedVariableCount,
+        () => {
+          remove.disabled = true;
+          void registry.saveAutolinkProfiles(
+            profiles.filter((candidate) => candidate.id !== profile.id),
+          ).then(() => rerender()).catch((error: unknown) => {
+            remove.disabled = false;
+            new Notice(`Variable Links: could not delete the profile: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        },
+      ).open();
     });
     updateState();
   }
