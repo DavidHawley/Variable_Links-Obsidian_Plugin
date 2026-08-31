@@ -1368,3 +1368,50 @@
 .variable-links-field-suggestion.is-selected {
   background: var(--background-modifier-hover);
 }
+.variable-links-autolink-profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(100%, 680px);
+}
+
+.variable-links-autolink-profile {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.variable-links-autolink-profile > summary {
+  cursor: pointer;
+  font-weight: var(--font-semibold);
+}
+
+.variable-links-autolink-profile-fields {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.variable-links-autolink-profile-field {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(160px, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.variable-links-autolink-profile-field > input:not([type="checkbox"]),
+.variable-links-autolink-profile-field > select,
+.variable-links-autolink-profile-field > textarea {
+  width: 100%;
+}
+
+.variable-links-autolink-profile-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 520px) {
+  .variable-links-autolink-profile-field {
+    grid-template-columns: 1fr;
+  }
+}

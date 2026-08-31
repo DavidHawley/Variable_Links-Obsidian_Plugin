@@ -5,6 +5,10 @@ import {
 } from './appearance';
 import type { CardConfig } from './card';
 import {
+  normalizeAutolinkProfiles,
+  type AutolinkProfile,
+} from './autolink';
+import {
   deriveLegacyCardFields,
   normalizeCardBlocks,
   normalizeCardStyle,
@@ -95,6 +99,7 @@ export class Registry {
   plugin: VariableLinksPlugin;
   settings: VariableLinksSettings;
   data: Map<string, VariableDefinition> = new Map();
+  autolinkProfiles: AutolinkProfile[] = [];
   registryFile: TFile | null = null;
   registryPath: string = '';
   private modifyEvent: EventRef | null = null;
@@ -190,6 +195,8 @@ export class Registry {
       this.data.clear();
       return;
     }
+
+    this.autolinkProfiles = normalizeAutolinkProfiles(parsed['autolink-profiles']);
 
     this.data.clear();
     const generatedGuids = new Map<string, string>();
@@ -381,7 +388,9 @@ export class Registry {
     return /\.md$/i.test(trimmed) ? `${nextPath}.md` : nextPath;
   }
 
-  private async mutateRegistryLinks(mutator: (links: Record<string, unknown>) => void): Promise<void> {
+  private async mutateRegistryDocument(
+    mutator: (registry: Record<string, unknown>) => void,
+  ): Promise<void> {
     const file = this.registryFile;
     const adapter = this.app.vault.adapter;
     const path = this.registryPath;
@@ -389,9 +398,7 @@ export class Registry {
     if ((lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx'))
       && file) {
       await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
-        const links = this.isRecord(frontmatter['variable-links']) ? frontmatter['variable-links'] : {};
-        frontmatter['variable-links'] = links;
-        mutator(links);
+        mutator(frontmatter);
       });
       return;
     }
@@ -399,9 +406,7 @@ export class Registry {
     const content = file ? await this.app.vault.read(file) : await adapter.read(path);
     const registry = this.parseRegistryFromContent(content, path);
     if (!registry) throw new Error('The registry must contain valid JSON or YAML.');
-    const links = this.isRecord(registry['variable-links']) ? registry['variable-links'] : {};
-    registry['variable-links'] = links;
-    mutator(links);
+    mutator(registry);
     let updatedContent: string;
     if (lowerPath.endsWith('.json')) updatedContent = JSON.stringify(registry, null, 2) + '\n';
     else {
@@ -416,6 +421,24 @@ export class Registry {
     }
     if (file) await this.app.vault.modify(file, updatedContent);
     else await adapter.write(path, updatedContent);
+  }
+
+  private async mutateRegistryLinks(mutator: (links: Record<string, unknown>) => void): Promise<void> {
+    await this.mutateRegistryDocument((registry) => {
+      const links = this.isRecord(registry['variable-links']) ? registry['variable-links'] : {};
+      registry['variable-links'] = links;
+      mutator(links);
+    });
+  }
+
+  async saveAutolinkProfiles(profiles: readonly AutolinkProfile[]): Promise<void> {
+    if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
+    const normalized = normalizeAutolinkProfiles(profiles);
+    await this.mutateRegistryDocument((registry) => {
+      registry['autolink-profiles'] = normalized;
+      if (!this.isRecord(registry['variable-links'])) registry['variable-links'] = {};
+    });
+    await this.load();
   }
 
   /** Persist a mapping. A rename keeps the GUID and updates verified token references. */

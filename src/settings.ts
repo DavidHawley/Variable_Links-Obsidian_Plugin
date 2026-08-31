@@ -5,6 +5,12 @@ import {
   normalizeAppearanceOpacity,
   type VariableDecoration,
 } from './appearance';
+import {
+  createAutolinkProfile,
+  type AutolinkCardPreset,
+  type AutolinkProfile,
+  type AutolinkScopeType,
+} from './autolink';
 import VariableLinksPlugin from './main';
 import type { TokenSyntaxMigrationPlan } from './tokenCache';
 import {
@@ -197,6 +203,17 @@ export class VariableLinksSettingTab extends PluginSettingTab {
           key: 'registryFilePath',
           placeholder: 'Select a registry file',
         },
+      },
+      {
+        type: 'group',
+        heading: 'Autolink profiles',
+        items: [
+          {
+            name: 'Profiles',
+            desc: 'Configure reusable file or folder scopes. Scanning and generated Variable Links are added in the next checkpoint.',
+            render: (setting) => this.renderAutolinkProfiles(setting.controlEl),
+          },
+        ],
       },
       {
         type: 'group',
@@ -421,6 +438,166 @@ export class VariableLinksSettingTab extends PluginSettingTab {
 
   private isAppearanceSettingKey(key: SettingKey): boolean {
     return key.startsWith('defaultAppearance') || key === 'savedAppearanceColors';
+  }
+
+  private renderAutolinkProfiles(controlEl: HTMLElement): () => void {
+    const host = controlEl.createDiv({ cls: 'variable-links-autolink-profiles' });
+    let active = true;
+    let cleanups: Array<() => void> = [];
+    const listen = <K extends keyof HTMLElementEventMap>(
+      element: HTMLElement,
+      type: K,
+      listener: (event: HTMLElementEventMap[K]) => void,
+    ): void => {
+      element.addEventListener(type, listener as EventListener);
+      cleanups.push(() => element.removeEventListener(type, listener as EventListener));
+    };
+    const render = (): void => {
+      for (const cleanup of cleanups) cleanup();
+      cleanups = [];
+      host.empty();
+      const registry = this.variableLinksPlugin.registry;
+      if (!registry) {
+        host.createEl('p', { text: 'The registry is not available.', cls: 'mod-warning' });
+        return;
+      }
+      const profiles = registry.autolinkProfiles;
+      for (const profile of profiles) this.renderAutolinkProfile(host, profile, profiles, render, listen);
+      if (!profiles.length) {
+        host.createEl('p', { text: 'No autolink profiles configured.', cls: 'mod-muted' });
+      }
+      const add = host.createEl('button', { text: 'Add profile', attr: { type: 'button' } });
+      listen(add, 'click', () => {
+        add.disabled = true;
+        void registry.saveAutolinkProfiles([...profiles, createAutolinkProfile()])
+          .then(() => { if (active) render(); })
+          .catch((error: unknown) => {
+            add.disabled = false;
+            new Notice(`Variable Links: could not add the profile: ${error instanceof Error ? error.message : String(error)}`);
+          });
+      });
+    };
+    render();
+    return () => {
+      active = false;
+      for (const cleanup of cleanups) cleanup();
+      cleanups = [];
+    };
+  }
+
+  private renderAutolinkProfile(
+    host: HTMLElement,
+    profile: AutolinkProfile,
+    profiles: readonly AutolinkProfile[],
+    rerender: () => void,
+    listen: <K extends keyof HTMLElementEventMap>(
+      element: HTMLElement,
+      type: K,
+      listener: (event: HTMLElementEventMap[K]) => void,
+    ) => void,
+  ): void {
+    const details = host.createEl('details', { cls: 'variable-links-autolink-profile' });
+    details.open = true;
+    details.createEl('summary', { text: profile.name });
+    const body = details.createDiv({ cls: 'variable-links-autolink-profile-fields' });
+    const field = (labelText: string): HTMLLabelElement => {
+      const label = body.createEl('label', { cls: 'variable-links-autolink-profile-field' });
+      label.createSpan({ text: labelText });
+      return label;
+    };
+    const enabledLabel = field('Enabled');
+    const enabled = enabledLabel.createEl('input', { type: 'checkbox' });
+    enabled.checked = profile.enabled;
+    const name = field('Profile name').createEl('input', { type: 'text' });
+    name.value = profile.name;
+    const scope = field('Scope').createEl('select');
+    scope.createEl('option', { text: 'Folder', value: 'folder' });
+    scope.createEl('option', { text: 'Exact file', value: 'file' });
+    scope.value = profile.scopeType;
+    const path = field('Vault path').createEl('input', { type: 'text' });
+    path.value = profile.path;
+    path.placeholder = profile.scopeType === 'file' ? 'Folder/Note.md' : 'Folder';
+    const subfoldersLabel = field('Include subfolders');
+    const subfolders = subfoldersLabel.createEl('input', { type: 'checkbox' });
+    subfolders.checked = profile.includeSubfolders;
+    const valueProperty = field('Value property').createEl('input', { type: 'text' });
+    valueProperty.value = profile.valueProperty;
+    valueProperty.placeholder = 'Status';
+    const namePattern = field('Name pattern').createEl('input', { type: 'text' });
+    namePattern.value = profile.namePattern;
+    namePattern.placeholder = 'Blank uses the note filename';
+    const cardPreset = field('Card preset').createEl('select');
+    const presetOptions: Array<{ value: AutolinkCardPreset; label: string }> = [
+      { value: 'none', label: 'None' },
+      { value: 'classic', label: 'Classic stack' },
+      { value: 'compact', label: 'Compact grid' },
+      { value: 'profile', label: 'Profile card' },
+    ];
+    for (const option of presetOptions) {
+      cardPreset.createEl('option', { value: option.value, text: option.label });
+    }
+    cardPreset.value = profile.cardPreset;
+    const cardPropertiesLabel = field('Card properties');
+    const cardProperties = cardPropertiesLabel.createEl('textarea');
+    cardProperties.rows = 3;
+    cardProperties.value = profile.cardProperties.join('\n');
+    cardProperties.placeholder = 'One note property per line';
+    const status = body.createDiv({ cls: 'variable-links-hint-text' });
+    const actions = body.createDiv({ cls: 'variable-links-autolink-profile-actions' });
+    const save = actions.createEl('button', { text: 'Save profile', attr: { type: 'button' } });
+    const remove = actions.createEl('button', {
+      text: 'Delete',
+      cls: 'mod-warning',
+      attr: { type: 'button' },
+    });
+    const updateState = (): void => {
+      const folder = scope.value === 'folder';
+      subfoldersLabel.hidden = !folder;
+      path.placeholder = folder ? 'Folder' : 'Folder/Note.md';
+      const error = enabled.checked && !path.value.trim()
+        ? 'An enabled profile requires a vault path.'
+        : enabled.checked && !valueProperty.value.trim()
+          ? 'An enabled profile requires a value property.'
+          : '';
+      status.textContent = error || 'Profiles are saved now but will not scan notes until the synchronization checkpoint.';
+      status.classList.toggle('is-error', Boolean(error));
+      save.disabled = Boolean(error);
+    };
+    listen(scope, 'change', updateState);
+    listen(enabled, 'change', updateState);
+    listen(path, 'input', updateState);
+    listen(valueProperty, 'input', updateState);
+    listen(save, 'click', () => {
+      const updated: AutolinkProfile = {
+        id: profile.id,
+        name: name.value.trim() || 'Unnamed profile',
+        enabled: enabled.checked,
+        scopeType: scope.value as AutolinkScopeType,
+        path: path.value,
+        includeSubfolders: scope.value === 'folder' && subfolders.checked,
+        valueProperty: valueProperty.value,
+        namePattern: namePattern.value,
+        cardPreset: cardPreset.value as AutolinkCardPreset,
+        cardProperties: cardProperties.value.split(/\r?\n|,/),
+      };
+      save.disabled = true;
+      void this.variableLinksPlugin.registry?.saveAutolinkProfiles(
+        profiles.map((candidate) => candidate.id === profile.id ? updated : candidate),
+      ).then(() => rerender()).catch((error: unknown) => {
+        save.disabled = false;
+        new Notice(`Variable Links: could not save the profile: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    });
+    listen(remove, 'click', () => {
+      remove.disabled = true;
+      void this.variableLinksPlugin.registry?.saveAutolinkProfiles(
+        profiles.filter((candidate) => candidate.id !== profile.id),
+      ).then(() => rerender()).catch((error: unknown) => {
+        remove.disabled = false;
+        new Notice(`Variable Links: could not delete the profile: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    });
+    updateState();
   }
 
   private renderTokenSyntaxEditor(controlEl: HTMLElement): () => void {
