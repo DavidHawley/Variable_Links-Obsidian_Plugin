@@ -6,7 +6,9 @@ import {
 import type { CardConfig } from './card';
 import {
   normalizeAutolinkProfiles,
+  normalizeManagedAutolinkEntry,
   type AutolinkProfile,
+  type ManagedAutolinkEntry,
 } from './autolink';
 import {
   deriveLegacyCardFields,
@@ -88,6 +90,12 @@ export interface VariableDefinition {
   customAppearance?: VariableAppearance;
   card?: CardConfig;
   format?: string;
+  managed?: ManagedAutolinkEntry;
+}
+
+export interface ManagedAutolinkAddition {
+  name: string;
+  definition: VariableDefinition;
 }
 
 export function getVariableType(definition: VariableDefinition): VariableType {
@@ -223,6 +231,7 @@ export class Registry {
           customAppearance: normalizeVariableAppearance(raw.customAppearance),
           card: this.toCardConfig(raw.card),
           format: typeof raw.format === 'string' ? raw.format : undefined,
+          managed: normalizeManagedAutolinkEntry(raw.managed),
         };
         this.data.set(String(key), def);
       }
@@ -335,15 +344,19 @@ export class Registry {
 
   async updateFileReferences(oldPath: string, newPath: string): Promise<number> {
     if (!this.active) return 0;
-    const updates = new Map<string, { file?: string; link?: string }>();
+    const updates = new Map<string, { file?: string; link?: string; managedSourcePath?: string }>();
     for (const [name, definition] of this.data) {
-      const update: { file?: string; link?: string } = {};
+      const update: { file?: string; link?: string; managedSourcePath?: string } = {};
       if (getVariableType(definition) === 'property') {
         const file = this.movedFileLink(definition.file, oldPath, newPath);
         if (file !== null) update.file = file;
       }
       const link = this.movedFileLink(definition.link ?? '', oldPath, newPath);
       if (link !== null) update.link = link;
+      if (definition.managed?.managedFields.includes('file')
+        && this.sameFilePath(definition.managed.sourcePath, oldPath)) {
+        update.managedSourcePath = newPath.replace(/\\/g, '/');
+      }
       if (Object.keys(update).length) updates.set(name, update);
     }
     if (!updates.size) return 0;
@@ -354,6 +367,9 @@ export class Registry {
         if (!this.isRecord(stored)) continue;
         if (update.file !== undefined) stored.file = update.file;
         if (update.link !== undefined) stored.link = update.link;
+        if (update.managedSourcePath !== undefined && this.isRecord(stored.managed)) {
+          stored.managed.sourcePath = update.managedSourcePath;
+        }
       }
     });
     await this.load();
@@ -423,6 +439,10 @@ export class Registry {
     else await adapter.write(path, updatedContent);
   }
 
+  private sameFilePath(left: string, right: string): boolean {
+    return filePathFromLink(left).toLocaleLowerCase() === filePathFromLink(right).toLocaleLowerCase();
+  }
+
   private async mutateRegistryLinks(mutator: (links: Record<string, unknown>) => void): Promise<void> {
     await this.mutateRegistryDocument((registry) => {
       const links = this.isRecord(registry['variable-links']) ? registry['variable-links'] : {};
@@ -439,6 +459,65 @@ export class Registry {
       if (!this.isRecord(registry['variable-links'])) registry['variable-links'] = {};
     });
     await this.load();
+  }
+
+  async addManagedAutolinkVariables(
+    additions: readonly ManagedAutolinkAddition[],
+  ): Promise<number> {
+    if (!additions.length) return 0;
+    if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
+    const tokenSyntax = getTokenSyntax(this.plugin.settings);
+    const normalized = additions.map(({ name, definition }) => {
+      const variableName = name.trim();
+      const managed = normalizeManagedAutolinkEntry(definition.managed);
+      if (!variableName) throw new Error('Every generated Variable Link requires a name.');
+      if (variableName.includes(tokenSyntax.prefix) || variableName.includes(tokenSyntax.suffix)) {
+        throw new Error(`“${variableName}” contains the active token prefix or suffix.`);
+      }
+      if (getVariableType(definition) !== 'property') {
+        throw new Error(`“${variableName}” is not a property-backed Variable Link.`);
+      }
+      if (!definition.file.trim() || !definition.property.trim()) {
+        throw new Error(`“${variableName}” requires a source note and property.`);
+      }
+      if (!managed) throw new Error(`“${variableName}” is missing its Autolink ownership record.`);
+      return {
+        name: variableName,
+        definition: {
+          guid: this.createGuid(),
+          type: 'property' as const,
+          file: definition.file.trim(),
+          property: definition.property.trim(),
+          managed,
+        },
+      };
+    });
+    const names = new Set<string>();
+    for (const { name } of normalized) {
+      if (names.has(name)) throw new Error(`The generated name “${name}” occurs more than once.`);
+      names.add(name);
+    }
+
+    await this.mutateRegistryLinks((links) => {
+      for (const { name } of normalized) {
+        if (Object.prototype.hasOwnProperty.call(links, name)) {
+          throw new Error(`“${name}” now belongs to an existing Variable Link. No additions were saved.`);
+        }
+      }
+      for (const { name, definition } of normalized) links[name] = definition;
+    });
+    try {
+      await this.load();
+    } catch {
+      new Notice('Autolink additions were saved, but the registry view could not be refreshed. Reload Obsidian.');
+      return normalized.length;
+    }
+    try {
+      await this.plugin.refreshAfterRegistryReload();
+    } catch {
+      new Notice('Autolink additions were saved, but some derived views could not be refreshed. Reload Obsidian.');
+    }
+    return normalized.length;
   }
 
   /** Persist a mapping. A rename keeps the GUID and updates verified token references. */
@@ -492,6 +571,9 @@ export class Registry {
       normalized.customAppearance = normalizeVariableAppearance(definition.customAppearance);
     }
     if (Object.prototype.hasOwnProperty.call(definition, 'favorite')) normalized.favorite = definition.favorite === true;
+    if (Object.prototype.hasOwnProperty.call(definition, 'managed')) {
+      normalized.managed = normalizeManagedAutolinkEntry(definition.managed);
+    }
     const rename = !!oldName && oldName !== variableName;
     const tokenCache = this.plugin.tokenCache;
     if (rename && !tokenCache) {
@@ -522,6 +604,9 @@ export class Registry {
         }
         if (Object.prototype.hasOwnProperty.call(definition, 'customAppearance')
           && !normalized.customAppearance) delete updated.customAppearance;
+        if (Object.prototype.hasOwnProperty.call(definition, 'managed') && !normalized.managed) {
+          delete updated.managed;
+        }
         links[variableName] = updated;
         if (rename) delete links[oldName];
       });

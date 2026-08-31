@@ -615,7 +615,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         : enabled.checked && !valueProperty.value.trim()
           ? 'An enabled profile requires a value property.'
           : '');
-      status.textContent = error || 'Profiles are saved now but will not scan notes until the synchronization checkpoint.';
+      status.textContent = error || 'Preview matches first, then separately confirm any safe additions.';
       status.classList.toggle('is-error', Boolean(error));
       save.disabled = Boolean(error);
       preview.disabled = Boolean(error);

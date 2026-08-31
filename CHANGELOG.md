@@ -15,6 +15,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added persistent Autolink profile definitions and a Settings editor for exact-file and folder scopes, ready for the upcoming preview and synchronization workflow.
 - Added a read-only Autolink profile preview showing matched notes, note-level overrides, missing properties, misspellings, and naming collisions before any registry changes are allowed.
 - Added per-profile controls to disable note overrides or replace the four standard override property names, with validation, reset controls, and preview explanations.
+- Added a separately confirmed Autolink action that creates only safe, non-conflicting property-backed Variable Links and records their profile ownership for later synchronization.
 
 ## 1.2.6 - 2026-08-30
 

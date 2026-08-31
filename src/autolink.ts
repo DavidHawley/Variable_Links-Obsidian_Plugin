@@ -37,6 +37,18 @@ export interface ManagedAutolinkEntry {
   managedFields: string[];
 }
 
+export function normalizeManagedAutolinkEntry(value: unknown): ManagedAutolinkEntry | undefined {
+  if (!isRecord(value)) return undefined;
+  const profileId = typeof value.profileId === 'string' ? value.profileId.trim() : '';
+  const sourcePath = normalizeVaultPath(value.sourcePath);
+  if (!profileId || !sourcePath) return undefined;
+  return {
+    profileId,
+    sourcePath,
+    managedFields: normalizeStringList(value.managedFields),
+  };
+}
+
 export function createAutolinkProfile(id = createAutolinkId()): AutolinkProfile {
   return {
     id,
