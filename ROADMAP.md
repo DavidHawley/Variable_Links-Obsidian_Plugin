@@ -99,6 +99,30 @@ This document records planned improvements to Variable Links. Plans may change a
 - Test multiple active and legacy formats, migration cancellation, partial-write recovery, conflicting Markdown syntax, repeated tokens, and tokens at line boundaries.
 - Test unquoted and quoted creation sources, escaped characters, explicit file-property links, incomplete expressions, and malformed type or source separators.
 
+### Multi-term and value suggestion search
+
+- Allow spaces in an editor suggestion query and treat the query as case-insensitive, space-separated search terms.
+- Require every ordinary search term to match at least one searchable field, while allowing different terms to match the variable name, display name, source file path, or property name.
+- Let a query such as `{{john stat` find a Status variable sourced from `Characters/John Smith.md`.
+- Keep existing variables ahead of property-creation suggestions, and keep properties without an existing mapping ahead of already-mapped properties.
+- Rank exact matches first, followed by starts-with, whole-word, and substring matches.
+- Preserve the active custom token prefix and suffix when triggering suggestions and inserting the selected result.
+
+#### Resolved-value search
+
+- Treat one leading `*` in the suggestion query as an explicit resolved-value search operator.
+- Search only existing variables in value mode; do not include unmapped-property creation suggestions.
+- Require every term after `*` to match the current resolved value, with support for text, numbers, true/false values, and readable array values.
+- Show the matched value beneath each result and truncate very long previews without changing the stored value.
+- Resolve values only while value mode is active, cache them briefly while the user continues typing, and discard stale asynchronous results when the query changes.
+- Treat the leading `*` only as a suggestion operator. Never include it in the Variable Link token inserted after a result is selected.
+
+#### Suggestion-search testing
+
+- Test terms that match one field, terms split across multiple fields, case differences, repeated spaces, no matches, and ranking ties.
+- Test fixed and property values, arrays, numbers, booleans, empty or missing values, long previews, changed property values, and rapid query changes.
+- Test normal and value searches with the default format, custom formats, previous recognized formats, and token suffixes already present after the caret.
+
 ### File and folder autolinking
 
 - Add reusable Autolink profiles that can target one file or a folder, with an option to include subfolders.
@@ -222,11 +246,12 @@ This document records planned improvements to Variable Links. Plans may change a
 ### Suggested implementation order
 
 1. Centralize token parsing and formatting, then add the `Name=TYPE:source` grammar, quoted sources, custom delimiters, and migration support.
-2. Define the Autolink profile, managed-entry, note-property, precedence, and preview data models without changing notes or the registry automatically.
-3. Add exact-file and folder scanning, preview, conflict handling, confirmed synchronization, and file-move behavior.
-4. Add built-in Card preset selection and ordered Card-property population while keeping the full custom template system in 1.4.
-5. Add captured date and time shortcuts and the shared formatter on top of the centralized token language.
-6. Add contextual help, complete protected-context and compatibility testing, install the build in the test vault, and perform the final smoke test.
+2. Add multi-term suggestion matching, ranking, and explicit resolved-value search.
+3. Define the Autolink profile, managed-entry, note-property, precedence, and preview data models without changing notes or the registry automatically.
+4. Add exact-file and folder scanning, preview, conflict handling, confirmed synchronization, and file-move behavior.
+5. Add built-in Card preset selection and ordered Card-property population while keeping the full custom template system in 1.4.
+6. Add captured date and time shortcuts and the shared formatter on top of the centralized token language.
+7. Add contextual help, complete protected-context and compatibility testing, install the build in the test vault, and perform the final smoke test.
 
 ## 1.4.0
 
