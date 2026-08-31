@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, SettingDefinitionItem } from 'obsidian';
+import { App, Modal, Notice, PluginSettingTab, SettingDefinitionItem } from 'obsidian';
 import {
   DEFAULT_APPEARANCE_COLORS,
   normalizeAppearanceColor,
@@ -6,6 +6,7 @@ import {
   type VariableDecoration,
 } from './appearance';
 import VariableLinksPlugin from './main';
+import type { TokenSyntaxMigrationPlan } from './tokenCache';
 import {
   DEFAULT_TOKEN_SYNTAX,
   MAX_TOKEN_DELIMITER_LENGTH,
@@ -41,6 +42,7 @@ export interface VariableLinksSettings {
 }
 
 type SettingKey = keyof VariableLinksSettings;
+type TokenSyntaxChangeAction = 'cancel' | 'new-only' | 'migrate';
 
 export const DEFAULT_SETTINGS: VariableLinksSettings = {
   registryFilePath: '',
@@ -65,6 +67,72 @@ export const DEFAULT_SETTINGS: VariableLinksSettings = {
   infoCardEditorHeight: null,
   infoCardEditorCollapsedItems: {},
 };
+
+class TokenSyntaxChangeModal extends Modal {
+  private settled = false;
+
+  constructor(
+    private readonly plugin: VariableLinksPlugin,
+    private readonly current: TokenSyntax,
+    private readonly proposed: TokenSyntax,
+    private readonly plan: TokenSyntaxMigrationPlan,
+    private readonly settle: (action: TokenSyntaxChangeAction) => void,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    this.contentEl.createEl('h3', { text: 'Change variable link token format?' });
+    const comparison = this.contentEl.createDiv({ cls: 'variable-links-token-syntax-comparison' });
+    this.addFormatRow(comparison, 'Current format', this.current);
+    this.addFormatRow(comparison, 'Proposed format', this.proposed);
+    this.addFormatRow(comparison, 'Example', this.proposed, 'Variable');
+    this.contentEl.createEl('p', {
+      text: this.plan.tokenCount === 0
+        ? 'No existing Variable Link tokens using the current format were found.'
+        : `Found ${this.plan.tokenCount} existing token${this.plan.tokenCount === 1 ? '' : 's'} in ${this.plan.fileCount} note${this.plan.fileCount === 1 ? '' : 's'}.`,
+    });
+    this.contentEl.createEl('p', {
+      text: 'Using the format for new tokens only keeps the current format recognized. Migrating updates verified tokens in notes and stops recognizing the old format.',
+    });
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Cancel' })
+      .addEventListener('click', () => this.choose('cancel'));
+    actions.createEl('button', { text: 'Use for new tokens only' })
+      .addEventListener('click', () => this.choose('new-only'));
+    actions.createEl('button', { text: 'Migrate existing tokens', cls: 'mod-cta' })
+      .addEventListener('click', () => this.choose('migrate'));
+  }
+
+  onClose(): void {
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+    if (!this.settled) this.finish('cancel');
+  }
+
+  private addFormatRow(
+    parent: HTMLElement,
+    label: string,
+    syntax: TokenSyntax,
+    name = 'Name',
+  ): void {
+    const row = parent.createDiv({ cls: 'variable-links-token-syntax-comparison-row' });
+    row.createSpan({ text: `${label}:` });
+    row.createEl('code', { text: formatVariableToken(name, syntax) });
+  }
+
+  private choose(action: TokenSyntaxChangeAction): void {
+    this.finish(action);
+    this.close();
+  }
+
+  private finish(action: TokenSyntaxChangeAction): void {
+    if (this.settled) return;
+    this.settled = true;
+    this.settle(action);
+  }
+}
 
 export function normalizeInfoCardEditorDimension(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
@@ -132,7 +200,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         items: [
           {
             name: 'Token prefix and suffix',
-            desc: 'Choose the literal characters around Variable Link names. Existing formats remain recognized until you remove them below.',
+            desc: 'Choose the literal characters around Variable Link names, then keep the current format recognized or migrate existing tokens.',
             render: (setting) => this.renderTokenSyntaxEditor(setting.controlEl),
           },
         ],
@@ -452,18 +520,65 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       const next = proposedSyntax();
       const validation = validationMessage(next);
       if (validation.error || tokenSyntaxEquals(active, next)) return;
+      const tokenCache = this.variableLinksPlugin.tokenCache;
+      if (!tokenCache) throw new Error('The token cache is unavailable.');
       applyButton.disabled = true;
-      const history = normalizeLegacyTokenSyntaxes(
-        [active, ...this.variableLinksPlugin.settings.legacyTokenSyntaxes],
-        next,
+      applyButton.textContent = 'Preparing…';
+      const plan = await tokenCache.prepareSyntaxMigration(active, next);
+      const action = await new Promise<TokenSyntaxChangeAction>((resolve) => {
+        new TokenSyntaxChangeModal(
+          this.variableLinksPlugin,
+          active,
+          next,
+          plan,
+          resolve,
+        ).open();
+      });
+      if (action === 'cancel' || !editorActive) {
+        applyButton.disabled = false;
+        applyButton.textContent = 'Use for new tokens';
+        return;
+      }
+
+      const previousPrefix = this.variableLinksPlugin.settings.tokenPrefix;
+      const previousSuffix = this.variableLinksPlugin.settings.tokenSuffix;
+      const previousHistory = this.variableLinksPlugin.settings.legacyTokenSyntaxes.map(
+        (syntax) => ({ ...syntax }),
       );
-      this.variableLinksPlugin.settings.tokenPrefix = next.prefix;
-      this.variableLinksPlugin.settings.tokenSuffix = next.suffix;
-      this.variableLinksPlugin.settings.legacyTokenSyntaxes = history;
-      await this.variableLinksPlugin.saveSettings();
-      await this.variableLinksPlugin.refreshAfterTokenSyntaxChange();
+      let migrated = false;
+      try {
+        if (action === 'migrate') {
+          await plan.apply();
+          migrated = true;
+        }
+        const history = normalizeLegacyTokenSyntaxes(
+          action === 'new-only'
+            ? [active, ...previousHistory]
+            : previousHistory,
+          next,
+        );
+        this.variableLinksPlugin.settings.tokenPrefix = next.prefix;
+        this.variableLinksPlugin.settings.tokenSuffix = next.suffix;
+        this.variableLinksPlugin.settings.legacyTokenSyntaxes = history;
+        await this.variableLinksPlugin.saveSettings();
+        await this.variableLinksPlugin.refreshAfterTokenSyntaxChange();
+      } catch (error) {
+        if (migrated) await plan.rollback();
+        this.variableLinksPlugin.settings.tokenPrefix = previousPrefix;
+        this.variableLinksPlugin.settings.tokenSuffix = previousSuffix;
+        this.variableLinksPlugin.settings.legacyTokenSyntaxes = previousHistory;
+        try {
+          await this.variableLinksPlugin.saveSettings();
+          await this.variableLinksPlugin.refreshAfterTokenSyntaxChange();
+        } catch {
+          // Preserve the original migration error for the user.
+        }
+        throw error;
+      }
       if (!editorActive) return;
-      new Notice(`Variable Links: new tokens now use ${formatVariableToken('Variable', next)}.`);
+      new Notice(action === 'migrate'
+        ? `Variable Links: migrated ${plan.tokenCount} token${plan.tokenCount === 1 ? '' : 's'} to ${formatVariableToken('Variable', next)}.`
+        : `Variable Links: new tokens now use ${formatVariableToken('Variable', next)}.`);
       this.update();
     };
     const onInput = (): void => updatePreview();
