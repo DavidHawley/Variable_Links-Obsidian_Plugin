@@ -98,6 +98,11 @@ export interface ManagedAutolinkAddition {
   definition: VariableDefinition;
 }
 
+export interface ManagedAutolinkApplyResult {
+  added: number;
+  overwritten: number;
+}
+
 export function getVariableType(definition: VariableDefinition): VariableType {
   return definition.type === 'fixed' ? 'fixed' : 'property';
 }
@@ -461,10 +466,11 @@ export class Registry {
     await this.load();
   }
 
-  async addManagedAutolinkVariables(
+  async applyManagedAutolinkVariables(
     additions: readonly ManagedAutolinkAddition[],
-  ): Promise<number> {
-    if (!additions.length) return 0;
+    allowOverwrite = false,
+  ): Promise<ManagedAutolinkApplyResult> {
+    if (!additions.length) return { added: 0, overwritten: 0 };
     if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
     const tokenSyntax = getTokenSyntax(this.plugin.settings);
     const normalized = additions.map(({ name, definition }) => {
@@ -481,16 +487,15 @@ export class Registry {
         throw new Error(`“${variableName}” requires a source note and property.`);
       }
       if (!managed) throw new Error(`“${variableName}” is missing its Autolink ownership record.`);
-      return {
-        name: variableName,
-        definition: {
-          guid: this.createGuid(),
-          type: 'property' as const,
-          file: definition.file.trim(),
-          property: definition.property.trim(),
-          managed,
-        },
+      const generatedDefinition: VariableDefinition = {
+        guid: this.createGuid(),
+        type: 'property',
+        file: definition.file.trim(),
+        property: definition.property.trim(),
+        managed,
       };
+      if (definition.card) generatedDefinition.card = definition.card;
+      return { name: variableName, definition: generatedDefinition };
     });
     const names = new Set<string>();
     for (const { name } of normalized) {
@@ -498,26 +503,40 @@ export class Registry {
       names.add(name);
     }
 
+    let added = 0;
+    let overwritten = 0;
     await this.mutateRegistryLinks((links) => {
       for (const { name } of normalized) {
-        if (Object.prototype.hasOwnProperty.call(links, name)) {
+        if (!allowOverwrite && Object.prototype.hasOwnProperty.call(links, name)) {
           throw new Error(`“${name}” now belongs to an existing Variable Link. No additions were saved.`);
         }
       }
-      for (const { name, definition } of normalized) links[name] = definition;
+      for (const { name, definition } of normalized) {
+        const current = links[name];
+        if (Object.prototype.hasOwnProperty.call(links, name)) {
+          const guid = this.isRecord(current) && typeof current.guid === 'string'
+            ? current.guid.trim()
+            : '';
+          links[name] = { ...definition, guid: guid || definition.guid };
+          overwritten++;
+        } else {
+          links[name] = definition;
+          added++;
+        }
+      }
     });
     try {
       await this.load();
     } catch {
       new Notice('Autolink additions were saved, but the registry view could not be refreshed. Reload Obsidian.');
-      return normalized.length;
+      return { added, overwritten };
     }
     try {
       await this.plugin.refreshAfterRegistryReload();
     } catch {
       new Notice('Autolink additions were saved, but some derived views could not be refreshed. Reload Obsidian.');
     }
-    return normalized.length;
+    return { added, overwritten };
   }
 
   /** Persist a mapping. A rename keeps the GUID and updates verified token references. */

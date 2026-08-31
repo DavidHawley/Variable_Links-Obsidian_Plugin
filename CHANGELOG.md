@@ -17,10 +17,16 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added per-profile controls to disable note overrides or replace the four standard override property names, with validation, reset controls, and preview explanations.
 - Added a separately confirmed Autolink action that creates only safe, non-conflicting property-backed Variable Links and records their profile ownership for later synchronization.
 - Added a confirmation prompt before deleting an Autolink profile, including notice that its generated Variable Links remain in the registry.
+- Added built-in Card snapshots for newly generated Autolink variables, preserving the configured Card-property order and matching the Card Designer presets.
+- Added an opt-in Apply all action for replacing same-name Variable Links from an Autolink preview while keeping other warning types excluded.
 
 ### Changed
 
 - Stacked the Autolink profile description above its full-width editor, aligned the profile fields around a clear center seam, and gave collapsible profile titles H4 styling.
+
+### Fixed
+
+- Replaced whitespace in filename-generated Autolink names with underscores so their tokens remain recognizable.
 
 ## 1.2.6 - 2026-08-30
 

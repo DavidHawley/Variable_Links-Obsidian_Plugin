@@ -9,6 +9,7 @@ import {
   type AutolinkProfile,
 } from './autolink';
 import { toFileLink } from './linkSyntax';
+import { createAutolinkCardSnapshot } from './cardPresets';
 import { getTokenSyntax } from './tokenSyntax';
 import { parseVariableTextCaseMarker } from './textCase';
 
@@ -20,6 +21,7 @@ interface AutolinkPreviewItem {
   cardProperties: string[];
   overrideSummary: string;
   warnings: string[];
+  existingNameCollision: boolean;
 }
 
 export function openAutolinkProfilePreview(
@@ -45,13 +47,15 @@ class AutolinkPreviewModal extends Modal {
     this.plugin.trackDialog(this);
     this.contentEl.createEl('h3', { text: `Autolink preview: ${this.profile.name}` });
     const items = this.buildItems();
-    const safeItems = items.filter((item) => item.warnings.length === 0);
+    const safeItems = items.filter(isSafeAddition);
+    const allApplicableItems = items.filter(isApplicableWithOverwrite);
+    const overwriteCount = allApplicableItems.filter((item) => item.existingNameCollision).length;
     const savedProfile = this.registry.autolinkProfiles.find(({ id }) => id === this.profile.id);
     const profileIsSaved = savedProfile !== undefined && profilesEqual(savedProfile, this.profile);
     const canApply = this.profile.enabled && profileIsSaved && safeItems.length > 0;
     this.contentEl.createEl('p', {
       text: items.length
-        ? `${items.length} matching note${items.length === 1 ? '' : 's'}; ${safeItems.length} safe addition${safeItems.length === 1 ? '' : 's'}. Nothing changes until you confirm Apply safe additions.`
+        ? `${items.length} matching note${items.length === 1 ? '' : 's'}; ${safeItems.length} safe addition${safeItems.length === 1 ? '' : 's'} and ${overwriteCount} overwrite candidate${overwriteCount === 1 ? '' : 's'}. Nothing changes until you confirm an action.`
         : 'No matching notes. Preview only; no Variable Links will be changed.',
     });
     if (!this.profile.enabled) {
@@ -66,7 +70,7 @@ class AutolinkPreviewModal extends Modal {
       });
     } else if (safeItems.length) {
       this.contentEl.createEl('p', {
-        text: 'This checkpoint adds source-note and value-property links only. Existing links, warnings, updates, removals, and card settings are left unchanged.',
+        text: 'New additions receive the previewed built-in card as a snapshot. Existing links, warnings, updates, and removals remain unchanged.',
         cls: 'variable-links-hint-text',
       });
     }
@@ -83,7 +87,9 @@ class AutolinkPreviewModal extends Modal {
         row.createEl('td', { text: item.name });
         row.createEl('td', { text: item.valueProperty || 'Missing' });
         row.createEl('td', {
-          text: `${item.cardPreset}${item.cardProperties.length ? ` · ${item.cardProperties.join(', ')}` : ''}`,
+          text: item.cardPreset === 'none'
+            ? 'None'
+            : `${item.cardPreset} · ${item.cardProperties.length ? item.cardProperties.join(', ') : 'No properties'}`,
         });
         row.createEl('td', { text: item.overrideSummary });
         row.createEl('td', {
@@ -92,25 +98,60 @@ class AutolinkPreviewModal extends Modal {
         });
       }
     }
-    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
-    const apply = actions.createEl('button', {
+    const actions = this.contentEl.createDiv({ cls: 'variable-links-autolink-preview-actions' });
+    const overwriteLabel = actions.createEl('label', {
+      cls: 'variable-links-autolink-overwrite-control',
+    });
+    const allowOverwrite = overwriteLabel.createEl('input', { type: 'checkbox' });
+    overwriteLabel.createSpan({
+      text: 'Allow to overwrite existing Variable Links with the same name.',
+      cls: 'variable-links-hint-text',
+    });
+    const buttons = actions.createDiv({ cls: 'variable-links-autolink-preview-buttons' });
+    const applyAll = buttons.createEl('button', {
+      text: 'Apply all',
+      cls: 'mod-warning',
+      attr: { type: 'button' },
+    });
+    const applySafe = buttons.createEl('button', {
       text: 'Apply safe additions',
       cls: 'mod-cta',
       attr: { type: 'button' },
     });
-    apply.disabled = !canApply;
-    apply.addEventListener('click', () => {
+    applyAll.disabled = true;
+    applySafe.disabled = !canApply;
+    allowOverwrite.addEventListener('change', () => {
+      applyAll.disabled = !allowOverwrite.checked
+        || !this.profile.enabled
+        || !profileIsSaved
+        || allApplicableItems.length === 0;
+    });
+    applyAll.addEventListener('click', () => {
+      if (!allowOverwrite.checked) return;
+      new ConfirmAutolinkAdditionsModal(
+        this.app,
+        this.plugin,
+        this.registry,
+        this.profile,
+        allApplicableItems,
+        () => this.buildItems().filter(isApplicableWithOverwrite),
+        true,
+        () => this.close(),
+      ).open();
+    });
+    applySafe.addEventListener('click', () => {
       new ConfirmAutolinkAdditionsModal(
         this.app,
         this.plugin,
         this.registry,
         this.profile,
         safeItems,
-        () => this.buildItems().filter((item) => item.warnings.length === 0),
+        () => this.buildItems().filter(isSafeAddition),
+        false,
         () => this.close(),
       ).open();
     });
-    actions.createEl('button', { text: 'Close', attr: { type: 'button' } })
+    buttons.createEl('button', { text: 'Close', attr: { type: 'button' } })
       .addEventListener('click', () => this.close());
   }
 
@@ -133,12 +174,18 @@ class AutolinkPreviewModal extends Modal {
         if (item.name.includes(tokenSyntax.prefix) || item.name.includes(tokenSyntax.suffix)) {
           item.warnings.push('Name contains the active token prefix or suffix.');
         }
+        if (/\s/.test(item.name)) {
+          item.warnings.push('Name contains whitespace. Use underscores so its token can be recognized.');
+        }
         if (parseVariableTextCaseMarker(item.name)) {
           item.warnings.push('Name resembles token text-case syntax and must be created manually.');
         }
       }
       const existing = item.name ? this.registry.getVariable(item.name) : null;
-      if (existing) item.warnings.push('Name already belongs to an existing Variable Link.');
+      if (existing) {
+        item.existingNameCollision = true;
+        item.warnings.push('Name already belongs to an existing Variable Link.');
+      }
     }
     return items.sort((left, right) => left.file.path.localeCompare(right.file.path));
   }
@@ -210,6 +257,7 @@ class AutolinkPreviewModal extends Modal {
       cardProperties,
       overrideSummary,
       warnings,
+      existingNameCollision: false,
     };
   }
 }
@@ -224,6 +272,7 @@ class ConfirmAutolinkAdditionsModal extends Modal {
     private readonly profile: AutolinkProfile,
     private readonly items: readonly AutolinkPreviewItem[],
     private readonly rebuildSafeItems: () => AutolinkPreviewItem[],
+    private readonly allowOverwrite: boolean,
     private readonly onApplied: () => void,
   ) {
     super(app);
@@ -231,17 +280,37 @@ class ConfirmAutolinkAdditionsModal extends Modal {
 
   onOpen(): void {
     this.plugin.trackDialog(this);
-    this.contentEl.createEl('h3', { text: 'Apply safe autolink additions?' });
-    this.contentEl.createEl('p', {
-      text: `Add ${this.items.length} property-backed Variable Link${this.items.length === 1 ? '' : 's'} from “${this.profile.name}”?`,
+    this.contentEl.createEl('h3', {
+      text: this.allowOverwrite ? 'Apply all autolink changes?' : 'Apply safe autolink additions?',
     });
+    const overwriteCount = this.items.filter((item) => item.existingNameCollision).length;
+    const additionCount = this.items.length - overwriteCount;
     this.contentEl.createEl('p', {
-      text: 'This adds new registry entries only. If any name is no longer available, the entire batch is cancelled without changing the registry.',
+      text: this.allowOverwrite
+        ? `Add ${additionCount} and overwrite ${overwriteCount} property-backed Variable Link${this.items.length === 1 ? '' : 's'} from “${this.profile.name}”?`
+        : `Add ${additionCount} property-backed Variable Link${additionCount === 1 ? '' : 's'} from “${this.profile.name}”?`,
+    });
+    if (overwriteCount) {
+      this.contentEl.createEl('p', {
+        text: 'Overwritten variable links keep their GUID, but their mapping, card, appearance, favorite, and other definition settings are replaced by the generated profile result.',
+        cls: 'mod-warning',
+      });
+    }
+    const cardCount = this.items.filter(({ cardPreset }) => cardPreset !== 'none').length;
+    if (cardCount) {
+      this.contentEl.createEl('p', {
+        text: `${cardCount} applied result${cardCount === 1 ? '' : 's'} will include a new built-in Card snapshot using the listed properties.`,
+      });
+    }
+    this.contentEl.createEl('p', {
+      text: this.allowOverwrite
+        ? 'Other warnings remain excluded. The entire batch is cancelled if the preview is no longer current.'
+        : 'This adds new registry entries only. If any name is no longer available, the entire batch is cancelled without changing the registry.',
     });
     const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
     const cancel = actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } });
     const apply = actions.createEl('button', {
-      text: 'Apply additions',
+      text: this.allowOverwrite ? 'Apply all' : 'Apply additions',
       cls: 'mod-cta',
       attr: { type: 'button' },
     });
@@ -256,7 +325,7 @@ class ConfirmAutolinkAdditionsModal extends Modal {
         this.applying = false;
         cancel.disabled = false;
         apply.disabled = false;
-        apply.textContent = 'Apply additions';
+        apply.textContent = this.allowOverwrite ? 'Apply all' : 'Apply additions';
         new Notice(`Variable Links: could not apply Autolink additions: ${error instanceof Error ? error.message : String(error)}`);
       });
     });
@@ -276,20 +345,21 @@ class ConfirmAutolinkAdditionsModal extends Modal {
     if (!previewItemsEqual(this.items, currentItems)) {
       throw new Error('the matching notes changed after the preview. Preview them again.');
     }
-    const count = await this.registry.addManagedAutolinkVariables(currentItems.map((item) => ({
+    const result = await this.registry.applyManagedAutolinkVariables(currentItems.map((item) => ({
       name: item.name,
       definition: {
         type: 'property',
         file: toFileLink(item.file.path),
         property: item.valueProperty,
+        card: createAutolinkCardSnapshot(item.name, item.cardPreset, item.cardProperties),
         managed: {
           profileId: this.profile.id,
           sourcePath: item.file.path,
           managedFields: ['file', 'property'],
         },
       },
-    })));
-    new Notice(`Variable Links: added ${count} Autolink Variable Link${count === 1 ? '' : 's'}.`);
+    })), this.allowOverwrite);
+    new Notice(`Variable Links: added ${result.added} and overwritten ${result.overwritten} Autolink Variable Link${result.added + result.overwritten === 1 ? '' : 's'}.`);
     this.close();
     this.onApplied();
   }
@@ -311,17 +381,30 @@ function previewItemsEqual(
     path: item.file.path,
     name: item.name,
     valueProperty: item.valueProperty,
+    cardPreset: item.cardPreset,
+    cardProperties: item.cardProperties,
+    existingNameCollision: item.existingNameCollision,
   });
   return left.length === right.length
     && left.every((item, index) => summarize(item) === summarize(right[index]));
 }
 
+function isSafeAddition(item: AutolinkPreviewItem): boolean {
+  return item.warnings.length === 0;
+}
+
+function isApplicableWithOverwrite(item: AutolinkPreviewItem): boolean {
+  return item.warnings.length === (item.existingNameCollision ? 1 : 0);
+}
+
 function applyNamePattern(pattern: string, file: TFile): string {
-  if (!pattern.trim()) return file.basename;
-  return pattern
+  const generatedName = !pattern.trim()
+    ? file.basename
+    : pattern
     .replace(/\{file}/gi, file.basename)
     .replace(/\{path}/gi, file.path.replace(/\.md$/i, ''))
     .trim();
+  return generatedName.replace(/\s+/g, '_');
 }
 
 function normalizePreset(

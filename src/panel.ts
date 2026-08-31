@@ -9,6 +9,7 @@ import {
   WorkspaceLeaf,
 } from 'obsidian';
 import InfoCard, { type CardConfig } from './card';
+import { applyBuiltInCardPreset, isBuiltInCardPreset } from './cardPresets';
 import {
   cloneCardBlocks,
   createCardBlock,
@@ -1603,42 +1604,14 @@ class InfoCardLayoutModal extends Modal {
   }
 
   private applyPreset(preset: string): void {
+    if (!isBuiltInCardPreset(preset)) return;
     this.mutate(() => {
-      this.layoutMode = preset === 'classic' ? 'stack' : 'grid';
-      this.gridColumns = preset === 'profile' ? 2 : preset === 'compact' ? 3 : 2;
-      this.layoutGap = preset === 'classic' ? 0 : preset === 'profile' ? 12 : 8;
-      this.cardStyle = preset === 'classic'
-        ? {}
-        : {
-          background: 'secondary',
-          border: 'subtle',
-          radius: preset === 'profile' ? 12 : 8,
-          shadow: 'small',
-          maxWidth: preset === 'profile' ? 640 : 560,
-          padding: preset === 'profile' ? 12 : 8,
-        };
-      for (const block of this.allCardBlocks()) {
-        block.style = undefined;
-        const topLevel = this.blocks.includes(block);
-        if (!topLevel || preset === 'classic') {
-          block.width = undefined;
-        } else if (block.type === 'title'
-          || block.type === 'source'
-          || block.type === 'divider'
-          || block.type === 'property-table'
-          || block.type === 'stack'
-          || (preset === 'profile' && block.type === 'note')) {
-          block.width = 'full';
-        } else {
-          block.width = undefined;
-        }
-        if (block.type === 'property-table') {
-          block.columns = preset === 'classic' ? undefined : 2;
-          block.rowMode = undefined;
-          block.rows = undefined;
-        }
-        if (block.type === 'stack') block.stackStyle = undefined;
-      }
+      const card = applyBuiltInCardPreset(this.blocks, preset);
+      this.blocks.splice(0, this.blocks.length, ...(card.blocks ?? []));
+      this.layoutMode = card.layoutMode ?? 'stack';
+      this.gridColumns = card.gridColumns ?? 2;
+      this.layoutGap = card.layoutGap ?? 0;
+      this.cardStyle = card.cardStyle ?? {};
     });
   }
 

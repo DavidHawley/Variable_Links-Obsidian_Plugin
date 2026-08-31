@@ -1488,3 +1488,37 @@
     grid-template-columns: auto minmax(0, 1fr);
   }
 }
+
+.variable-links-autolink-preview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.variable-links-autolink-overwrite-control,
+.variable-links-autolink-preview-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.variable-links-autolink-overwrite-control {
+  flex: 1 1 auto;
+}
+
+.variable-links-autolink-preview-buttons {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 700px) {
+  .variable-links-autolink-preview-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .variable-links-autolink-preview-buttons {
+    flex-wrap: wrap;
+  }
+}
