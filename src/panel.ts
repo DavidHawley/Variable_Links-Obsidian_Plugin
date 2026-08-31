@@ -1894,6 +1894,8 @@ export class VariablePropertiesView extends ItemView {
   private markdownChild: MarkdownRenderChild | null = null;
   private activeTab: PanelTab = 'link';
   private creatingVariableType: VariableType | null = null;
+  private creatingVariableName = '';
+  private creationCompletion: ((name: string) => Promise<void> | void) | null = null;
   private variableEditorOpen = true;
   private variableAppearanceOpen = true;
   private appearanceSettingsRefresh: (() => void) | null = null;
@@ -1936,6 +1938,7 @@ export class VariablePropertiesView extends ItemView {
     this.active = false;
     this.refreshGeneration++;
     this.appearanceSettingsRefresh = null;
+    this.creationCompletion = null;
     for (const timer of this.timers) window.clearTimeout(timer);
     this.timers.clear();
     for (const cleanup of [...this.metadataWaitCleanups]) cleanup();
@@ -1947,7 +1950,22 @@ export class VariablePropertiesView extends ItemView {
 
   async selectVariable(name: string): Promise<void> {
     this.creatingVariableType = null;
+    this.creatingVariableName = '';
+    this.creationCompletion = null;
     this.selectedVariableName = name.trim() || null;
+    await this.refresh();
+  }
+
+  async beginVariableCreation(
+    type: VariableType,
+    name: string,
+    onSaved?: (savedName: string) => Promise<void> | void,
+  ): Promise<void> {
+    this.creatingVariableType = type;
+    this.creatingVariableName = name.trim();
+    this.creationCompletion = onSaved ?? null;
+    this.selectedVariableName = null;
+    this.activeTab = 'link';
     await this.refresh();
   }
 
@@ -1973,9 +1991,11 @@ export class VariablePropertiesView extends ItemView {
     const last = this.plugin.caretTracker?.lastTouched;
     const names = Array.from(registry.data.keys()).sort((left, right) => left.localeCompare(right));
     const activeName = this.creatingVariableType
-      ? ''
+      ? this.creatingVariableName
       : this.selectedVariableName ?? last?.name ?? '';
-    const storedDefinition = activeName ? registry.getVariable(activeName) : undefined;
+    const storedDefinition = activeName && !this.creatingVariableType
+      ? registry.getVariable(activeName)
+      : undefined;
     const definition = storedDefinition ?? emptyDefinition(this.creatingVariableType ?? 'property');
 
     const header = container.createDiv({ cls: 'variable-links-panel-header' });
@@ -2012,9 +2032,13 @@ export class VariablePropertiesView extends ItemView {
       const value = select.value;
       if (value === CREATE_FIXED_VALUE || value === CREATE_PROPERTY_VALUE) {
         this.creatingVariableType = value === CREATE_FIXED_VALUE ? 'fixed' : 'property';
+        this.creatingVariableName = '';
+        this.creationCompletion = null;
         this.selectedVariableName = null;
       } else {
         this.creatingVariableType = null;
+        this.creatingVariableName = '';
+        this.creationCompletion = null;
         this.selectedVariableName = value.startsWith(VARIABLE_OPTION_PREFIX)
           ? value.slice(VARIABLE_OPTION_PREFIX.length)
           : null;
@@ -2087,24 +2111,25 @@ export class VariablePropertiesView extends ItemView {
     });
     showTab(this.activeTab);
 
+    if (this.creatingVariableType) {
+      const label = this.creatingVariableType === 'fixed' ? 'fixed value' : 'property value';
+      this.renderVariableForm(
+        propertiesContent,
+        activeName,
+        definition,
+        `Add ${label}`,
+        undefined,
+        propertiesSaveHost,
+      );
+      cardContent.createEl('p', { text: 'Save the variable before configuring its info card.' });
+      return;
+    }
+
     if (!activeName) {
-      if (this.creatingVariableType) {
-        const label = this.creatingVariableType === 'fixed' ? 'fixed value' : 'property value';
-        this.renderVariableForm(
-          propertiesContent,
-          '',
-          definition,
-          `Add ${label}`,
-          undefined,
-          propertiesSaveHost,
-        );
-        cardContent.createEl('p', { text: 'Save the variable before configuring its info card.' });
-      } else {
-        propertiesContent.createEl('p', {
-          text: 'Select a variable or choose a new variable type from the dropdown.',
-        });
-        cardContent.createEl('p', { text: 'Select or create a variable to configure its info card.' });
-      }
+      propertiesContent.createEl('p', {
+        text: 'Select a variable or choose a new variable type from the dropdown.',
+      });
+      cardContent.createEl('p', { text: 'Select or create a variable to configure its info card.' });
       return;
     }
 
@@ -2545,12 +2570,23 @@ export class VariablePropertiesView extends ItemView {
           touched.name = newName;
           touched.def = registry.getVariable(newName);
         }
+        const creationCompletion = this.creationCompletion;
         this.creatingVariableType = null;
+        this.creatingVariableName = '';
+        this.creationCompletion = null;
         this.selectedVariableName = newName;
+        if (creationCompletion) {
+          try {
+            await creationCompletion(newName);
+          } catch {
+            new Notice('Variable links: the variable was saved, but its creation expression could not be replaced.');
+          }
+        }
         new Notice(`Variable Links: saved ${formatVariableToken(newName, getTokenSyntax(this.plugin.settings))}`);
         await this.refresh();
       },
     );
+    if (!existingVariable && name.trim()) markFormDirty();
   }
 
   private renderFavoriteControl(

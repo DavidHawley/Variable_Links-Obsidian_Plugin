@@ -30,7 +30,7 @@ import {
   VariableLinksSettings,
   VariableLinksSettingTab,
 } from './settings';
-import VariableSuggest from './suggest';
+import VariableSuggest, { type VariableCreationHandoff } from './suggest';
 import TokenCache from './tokenCache';
 import {
   canRepresentVariableTextCase,
@@ -169,6 +169,7 @@ export default class VariableLinksPlugin extends Plugin {
         this.registry,
         this.resolver,
         async () => this.refreshPanelViews(),
+        async (request) => this.openNamedVariableCreation(request),
       );
       this.registerEditorSuggest(this.suggest);
     } catch (error) {
@@ -417,6 +418,40 @@ export default class VariableLinksPlugin extends Plugin {
     if (variableName && leaf.view instanceof panelModule.VariablePropertiesView) {
       await leaf.view.selectVariable(variableName);
     }
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  private async openNamedVariableCreation(request: VariableCreationHandoff): Promise<void> {
+    if (!this.active) return;
+    const panelModule = await import('./panel');
+    if (!this.active) return;
+    let leaf: WorkspaceLeaf | null = this.app.workspace
+      .getLeavesOfType(panelModule.VIEW_TYPE_VARIABLE_PANEL)[0] ?? null;
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false);
+      if (!leaf) throw new Error('A sidebar could not be opened.');
+      await leaf.setViewState({ type: panelModule.VIEW_TYPE_VARIABLE_PANEL });
+    }
+    if (!(leaf.view instanceof panelModule.VariablePropertiesView)) {
+      throw new Error('The Variable Link properties panel is unavailable.');
+    }
+    await leaf.view.beginVariableCreation(request.type, request.name, async (savedName) => {
+      const current = request.editor.getRange(request.from, request.to);
+      if (current !== request.originalText) {
+        throw new Error('The creation expression changed while the properties panel was open.');
+      }
+      const token = formatVariableToken(
+        savedName,
+        getTokenSyntax(this.settings),
+        request.textCase,
+      );
+      request.editor.replaceRange(token, request.from, request.to);
+      request.editor.setCursor({
+        line: request.from.line,
+        ch: request.from.ch + token.length,
+      });
+      request.editor.focus();
+    });
     await this.app.workspace.revealLeaf(leaf);
   }
 

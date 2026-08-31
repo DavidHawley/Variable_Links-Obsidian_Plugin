@@ -12,6 +12,14 @@ import Indexer from './indexer';
 import Registry, { getVariableType, type VariableType } from './registry';
 import Resolver from './resolver';
 import {
+  isValidNamedCreationName,
+  parseFixedCreationSource,
+  parseNamedCreationQuery,
+  type NamedCreationQuery,
+  type NamedCreationType,
+} from './creationSyntax';
+import { parsePropertyLink } from './linkSyntax';
+import {
   formatSuggestionValue,
   parseSuggestionQuery,
   scoreSuggestionFields,
@@ -34,13 +42,26 @@ import {
 
 interface SuggestItem {
   name: string;
-  kind: 'variable' | 'property';
+  kind: 'variable' | 'property' | 'creation';
   alreadyMapped?: boolean;
   display?: string;
   file?: string;
   property?: string;
   value?: string;
   variableType?: VariableType;
+  textCase?: VariableTextCase;
+  creationType?: NamedCreationType;
+  creationSource?: string;
+  creationError?: string;
+}
+
+export interface VariableCreationHandoff {
+  type: NamedCreationType;
+  name: string;
+  editor: Editor;
+  from: EditorPosition;
+  to: EditorPosition;
+  originalText: string;
   textCase?: VariableTextCase;
 }
 
@@ -60,6 +81,9 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     private readonly registry: Registry,
     private readonly resolver: Resolver,
     private readonly onVariableCreated: (name: string) => Promise<void>,
+    private readonly onVariableCreationRequested: (
+      request: VariableCreationHandoff,
+    ) => Promise<void>,
   ) {
     super(app);
   }
@@ -85,7 +109,14 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   async getSuggestions(context: EditorSuggestContext): Promise<SuggestItem[]> {
     const generation = ++this.suggestionGeneration;
     const caseQuery = parseVariableTextCaseQuery(context.query);
-    const query = parseSuggestionQuery(caseQuery.query);
+    const creationQuery = this.registry.getVariable(caseQuery.query)
+      ? null
+      : parseNamedCreationQuery(caseQuery.query);
+    const query = parseSuggestionQuery(creationQuery?.name ?? caseQuery.query);
+    const creationItems = this.getNamedCreationSuggestions(
+      creationQuery,
+      caseQuery.textCase,
+    );
     const variables: SuggestItem[] = Array.from(this.indexer.byName.values()).map((entry) => ({
       name: entry.name,
       kind: 'variable',
@@ -95,7 +126,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       variableType: getVariableType(entry.def),
     }));
 
-    if (query.valueMode) {
+    if (query.valueMode && !creationQuery) {
       const resolved = await Promise.all(variables.map(async (item) => {
         const value = await this.getResolvedSuggestionValue(item.name);
         return value === null ? null : { ...item, value };
@@ -139,21 +170,38 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       query.terms,
       (item) => [item.name, item.file, item.property],
     );
-    return this.applyTextCaseToSuggestions([
+    return [
+      ...creationItems,
+      ...this.applyTextCaseToSuggestions([
       ...variableMatches,
       ...propertyMatches.filter((item) => !item.alreadyMapped),
       ...propertyMatches.filter((item) => item.alreadyMapped),
-    ].slice(0, 100), context.query, caseQuery.textCase);
+      ].slice(0, Math.max(0, 100 - creationItems.length)), context.query, caseQuery.textCase),
+    ];
   }
 
   renderSuggestion(item: SuggestItem, el: HTMLElement): void {
-    el.createDiv({ text: item.name });
-    const detail = item.kind === 'variable'
+    el.createDiv({ text: item.kind === 'creation' ? `Create ${item.name}` : item.name });
+    const detail = item.kind === 'creation'
+      ? item.creationSource === undefined
+        ? `Open ${item.creationType === 'fixed' ? 'fixed value' : 'property value'} editor`
+        : `Create ${item.creationType === 'fixed' ? 'fixed value' : 'property mapping'}`
+      : item.kind === 'variable'
       ? item.variableType === 'fixed'
         ? `Fixed value${item.file ? ` · ${item.file}` : ''}`
         : `Property value · ${item.file ?? ''}${item.property ? ` • ${item.property}` : ''}`
       : `Property · ${item.file ?? ''}`;
     el.createDiv({ text: detail, cls: 'suggest-meta' });
+    if (item.creationError) {
+      el.createDiv({ text: item.creationError, cls: 'suggest-sub mod-warning' });
+    } else if (item.kind === 'creation' && item.creationSource !== undefined) {
+      el.createDiv({
+        text: item.creationType === 'fixed'
+          ? `Value: ${truncateSuggestionValue(item.creationSource)}`
+          : item.creationSource,
+        cls: 'suggest-sub',
+      });
+    }
     if (item.display) el.createDiv({ text: item.display, cls: 'suggest-sub' });
     if (item.textCase) {
       el.createDiv({
@@ -178,6 +226,56 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   private async applySuggestion(item: SuggestItem, context: EditorSuggestContext): Promise<void> {
     let variableName = item.name;
     let createdVariable = false;
+    if (item.kind === 'creation') {
+      if (item.creationError) {
+        new Notice(`Variable links: ${item.creationError}`);
+        return;
+      }
+      if (!item.creationType) return;
+      if (this.registry.getVariable(variableName)) {
+        new Notice(`Variable links: ${variableName} already exists. Select the existing variable instead.`);
+        return;
+      }
+      if (this.hasTextCaseNameConflict(variableName, item.textCase)) return;
+      const target = this.getReplacementTarget(context);
+      if (item.creationSource === undefined) {
+        await this.onVariableCreationRequested({
+          type: item.creationType,
+          name: variableName,
+          editor: context.editor,
+          from: context.start,
+          to: target.replaceEnd,
+          originalText: context.editor.getRange(context.start, target.replaceEnd),
+          textCase: item.textCase,
+        });
+        return;
+      }
+
+      try {
+        if (item.creationType === 'fixed') {
+          const parsed = parseFixedCreationSource(item.creationSource);
+          if (!parsed.ok) throw new Error(parsed.error);
+          await this.registry.saveVariable(variableName, {
+            type: 'fixed',
+            file: '',
+            property: '',
+            value: parsed.value,
+          });
+        } else {
+          const propertyLink = parsePropertyLink(item.creationSource);
+          await this.registry.saveVariable(variableName, {
+            type: 'property',
+            file: propertyLink.file,
+            property: propertyLink.property,
+          });
+        }
+        createdVariable = true;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        new Notice(`Variable links: could not create ${variableName}: ${detail}`);
+        return;
+      }
+    }
     if (item.kind === 'variable' && this.hasTextCaseNameConflict(variableName, item.textCase)) {
       return;
     }
@@ -209,23 +307,12 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       }
     }
 
-    const line = context.editor.getLine(context.end.line);
-    const activeSyntax = getTokenSyntax(this.registry.plugin.settings);
-    const trigger = findVariableTokenTrigger(
-      line,
-      context.end.ch,
-      getRecognizedTokenSyntaxes(this.registry.plugin.settings),
-    );
-    const triggerSyntax = trigger?.start === context.start.ch ? trigger.syntax : activeSyntax;
-    const hasAutoCloser = hasVariableTokenSuffixAt(line, context.end.ch, triggerSyntax);
-    const token = formatVariableToken(variableName, activeSyntax, item.textCase);
-    const replaceEnd = hasAutoCloser
-      ? { line: context.end.line, ch: context.end.ch + triggerSyntax.suffix.length }
-      : context.end;
+    const target = this.getReplacementTarget(context);
+    const token = formatVariableToken(variableName, target.activeSyntax, item.textCase);
     context.editor.replaceRange(
       token,
       context.start,
-      replaceEnd,
+      target.replaceEnd,
     );
     context.editor.setCursor({
       line: context.start.line,
@@ -253,6 +340,68 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     });
     ranked.sort((left, right) => left.score - right.score || left.index - right.index);
     return ranked.map(({ item }) => item);
+  }
+
+  private getReplacementTarget(context: EditorSuggestContext): {
+    activeSyntax: ReturnType<typeof getTokenSyntax>;
+    replaceEnd: EditorPosition;
+  } {
+    const line = context.editor.getLine(context.end.line);
+    const activeSyntax = getTokenSyntax(this.registry.plugin.settings);
+    const trigger = findVariableTokenTrigger(
+      line,
+      context.end.ch,
+      getRecognizedTokenSyntaxes(this.registry.plugin.settings),
+    );
+    const triggerSyntax = trigger?.start === context.start.ch ? trigger.syntax : activeSyntax;
+    const hasAutoCloser = hasVariableTokenSuffixAt(line, context.end.ch, triggerSyntax);
+    return {
+      activeSyntax,
+      replaceEnd: hasAutoCloser
+        ? { line: context.end.line, ch: context.end.ch + triggerSyntax.suffix.length }
+        : context.end,
+    };
+  }
+
+  private getNamedCreationSuggestions(
+    query: NamedCreationQuery | null,
+    textCase: VariableTextCase | undefined,
+  ): SuggestItem[] {
+    if (!query?.name || this.registry.getVariable(query.name)) return [];
+    const syntax = getTokenSyntax(this.registry.plugin.settings);
+    let nameError = '';
+    if (!isValidNamedCreationName(query.name)) {
+      nameError = 'Variable names in creation expressions cannot contain spaces.';
+    } else if (query.name.includes(syntax.prefix) || query.name.includes(syntax.suffix)) {
+      nameError = 'The variable name contains the active token prefix or suffix.';
+    }
+
+    const types: NamedCreationType[] = ['fixed', 'property'];
+    return types
+      .filter((type) => !query.typeQuery || type.startsWith(query.typeQuery))
+      .map((type) => {
+        let creationError = nameError;
+        if (!creationError && query.hasSource) {
+          if (type === 'fixed') {
+            const parsed = parseFixedCreationSource(query.source ?? '');
+            if (!parsed.ok) creationError = parsed.error;
+          } else {
+            try {
+              parsePropertyLink(query.source ?? '');
+            } catch (error) {
+              creationError = error instanceof Error ? error.message : String(error);
+            }
+          }
+        }
+        return {
+          name: query.name,
+          kind: 'creation' as const,
+          creationType: type,
+          creationSource: query.hasSource ? query.source ?? '' : undefined,
+          creationError: creationError || undefined,
+          textCase,
+        };
+      });
   }
 
   private applyTextCaseToSuggestions(
