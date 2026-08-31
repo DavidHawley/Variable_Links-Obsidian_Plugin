@@ -195,6 +195,17 @@ This document records planned improvements to Variable Links. Plans may change a
 - Apply generated Card configuration as a snapshot so later profile changes do not silently replace a customized Card.
 - Keep custom template creation, the visual template manager, advanced rule building, and bulk template replacement in 1.4.
 
+#### Managed-variable bulk tools
+
+- Add a management view that lists Variable Links created by each Autolink profile, including entries whose original profile was later deleted.
+- Allow users to select individual managed Variable Links or select every managed link belonging to one profile.
+- Add a separately confirmed bulk-delete action that removes only selected entries carrying the matching Autolink ownership metadata; never include manual or unrelated Variable Links.
+- Before deletion, show how many cached tokens will become unresolved and clearly state that note text will remain unchanged.
+- Add a mass-rename workflow based on a revised profile name pattern, with a complete old-name/new-name preview before confirmation.
+- Detect duplicate or occupied names before renaming and cancel the whole batch if every rename cannot be completed safely.
+- Reuse GUID-backed token rename and rollback protection so confirmed mass renames update verified tokens without broad text replacement.
+- Keep selective deletion and mass rename explicit user actions; profile deletion alone must not delete or rename generated Variable Links.
+
 #### Autolinking testing
 
 - Test exact-file and nested-folder profiles, subfolder inclusion, precedence, note overrides, naming patterns, collisions, missing value properties, and repeated scans.
@@ -280,7 +291,7 @@ This document records planned improvements to Variable Links. Plans may change a
 2. Add multi-term suggestion matching, ranking, and explicit resolved-value search.
 3. Add displayed-text case markers, per-variable defaults, autocomplete, context-menu controls, and compatibility handling.
 4. Define the Autolink profile, managed-entry, note-property, precedence, and preview data models without changing notes or the registry automatically.
-5. Add exact-file and folder scanning, preview, conflict handling, confirmed synchronization, and file-move behavior.
+5. Add exact-file and folder scanning, preview, conflict handling, confirmed synchronization, file-move behavior, and explicit managed-variable bulk tools.
 6. Add built-in Card preset selection and ordered Card-property population while keeping the full custom template system in 1.4.
 7. Add captured date and time shortcuts and the shared formatter on top of the centralized token language.
 8. Add contextual help, complete protected-context and compatibility testing, install the build in the test vault, and perform the final smoke test.
