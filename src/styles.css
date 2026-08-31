@@ -1437,6 +1437,108 @@
   font-size: var(--font-ui-large);
 }
 
+.variable-links-management-center-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.variable-links-management-center-controls input,
+.variable-links-management-center-controls select {
+  min-height: var(--input-height);
+}
+
+.variable-links-management-center-search {
+  flex: 1 1 260px;
+  min-width: 180px;
+}
+
+.variable-links-management-center-controls select {
+  flex: 0 1 150px;
+  min-width: 120px;
+}
+
+.variable-links-management-center-list-status {
+  margin: 6px 0;
+}
+
+.variable-links-management-center-list {
+  overflow-x: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+}
+
+.variable-links-management-center-list-header,
+.variable-links-management-center-row {
+  display: grid;
+  grid-template-columns: 28px minmax(160px, 1fr) minmax(220px, 1.5fr) minmax(130px, auto) 76px;
+  gap: 8px;
+  align-items: center;
+  min-width: 720px;
+  min-height: 42px;
+  padding: 6px 10px;
+}
+
+.variable-links-management-center-list-header {
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+}
+
+.variable-links-management-center-row + .variable-links-management-center-row {
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.variable-links-management-center-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.variable-links-management-center-name,
+.variable-links-management-center-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.variable-links-management-center-name {
+  font-weight: var(--font-medium);
+}
+
+.variable-links-management-center-source {
+  color: var(--text-muted);
+}
+
+.variable-links-management-center-badges,
+.variable-links-management-center-actions {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.variable-links-management-center-badge {
+  padding: 2px 7px;
+  border-radius: var(--radius-l);
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.variable-links-management-center-actions,
+.variable-links-management-center-actions-label {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.variable-links-management-center-empty {
+  margin: 0;
+  padding: 18px;
+  text-align: center;
+}
+
 @media (max-width: 520px) {
   .variable-links-management-center {
     padding: 14px 12px 24px;
