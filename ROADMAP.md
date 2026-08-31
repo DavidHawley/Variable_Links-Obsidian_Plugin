@@ -60,7 +60,7 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.3.0
 
-> **Target release date: September 24, 2026.** Use September 23 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-language, file and folder autolinking, basic Card population, captured date/time, named-creation, and contextual-help work described below.
+> **Target release date: September 24, 2026.** Use September 23 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-language and displayed-text case controls, file and folder autolinking, basic Card population, captured date/time, named-creation, and contextual-help work described below.
 
 > **Planning gate approved:** The revised 1.3 direction was approved on August 31, 2026. Review any newly discovered ambiguity with the user before expanding the agreed scope.
 
@@ -98,6 +98,37 @@ This document records planned improvements to Variable Links. Plans may change a
 - Test custom formats in Source Mode, Live Preview, Reading View, Insert, Favorites, Switch token, Properties, renaming, missing variables, token caching, and Info Cards.
 - Test multiple active and legacy formats, migration cancellation, partial-write recovery, conflicting Markdown syntax, repeated tokens, and tokens at line boundaries.
 - Test unquoted and quoted creation sources, escaped characters, explicit file-property links, incomplete expressions, and malformed type or source separators.
+
+### Displayed-text case controls
+
+- Add compact, matching markers inside a Variable Link token to change only its displayed value:
+  - `{{.Name.}}` lowercases the first letter.
+  - `{{..Name..}}` lowercases every letter.
+  - `{{'Name'}}` uppercases the first letter.
+  - `{{''Name''}}` uppercases the first letter of each word.
+  - `{{'''Name'''}}` uppercases every letter.
+- Treat `Name` as the referenced permanent Variable Link in every example; markers must never become part of the registry lookup or alter the stored value.
+- Require the same marker and repetition count at both ends. Unmatched punctuation remains ordinary token-name or suggestion-query text.
+- Give an exact existing variable name priority over interpreting its leading and trailing punctuation as case markers, preserving compatibility with existing names such as `'Name'`.
+- Warn when a new variable name has the same shape as reserved case-marker syntax, while continuing to support already-existing exact names.
+- Apply case conversion to the final displayed text using Unicode-aware operations, leaving numbers and punctuation unchanged.
+- Apply token-level case consistently in Reading View, Live Preview, links, and Copy Markdown without changing link destinations, Info Card data, source properties, or fixed values.
+- Preserve the case marker when renaming a variable, changing token delimiters, migrating token formats, switching a token, or rebuilding the token cache.
+
+#### Defaults and token controls
+
+- Add a Default text case dropdown near Display name in the Variable Properties panel with Keep original, Lowercase first letter, Uppercase first letter, Capitalize each word, lowercase all, and UPPERCASE ALL choices.
+- Store the default on the Variable Link definition rather than in global appearance settings.
+- Let a case marker on an individual token override the variable's default; a bare token uses the saved default.
+- Add the same choices to the token context menu so a token can be changed without manually remembering or editing punctuation.
+- Make suggestions recognize an opening case marker, show the active case mode, and insert the selected Variable Link with a matching closing marker.
+
+#### Case-control testing
+
+- Test every marker with lowercase, uppercase, mixed-case, Unicode, punctuation-leading, numeric, boolean, array, empty, and missing values.
+- Test bare tokens with every per-variable default and verify that token-level markers override the default.
+- Test existing punctuation-shaped variable names, unmatched markers, custom and previous token delimiters, autocomplete, token switching, renaming, migration, token caching, links, and Copy Markdown.
+- Confirm protected Markdown contexts remain raw and that case formatting never modifies registry data or source-note properties.
 
 ### Multi-term and value suggestion search
 
@@ -247,11 +278,12 @@ This document records planned improvements to Variable Links. Plans may change a
 
 1. Centralize token parsing and formatting, then add the `Name=TYPE:source` grammar, quoted sources, custom delimiters, and migration support.
 2. Add multi-term suggestion matching, ranking, and explicit resolved-value search.
-3. Define the Autolink profile, managed-entry, note-property, precedence, and preview data models without changing notes or the registry automatically.
-4. Add exact-file and folder scanning, preview, conflict handling, confirmed synchronization, and file-move behavior.
-5. Add built-in Card preset selection and ordered Card-property population while keeping the full custom template system in 1.4.
-6. Add captured date and time shortcuts and the shared formatter on top of the centralized token language.
-7. Add contextual help, complete protected-context and compatibility testing, install the build in the test vault, and perform the final smoke test.
+3. Add displayed-text case markers, per-variable defaults, autocomplete, context-menu controls, and compatibility handling.
+4. Define the Autolink profile, managed-entry, note-property, precedence, and preview data models without changing notes or the registry automatically.
+5. Add exact-file and folder scanning, preview, conflict handling, confirmed synchronization, and file-move behavior.
+6. Add built-in Card preset selection and ordered Card-property population while keeping the full custom template system in 1.4.
+7. Add captured date and time shortcuts and the shared formatter on top of the centralized token language.
+8. Add contextual help, complete protected-context and compatibility testing, install the build in the test vault, and perform the final smoke test.
 
 ## 1.4.0
 
