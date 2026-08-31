@@ -11,8 +11,7 @@ import {
 } from '@codemirror/view';
 import Resolver from './resolver';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
-
-const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
+import { findVariableTokens, getTokenSyntax } from './tokenSyntax';
 const refreshVariableLinks = StateEffect.define<void>();
 
 const NON_PROSE_NODE_FRAGMENTS = [
@@ -155,6 +154,7 @@ export default class LivePreviewRenderer {
     const buildDecorations = (view: EditorView): DecorationSet => {
       const builder = new RangeSetBuilder<Decoration>();
       if (!this.active || !isLivePreview(view.state)) return builder.finish();
+      const syntax = getTokenSyntax(this.resolver.registry.plugin.settings);
       const selection = view.state.selection.main;
       const visibleLineRanges: Array<{ from: number; to: number }> = [];
       for (const range of view.visibleRanges) {
@@ -167,17 +167,14 @@ export default class LivePreviewRenderer {
 
       for (const range of visibleLineRanges) {
         const text = view.state.sliceDoc(range.from, range.to);
-        let match: RegExpExecArray | null;
-        TOKEN_REGEX.lastIndex = 0;
-        while ((match = TOKEN_REGEX.exec(text)) !== null) {
-          const name = match[1];
-          if (!name) continue;
-          const from = range.from + match.index;
-          const to = range.from + TOKEN_REGEX.lastIndex;
+        for (const match of findVariableTokens(text, syntax)) {
+          const name = match.name;
+          const from = range.from + match.start;
+          const to = range.from + match.end;
           if (selection.from <= to && selection.to >= from) continue;
           if (!shouldRenderToken(view.state, from, to)) continue;
           builder.add(from, to, Decoration.replace({
-            widget: new VariableWidget(name.trim(), this.revision, renderVariable),
+            widget: new VariableWidget(name, this.revision, renderVariable),
           }));
         }
       }

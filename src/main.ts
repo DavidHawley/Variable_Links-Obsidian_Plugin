@@ -32,6 +32,7 @@ import {
 } from './settings';
 import VariableSuggest from './suggest';
 import TokenCache from './tokenCache';
+import { findVariableTokens, formatVariableToken, getTokenSyntax } from './tokenSyntax';
 
 interface EditorWithCoordinates extends Editor {
   cm?: {
@@ -551,20 +552,16 @@ export default class VariableLinksPlugin extends Plugin {
   ): VariableTokenContext | null {
     if (!position) return null;
     const line = editor.getLine(position.line);
-    const pattern = /\{\{\s*([^}\s]+)\s*}}/g;
-    let match: RegExpExecArray | null;
+    const syntax = getTokenSyntax(this.settings);
     const matchingTokens: VariableTokenContext[] = [];
-    while ((match = pattern.exec(line)) !== null) {
-      const name = match[1];
-      if (!name) continue;
-      const trimmedName = name.trim();
-      if (expectedName && trimmedName !== expectedName) continue;
+    for (const match of findVariableTokens(line, syntax)) {
+      if (expectedName && match.name !== expectedName) continue;
       const token = {
-        name: trimmedName,
-        from: { line: position.line, ch: match.index },
-        to: { line: position.line, ch: pattern.lastIndex },
+        name: match.name,
+        from: { line: position.line, ch: match.start },
+        to: { line: position.line, ch: match.end },
       };
-      if (position.ch >= match.index && position.ch <= pattern.lastIndex) return token;
+      if (position.ch >= match.start && position.ch <= match.end) return token;
       if (expectedName) matchingTokens.push(token);
     }
     if (!expectedName || matchingTokens.length === 0) return null;
@@ -595,7 +592,7 @@ export default class VariableLinksPlugin extends Plugin {
       new Notice('Insertion position unavailable.');
       return;
     }
-    const token = `{{${variableName}}}`;
+    const token = formatVariableToken(variableName, getTokenSyntax(this.settings));
     editor.replaceRange(token, position);
     editor.setCursor({ line: position.line, ch: position.ch + token.length });
     editor.focus();
@@ -606,7 +603,7 @@ export default class VariableLinksPlugin extends Plugin {
     tokenContext: VariableTokenContext,
     variableName: string,
   ): void {
-    const token = `{{${variableName}}}`;
+    const token = formatVariableToken(variableName, getTokenSyntax(this.settings));
     editor.replaceRange(token, tokenContext.from, tokenContext.to);
     editor.setCursor({
       line: tokenContext.from.line,
@@ -650,13 +647,10 @@ export default class VariableLinksPlugin extends Plugin {
   }
 
   private findMarkdownTokenMatches(source: string): MarkdownTokenMatch[] {
-    const pattern = /\{\{\s*([^}\s]+)\s*}}/g;
     const matches: MarkdownTokenMatch[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(source)) !== null) {
-      const name = match[1]?.trim();
-      if (!name || this.isMarkdownCodePosition(source, match.index)) continue;
-      matches.push({ start: match.index, end: pattern.lastIndex, name });
+    for (const match of findVariableTokens(source, getTokenSyntax(this.settings))) {
+      if (this.isMarkdownCodePosition(source, match.start)) continue;
+      matches.push(match);
     }
     return matches;
   }
@@ -798,13 +792,13 @@ export default class VariableLinksPlugin extends Plugin {
   private async setVariableFavorite(variableName: string, favorite: boolean): Promise<void> {
     const definition = this.registry?.getVariable(variableName);
     if (!definition || !this.registry) {
-      new Notice(`Variable Links: {{${variableName}}} is not configured.`);
+      new Notice(`Variable Links: ${formatVariableToken(variableName, getTokenSyntax(this.settings))} is not configured.`);
       return;
     }
     try {
       await this.registry.saveVariable(variableName, { ...definition, favorite });
       await this.refreshPanelViews();
-      new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} {{${variableName}}}`);
+      new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} ${formatVariableToken(variableName, getTokenSyntax(this.settings))}`);
     } catch (error) {
       new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
     }

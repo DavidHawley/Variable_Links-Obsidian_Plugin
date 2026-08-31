@@ -48,6 +48,7 @@ import {
   type VariableType,
 } from './registry';
 import type { ResolveResult } from './resolver';
+import { formatVariableToken, getTokenSyntax } from './tokenSyntax';
 
 export const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
 
@@ -310,7 +311,9 @@ class InfoCardLayoutModal extends Modal {
     this.pruneCollapsedItemIds();
     this.contentEl.empty();
     const heading = this.contentEl.createDiv({ cls: 'variable-links-card-layout-editor-heading' });
-    heading.createEl('h2', { text: `Info Card layout for {{${this.variableName}}}` });
+    heading.createEl('h2', {
+      text: `Info Card layout for ${formatVariableToken(this.variableName, getTokenSyntax(this.plugin.settings))}`,
+    });
     const headingActions = heading.createDiv({ cls: 'variable-links-card-layout-heading-actions' });
     this.undoButton = headingActions.createEl('button', { text: 'Undo', attr: { type: 'button' } });
     this.undoButton.disabled = this.history.length === 0;
@@ -2019,13 +2022,13 @@ export class VariablePropertiesView extends ItemView {
     setButton.disabled = !activeName || !storedDefinition || !last;
     setButton.addEventListener('click', () => {
       if (setButton.disabled || !last) return;
-      const token = `{{${activeName}}}`;
+      const token = formatVariableToken(activeName, getTokenSyntax(this.plugin.settings));
       last.editor.replaceRange(token, last.from, last.to);
       last.editor.setCursor({ line: last.from.line, ch: last.from.ch + token.length });
       last.editor.focus();
       last.name = activeName;
       last.def = definition;
-      new Notice(`Variable Links: token set to {{${activeName}}}`);
+      new Notice(`Variable Links: token set to ${token}`);
     });
 
     const deleteButton = toolbar.createEl('button', { text: 'Delete' });
@@ -2113,7 +2116,9 @@ export class VariablePropertiesView extends ItemView {
     const variableHeading = variableCell.createDiv({
       cls: 'variable-links-panel-variable-heading',
     });
-    variableHeading.createEl('h5', { text: `{{${activeName}}}` });
+    variableHeading.createEl('h5', {
+      text: formatVariableToken(activeName, getTokenSyntax(this.plugin.settings)),
+    });
     if (storedDefinition) {
       this.renderFavoriteControl(variableHeading, activeName, storedDefinition);
     }
@@ -2170,7 +2175,7 @@ export class VariablePropertiesView extends ItemView {
         last.value = undefined;
       }
       this.selectedVariableName = null;
-      new Notice(`Variable Links: deleted {{${name}}}`);
+      new Notice(`Variable Links: deleted ${formatVariableToken(name, getTokenSyntax(this.plugin.settings))}`);
       await this.refresh();
     } catch (error) {
       new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
@@ -2528,7 +2533,7 @@ export class VariablePropertiesView extends ItemView {
         }
         this.creatingVariableType = null;
         this.selectedVariableName = newName;
-        new Notice(`Variable Links: saved {{${newName}}}`);
+        new Notice(`Variable Links: saved ${formatVariableToken(newName, getTokenSyntax(this.plugin.settings))}`);
         await this.refresh();
       },
     );
@@ -2560,9 +2565,11 @@ export class VariablePropertiesView extends ItemView {
   private async saveFavorite(name: string, favorite: boolean): Promise<void> {
     const registry = this.plugin.registry;
     const definition = registry?.getVariable(name);
-    if (!registry || !definition) throw new Error(`{{${name}}} is not configured.`);
+    if (!registry || !definition) {
+      throw new Error(`${formatVariableToken(name, getTokenSyntax(this.plugin.settings))} is not configured.`);
+    }
     await registry.saveVariable(name, { ...definition, favorite });
-    new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} {{${name}}}`);
+    new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} ${formatVariableToken(name, getTokenSyntax(this.plugin.settings))}`);
   }
 
   private renderInfoCardForm(
@@ -2598,7 +2605,7 @@ export class VariablePropertiesView extends ItemView {
         ...definition,
         card: hasSimpleContent || hasBlocks || hasOptions ? nextCard : undefined,
       });
-      new Notice(`Variable Links: Info Card saved for {{${name}}}`);
+      new Notice(`Variable Links: Info Card saved for ${formatVariableToken(name, getTokenSyntax(this.plugin.settings))}`);
       await this.refresh();
     };
 
@@ -2837,7 +2844,7 @@ export class VariablePropertiesView extends ItemView {
           originalValue,
           nextValue,
         );
-        new Notice(`Variable Links: updated linked value for {{${variableName}}}`);
+        new Notice(`Variable Links: updated linked value for ${formatVariableToken(variableName, getTokenSyntax(this.plugin.settings))}`);
         this.plugin.livePreviewRenderer?.refresh();
         await this.refresh();
       } catch (error) {

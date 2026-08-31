@@ -10,6 +10,12 @@ import {
 } from 'obsidian';
 import Indexer from './indexer';
 import Registry, { getVariableType, type VariableType } from './registry';
+import {
+  findVariableTokenTrigger,
+  formatVariableToken,
+  getTokenSyntax,
+  hasVariableTokenSuffixAt,
+} from './tokenSyntax';
 
 interface SuggestItem {
   name: string;
@@ -34,14 +40,13 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
 
   onTrigger(cursor: EditorPosition, editor: Editor, _file: TFile | null): EditorSuggestTriggerInfo | null {
     const line = editor.getLine(cursor.line);
-    const fromIndex = line.lastIndexOf('{{', cursor.ch - 1);
-    if (fromIndex === -1) return null;
-    const query = line.slice(fromIndex + 2, cursor.ch);
-    if (query.includes('}}') || /\s/.test(query)) return null;
+    const syntax = getTokenSyntax(this.registry.plugin.settings);
+    const trigger = findVariableTokenTrigger(line, cursor.ch, syntax);
+    if (!trigger) return null;
     return {
-      start: { line: cursor.line, ch: fromIndex },
+      start: { line: cursor.line, ch: trigger.start },
       end: { line: cursor.line, ch: cursor.ch },
-      query,
+      query: trigger.query,
     };
   }
 
@@ -134,10 +139,11 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     }
 
     const line = context.editor.getLine(context.end.line);
-    const hasAutoCloser = line.slice(context.end.ch, context.end.ch + 2) === '}}';
-    const token = `{{${variableName}}}`;
+    const syntax = getTokenSyntax(this.registry.plugin.settings);
+    const hasAutoCloser = hasVariableTokenSuffixAt(line, context.end.ch, syntax);
+    const token = formatVariableToken(variableName, syntax);
     context.editor.replaceRange(
-      hasAutoCloser ? token.slice(0, -2) : token,
+      hasAutoCloser ? token.slice(0, -syntax.suffix.length) : token,
       context.start,
       context.end,
     );

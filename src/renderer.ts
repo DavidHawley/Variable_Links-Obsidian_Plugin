@@ -6,8 +6,7 @@ import InfoCard from './card';
 import { filePathFromLink } from './linkSyntax';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 import { getActiveCardBlocks } from './cardBlocks';
-
-const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
+import { findVariableTokens, getTokenSyntax } from './tokenSyntax';
 
 interface PreviewMode {
   rerender?: (force: boolean) => void;
@@ -56,7 +55,8 @@ export class Renderer {
 
   async processElement(el: HTMLElement): Promise<void> {
     if (!this.enabled) return;
-    // Walk text nodes and replace {{variable}} occurrences
+    const syntax = getTokenSyntax(this.registry.plugin.settings);
+    // Walk text nodes and replace Variable Link token occurrences.
     const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     const nodes: Text[] = [];
     let n: Node | null;
@@ -67,23 +67,21 @@ export class Renderer {
       // Skipping our own rendered spans makes this processor idempotent without
       // storing a marker on Obsidian's reusable Reading View section elements.
       if (parent.closest('code, pre, .cm-s, .variable-links-token')) continue;
-      if ((n.nodeValue || '').includes('{{')) nodes.push(n as Text);
+      if ((n.nodeValue || '').includes(syntax.prefix)) nodes.push(n as Text);
     }
 
     const resolutions: Promise<void>[] = [];
     const replacements: Array<{ textNode: Text; fragment: DocumentFragment }> = [];
     for (const textNode of nodes) {
       const text = textNode.nodeValue || '';
-      let match: RegExpExecArray | null;
       let lastIndex = 0;
       const frag = createFragment();
-      TOKEN_REGEX.lastIndex = 0;
       let any = false;
-      while ((match = TOKEN_REGEX.exec(text)) !== null) {
+      for (const match of findVariableTokens(text, syntax)) {
         any = true;
-        const before = text.slice(lastIndex, match.index);
+        const before = text.slice(lastIndex, match.start);
         if (before) frag.appendChild(document.createTextNode(before));
-        const varName = match[1].trim();
+        const varName = match.name;
         const placeholder = createSpan();
         placeholder.className = 'variable-links-token variable-links-token-reading';
         placeholder.textContent = '…';
@@ -101,7 +99,7 @@ export class Renderer {
         // from a placeholder to their final value during scrolling.
         resolutions.push(this.resolvePlaceholder(varName, placeholder));
 
-        lastIndex = TOKEN_REGEX.lastIndex;
+        lastIndex = match.end;
       }
       if (!any) continue;
       const rest = text.slice(lastIndex);

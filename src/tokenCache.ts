@@ -1,5 +1,6 @@
 import { App, EventRef, Plugin, TAbstractFile, TFile } from 'obsidian';
 import Registry from './registry';
+import { findVariableTokens, formatVariableToken, getTokenSyntax } from './tokenSyntax';
 
 type TokenLocation = { file: string; line: number; ch: number };
 type CachedToken = { guid: string; name: string; locations: TokenLocation[] };
@@ -221,15 +222,17 @@ export default class TokenCache {
 
   private replaceToken(content: string, oldName: string, newName: string) {
     const occurrences = this.findTokens(content).filter((occurrence) => occurrence.name === oldName);
+    const replacement = formatVariableToken(newName, getTokenSyntax(this.registry.plugin.settings));
     let updated = content;
     for (const occurrence of occurrences.reverse()) {
-      updated = updated.slice(0, occurrence.start) + `{{${newName}}}` + updated.slice(occurrence.end);
+      updated = updated.slice(0, occurrence.start) + replacement + updated.slice(occurrence.end);
     }
     return updated;
   }
 
   private findTokens(content: string): Occurrence[] {
     const occurrences: Occurrence[] = [];
+    const syntax = getTokenSyntax(this.registry.plugin.settings);
     const linePattern = /[^\r\n]*(?:\r\n|\n|\r|$)/g;
     let offset = 0;
     let lineNumber = 1;
@@ -246,16 +249,14 @@ export default class TokenCache {
         if (!fence) { fence = marker; fenceLength = fenceMatch[1].length; }
         else if (fence === marker && fenceMatch[1].length >= fenceLength) { fence = null; fenceLength = 0; }
       } else if (!fence) {
-        const tokenPattern = /\{\{\s*([^}\s]+)\s*\}\}/g;
-        let tokenMatch: RegExpExecArray | null;
-        while ((tokenMatch = tokenPattern.exec(line)) !== null) {
-          if (this.isInsideInlineCode(line, tokenMatch.index)) continue;
+        for (const tokenMatch of findVariableTokens(line, syntax)) {
+          if (this.isInsideInlineCode(line, tokenMatch.start)) continue;
           occurrences.push({
-            name: tokenMatch[1].trim(),
-            start: offset + tokenMatch.index,
-            end: offset + tokenPattern.lastIndex,
+            name: tokenMatch.name,
+            start: offset + tokenMatch.start,
+            end: offset + tokenMatch.end,
             line: lineNumber,
-            ch: tokenMatch.index + 1
+            ch: tokenMatch.start + 1
           });
         }
       }
