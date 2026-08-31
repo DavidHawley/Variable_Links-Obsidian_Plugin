@@ -72,6 +72,19 @@ export function normalizeVaultPath(value: unknown): string {
     : '';
 }
 
+export function profileMatchesPath(profile: AutolinkProfile, filePath: string): boolean {
+  const candidate = withMarkdownExtension(normalizeVaultPath(filePath));
+  if (!candidate) return false;
+  if (profile.scopeType === 'file') {
+    const target = withMarkdownExtension(normalizeVaultPath(profile.path));
+    return Boolean(target) && candidate.toLocaleLowerCase() === target.toLocaleLowerCase();
+  }
+  const folder = normalizeVaultPath(profile.path).toLocaleLowerCase();
+  const path = normalizeVaultPath(filePath).toLocaleLowerCase();
+  if (!folder || !path.startsWith(`${folder}/`)) return false;
+  return profile.includeSubfolders || !path.slice(folder.length + 1).includes('/');
+}
+
 function normalizeStringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const items = value
@@ -79,6 +92,10 @@ function normalizeStringList(value: unknown): string[] {
     .map((item) => item.trim())
     .filter(Boolean);
   return [...new Set(items)];
+}
+
+function withMarkdownExtension(path: string): string {
+  return path && !/\.md$/i.test(path) ? `${path}.md` : path;
 }
 
 function createAutolinkId(existing: ReadonlySet<string> = new Set()): string {

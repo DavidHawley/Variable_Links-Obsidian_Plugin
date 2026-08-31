@@ -11,6 +11,7 @@ import {
   type AutolinkProfile,
   type AutolinkScopeType,
 } from './autolink';
+import { openAutolinkProfilePreview } from './autolinkPreview';
 import VariableLinksPlugin from './main';
 import type { TokenSyntaxMigrationPlan } from './tokenCache';
 import {
@@ -544,6 +545,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     cardProperties.placeholder = 'One note property per line';
     const status = body.createDiv({ cls: 'variable-links-hint-text' });
     const actions = body.createDiv({ cls: 'variable-links-autolink-profile-actions' });
+    const preview = actions.createEl('button', { text: 'Preview matches', attr: { type: 'button' } });
     const save = actions.createEl('button', { text: 'Save profile', attr: { type: 'button' } });
     const remove = actions.createEl('button', {
       text: 'Delete',
@@ -563,23 +565,33 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       status.classList.toggle('is-error', Boolean(error));
       save.disabled = Boolean(error);
     };
+    const currentProfile = (): AutolinkProfile => ({
+      id: profile.id,
+      name: name.value.trim() || 'Unnamed profile',
+      enabled: enabled.checked,
+      scopeType: scope.value as AutolinkScopeType,
+      path: path.value,
+      includeSubfolders: scope.value === 'folder' && subfolders.checked,
+      valueProperty: valueProperty.value,
+      namePattern: namePattern.value,
+      cardPreset: cardPreset.value as AutolinkCardPreset,
+      cardProperties: cardProperties.value.split(/\r?\n|,/),
+    });
     listen(scope, 'change', updateState);
     listen(enabled, 'change', updateState);
     listen(path, 'input', updateState);
     listen(valueProperty, 'input', updateState);
+    listen(preview, 'click', () => {
+      const registry = this.variableLinksPlugin.registry;
+      if (registry) openAutolinkProfilePreview(
+        this.app,
+        this.variableLinksPlugin,
+        registry,
+        currentProfile(),
+      );
+    });
     listen(save, 'click', () => {
-      const updated: AutolinkProfile = {
-        id: profile.id,
-        name: name.value.trim() || 'Unnamed profile',
-        enabled: enabled.checked,
-        scopeType: scope.value as AutolinkScopeType,
-        path: path.value,
-        includeSubfolders: scope.value === 'folder' && subfolders.checked,
-        valueProperty: valueProperty.value,
-        namePattern: namePattern.value,
-        cardPreset: cardPreset.value as AutolinkCardPreset,
-        cardProperties: cardProperties.value.split(/\r?\n|,/),
-      };
+      const updated = currentProfile();
       save.disabled = true;
       void this.variableLinksPlugin.registry?.saveAutolinkProfiles(
         profiles.map((candidate) => candidate.id === profile.id ? updated : candidate),

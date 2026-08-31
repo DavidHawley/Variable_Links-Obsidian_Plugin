@@ -1410,6 +1410,21 @@
   gap: 8px;
 }
 
+.variable-links-autolink-preview-table {
+  display: block;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+  border-collapse: collapse;
+}
+
+.variable-links-autolink-preview-table th,
+.variable-links-autolink-preview-table td {
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  text-align: left;
+  vertical-align: top;
+}
+
 @media (max-width: 520px) {
   .variable-links-autolink-profile-field {
     grid-template-columns: 1fr;
