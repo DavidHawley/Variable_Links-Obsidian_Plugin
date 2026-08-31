@@ -677,20 +677,36 @@ export class Registry {
   }
 
   async deleteVariable(name: string) {
-    const variableName = name.trim();
-    if (!variableName) return;
-    const guid = this.data.get(variableName)?.guid;
-    await this.mutateRegistryLinks((links) => delete links[variableName]);
+    await this.deleteVariables([name]);
+  }
+
+  async deleteVariables(names: readonly string[]): Promise<number> {
+    const variableNames = [...new Set(names.map((name) => name.trim()))]
+      .filter((name) => name && this.data.has(name));
+    if (!variableNames.length) return 0;
+    const guids = variableNames
+      .map((name) => this.data.get(name)?.guid)
+      .filter((guid): guid is string => Boolean(guid));
+    await this.mutateRegistryLinks((links) => {
+      for (const variableName of variableNames) delete links[variableName];
+    });
     await this.load();
     await this.plugin.indexer?.build();
-    if (guid) await this.plugin.tokenCache?.removeGuid(guid);
-    try {
-      await this.plugin.saveInfoCardEditorCollapsedItems(variableName, []);
-    } catch {
-      new Notice('The variable was deleted, but its saved card designer collapse state could not be removed.');
+    if (guids.length) await this.plugin.tokenCache?.removeGuids(guids);
+    let collapseStateFailed = false;
+    for (const variableName of variableNames) {
+      try {
+        await this.plugin.saveInfoCardEditorCollapsedItems(variableName, []);
+      } catch {
+        collapseStateFailed = true;
+      }
+    }
+    if (collapseStateFailed) {
+      new Notice('The variables were deleted, but some saved card designer collapse states could not be removed.');
     }
     this.plugin.livePreviewRenderer?.refresh();
     await this.plugin.refreshManagementCenterViews();
+    return variableNames.length;
   }
 
   private confirmReservedTextCaseName(variableName: string): Promise<boolean> {

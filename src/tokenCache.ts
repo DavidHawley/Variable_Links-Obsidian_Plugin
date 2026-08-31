@@ -114,9 +114,21 @@ export default class TokenCache {
   }
 
   async removeGuid(guid: string) {
+    await this.removeGuids([guid]);
+  }
+
+  async removeGuids(guids: readonly string[]) {
     if (!this.active) return;
-    delete this.data.tokens[guid];
+    for (const guid of new Set(guids)) delete this.data.tokens[guid];
     await this.persist();
+  }
+
+  async countGuidLocations(guids: readonly string[]): Promise<number> {
+    if (!this.active) return 0;
+    await this.synchronize();
+    let count = 0;
+    for (const guid of new Set(guids)) count += this.data.tokens[guid]?.locations.length ?? 0;
+    return count;
   }
 
   async prepareRename(guid: string, oldName: string, newName: string) {

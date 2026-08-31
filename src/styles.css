@@ -1441,7 +1441,15 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 0 0 10px;
+  margin: 0;
+}
+
+.variable-links-management-center-list-tools {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  padding: 8px 0;
+  background: var(--background-primary);
 }
 
 .variable-links-management-center-controls input,
@@ -1460,7 +1468,16 @@
 }
 
 .variable-links-management-center-list-status {
-  margin: 6px 0;
+  margin: 0;
+}
+
+.variable-links-management-center-list-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--input-height);
+  margin-top: 6px;
 }
 
 .variable-links-management-center-list {

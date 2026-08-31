@@ -121,7 +121,8 @@ export class ManagementCenterView extends ItemView {
     this.addSummaryItem(summary, 'Manual', entries.length - managed);
     this.addSummaryItem(summary, 'Managed', managed);
 
-    const controls = content.createDiv({ cls: 'variable-links-management-center-controls' });
+    const listTools = content.createDiv({ cls: 'variable-links-management-center-list-tools' });
+    const controls = listTools.createDiv({ cls: 'variable-links-management-center-controls' });
     const search = controls.createEl('input', {
       cls: 'variable-links-management-center-search',
       attr: {
@@ -155,12 +156,21 @@ export class ManagementCenterView extends ItemView {
       this.state.sort,
     );
 
-    const status = content.createDiv({
+    const listToolbar = listTools.createDiv({ cls: 'variable-links-management-center-list-toolbar' });
+    const status = listToolbar.createDiv({
       cls: 'variable-links-management-center-list-status variable-links-hint-text',
       attr: { 'aria-live': 'polite' },
     });
+    const deleteSelected = listToolbar.createEl('button', {
+      text: 'Delete selected',
+      cls: 'mod-warning',
+      attr: { type: 'button' },
+    });
+    deleteSelected.addEventListener('click', () => {
+      void this.confirmBulkDelete(entries);
+    });
     const list = content.createDiv({ cls: 'variable-links-management-center-list' });
-    const renderList = (): void => this.renderList(entries, list, status);
+    const renderList = (): void => this.renderList(entries, list, status, deleteSelected);
     search.addEventListener('input', () => {
       this.state.query = search.value;
       this.saveViewState();
@@ -198,12 +208,15 @@ export class ManagementCenterView extends ItemView {
     entries: readonly VariableEntry[],
     list: HTMLElement,
     status: HTMLElement,
+    deleteSelected: HTMLButtonElement,
   ): void {
     list.empty();
     const visible = this.filterAndSort(entries);
     const selected = new Set(this.state.selected);
     const updateStatus = (): void => {
       status.setText(`Showing ${visible.length} of ${entries.length} · ${selected.size} selected`);
+      deleteSelected.disabled = selected.size === 0;
+      deleteSelected.setText(selected.size ? `Delete selected (${selected.size})` : 'Delete selected');
     };
     updateStatus();
 
@@ -387,6 +400,50 @@ export class ManagementCenterView extends ItemView {
     }
   }
 
+  private async confirmBulkDelete(entries: readonly VariableEntry[]): Promise<void> {
+    const selectedKeys = new Set(this.state.selected);
+    const selectedEntries = entries.filter(({ key }) => selectedKeys.has(key));
+    if (!selectedEntries.length) return;
+    const visibleKeys = new Set(this.filterAndSort(entries).map(({ key }) => key));
+    const hiddenCount = selectedEntries.filter(({ key }) => !visibleKeys.has(key)).length;
+    const guids = selectedEntries
+      .map(({ definition }) => definition.guid)
+      .filter((guid): guid is string => Boolean(guid));
+    let cachedTokenCount = 0;
+    try {
+      cachedTokenCount = await this.plugin.tokenCache?.countGuidLocations(guids) ?? 0;
+    } catch (error) {
+      new Notice(
+        `Variable Links: could not count affected tokens: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    new BulkDeleteVariablesModal(
+      this.plugin,
+      selectedEntries.map(({ name }) => name),
+      cachedTokenCount,
+      hiddenCount,
+      () => void this.deleteVariables(selectedEntries),
+    ).open();
+  }
+
+  private async deleteVariables(entries: readonly VariableEntry[]): Promise<void> {
+    const registry = this.plugin.registry;
+    if (!registry) return;
+    const deletedKeys = new Set(entries.map(({ key }) => key));
+    const previousSelection = [...this.state.selected];
+    this.state.selected = this.state.selected.filter((key) => !deletedKeys.has(key));
+    try {
+      const count = await registry.deleteVariables(entries.map(({ name }) => name));
+      this.saveViewState();
+      new Notice(`Variable Links: deleted ${count} variable link${count === 1 ? '' : 's'}.`);
+    } catch (error) {
+      this.state.selected = previousSelection;
+      this.refresh();
+      new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private saveViewState(): void {
     this.app.workspace.requestSaveLayout();
   }
@@ -412,6 +469,53 @@ class DeleteManagedVariableModal extends Modal {
       .addEventListener('click', () => this.close());
     actions.createEl('button', {
       text: 'Delete',
+      cls: 'mod-warning',
+      attr: { type: 'button' },
+    }).addEventListener('click', () => {
+      this.close();
+      this.onConfirm();
+    });
+  }
+
+  onClose(): void {
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+  }
+}
+
+class BulkDeleteVariablesModal extends Modal {
+  constructor(
+    private readonly plugin: VariableLinksPlugin,
+    private readonly variableNames: readonly string[],
+    private readonly cachedTokenCount: number,
+    private readonly hiddenCount: number,
+    private readonly onConfirm: () => void,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    const count = this.variableNames.length;
+    this.contentEl.createEl('h3', { text: 'Delete selected variable links?' });
+    this.contentEl.createEl('p', {
+      text: `Delete ${count} selected variable link${count === 1 ? '' : 's'}?${this.hiddenCount
+        ? ` This includes ${this.hiddenCount} selection${this.hiddenCount === 1 ? '' : 's'} hidden by the current filters.`
+        : ''}`,
+    });
+    this.contentEl.createEl('p', {
+      text: `${this.cachedTokenCount} cached token${this.cachedTokenCount === 1 ? '' : 's'} will become unresolved. Note text will not be changed.`,
+    });
+    const details = this.contentEl.createEl('details');
+    details.createEl('summary', { text: 'Review selected names' });
+    const names = details.createEl('ul');
+    for (const name of this.variableNames.slice(0, 100)) names.createEl('li', { text: name });
+    if (count > 100) names.createEl('li', { text: `…and ${count - 100} more` });
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
+      .addEventListener('click', () => this.close());
+    actions.createEl('button', {
+      text: 'Delete selected',
       cls: 'mod-warning',
       attr: { type: 'button' },
     }).addEventListener('click', () => {
