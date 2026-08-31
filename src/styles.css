@@ -1556,6 +1556,24 @@
   text-align: center;
 }
 
+.variable-links-management-center-delete-option {
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+.variable-links-management-center-delete-option label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: var(--font-medium);
+}
+
+.variable-links-management-center-delete-option p {
+  margin: 6px 0 0 24px;
+}
+
 @media (max-width: 520px) {
   .variable-links-management-center {
     padding: 14px 12px 24px;

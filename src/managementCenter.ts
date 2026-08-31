@@ -8,6 +8,7 @@ import {
 } from 'obsidian';
 import type VariableLinksPlugin from './main';
 import { getVariableType, type VariableDefinition } from './registry';
+import type { TokenValueReplacement, TokenValueReplacementPlan } from './tokenCache';
 
 export const VIEW_TYPE_MANAGEMENT_CENTER = 'variable-links-management-center';
 
@@ -29,6 +30,13 @@ interface VariableEntry {
   definition: VariableDefinition;
   key: string;
   name: string;
+}
+
+interface DeletionPreview {
+  fileCount: number;
+  replacements: Map<string, TokenValueReplacement>;
+  tokenCount: number;
+  unresolvedNames: string[];
 }
 
 const DEFAULT_STATE: ManagementCenterState = {
@@ -318,9 +326,7 @@ export class ManagementCenterView extends ItemView {
       remove.setAttribute('title', 'Delete variable');
       setIcon(remove, 'trash-2');
       remove.addEventListener('click', () => {
-        new DeleteManagedVariableModal(this.plugin, entry.name, () => {
-          void this.deleteVariable(entry);
-        }).open();
+        void this.confirmSingleDelete(entry);
       });
     }
   }
@@ -384,19 +390,16 @@ export class ManagementCenterView extends ItemView {
     return select;
   }
 
-  private async deleteVariable(entry: VariableEntry): Promise<void> {
-    const registry = this.plugin.registry;
-    if (!registry) return;
-    const wasSelected = this.state.selected.includes(entry.key);
-    this.state.selected = this.state.selected.filter((key) => key !== entry.key);
+  private async confirmSingleDelete(entry: VariableEntry): Promise<void> {
     try {
-      await registry.deleteVariable(entry.name);
-      this.saveViewState();
-      new Notice(`Variable Links: deleted “${entry.name}”.`);
+      const preview = await this.prepareDeletionPreview([entry]);
+      new DeleteManagedVariableModal(this.plugin, entry.name, preview, (replaceTokens) => {
+        void this.deleteVariables([entry], replaceTokens ? preview : null);
+      }).open();
     } catch (error) {
-      if (wasSelected) this.state.selected.push(entry.key);
-      this.refresh();
-      new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+      new Notice(
+        `Variable Links: could not prepare deletion: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -409,39 +412,103 @@ export class ManagementCenterView extends ItemView {
     const guids = selectedEntries
       .map(({ definition }) => definition.guid)
       .filter((guid): guid is string => Boolean(guid));
-    let cachedTokenCount = 0;
     try {
-      cachedTokenCount = await this.plugin.tokenCache?.countGuidLocations(guids) ?? 0;
+      const preview = await this.prepareDeletionPreview(selectedEntries, guids);
+      new BulkDeleteVariablesModal(
+        this.plugin,
+        selectedEntries.map(({ name }) => name),
+        preview,
+        hiddenCount,
+        (replaceTokens) => void this.deleteVariables(
+          selectedEntries,
+          replaceTokens ? preview : null,
+        ),
+      ).open();
     } catch (error) {
       new Notice(
-        `Variable Links: could not count affected tokens: ${error instanceof Error ? error.message : String(error)}`,
+        `Variable Links: could not prepare deletion: ${error instanceof Error ? error.message : String(error)}`,
       );
-      return;
     }
-    new BulkDeleteVariablesModal(
-      this.plugin,
-      selectedEntries.map(({ name }) => name),
-      cachedTokenCount,
-      hiddenCount,
-      () => void this.deleteVariables(selectedEntries),
-    ).open();
   }
 
-  private async deleteVariables(entries: readonly VariableEntry[]): Promise<void> {
+  private async prepareDeletionPreview(
+    entries: readonly VariableEntry[],
+    knownGuids?: readonly string[],
+  ): Promise<DeletionPreview> {
+    const guids = knownGuids ?? entries
+      .map(({ definition }) => definition.guid)
+      .filter((guid): guid is string => Boolean(guid));
+    const impact = await this.plugin.tokenCache?.getGuidLocationImpact(guids)
+      ?? { fileCount: 0, tokenCount: 0 };
+    const replacements = new Map<string, TokenValueReplacement>();
+    const unresolvedNames: string[] = [];
+    for (const entry of entries) {
+      const result = await this.plugin.resolver?.resolve(entry.name).catch(() => null);
+      if (!result?.ok) {
+        unresolvedNames.push(entry.name);
+        continue;
+      }
+      replacements.set(entry.name, {
+        value: formatResolvedValue(result.value),
+        textCase: entry.definition.textCase,
+      });
+    }
+    return { ...impact, replacements, unresolvedNames };
+  }
+
+  private async deleteVariables(
+    entries: readonly VariableEntry[],
+    replacementPreview: DeletionPreview | null,
+  ): Promise<void> {
     const registry = this.plugin.registry;
     if (!registry) return;
     const deletedKeys = new Set(entries.map(({ key }) => key));
     const previousSelection = [...this.state.selected];
     this.state.selected = this.state.selected.filter((key) => !deletedKeys.has(key));
+    let replacementPlan: TokenValueReplacementPlan | null = null;
+    let count = 0;
     try {
-      const count = await registry.deleteVariables(entries.map(({ name }) => name));
-      this.saveViewState();
-      new Notice(`Variable Links: deleted ${count} variable link${count === 1 ? '' : 's'}.`);
+      if (replacementPreview) {
+        const tokenCache = this.plugin.tokenCache;
+        if (!tokenCache) throw new Error('The token cache is unavailable.');
+        replacementPlan = await tokenCache.prepareValueReplacement(replacementPreview.replacements);
+        if (replacementPlan.tokenCount !== replacementPreview.tokenCount
+          || replacementPlan.fileCount !== replacementPreview.fileCount) {
+          throw new Error('Token locations changed after the confirmation opened. Review the deletion again.');
+        }
+        await replacementPlan.apply();
+      }
+      count = await registry.deleteVariables(entries.map(({ name }) => name));
     } catch (error) {
+      let rollbackError: unknown = null;
+      if (replacementPlan) {
+        try {
+          await replacementPlan.rollback();
+        } catch (caught) {
+          rollbackError = caught;
+        }
+      }
       this.state.selected = previousSelection;
       this.refresh();
       new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+      if (rollbackError) {
+        new Notice(
+          `Variable Links: ${getErrorMessage(rollbackError)}`,
+        );
+      }
+      return;
     }
+    if (replacementPlan) {
+      try {
+        await replacementPlan.commit();
+      } catch (error) {
+        new Notice(
+          `Variable Links: values were inserted, but the token cache could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    this.saveViewState();
+    new Notice(`Variable Links: deleted ${count} variable link${count === 1 ? '' : 's'}.`);
   }
 
   private saveViewState(): void {
@@ -453,7 +520,8 @@ class DeleteManagedVariableModal extends Modal {
   constructor(
     private readonly plugin: VariableLinksPlugin,
     private readonly variableName: string,
-    private readonly onConfirm: () => void,
+    private readonly preview: DeletionPreview,
+    private readonly onConfirm: (replaceTokens: boolean) => void,
   ) {
     super(plugin.app);
   }
@@ -462,8 +530,13 @@ class DeleteManagedVariableModal extends Modal {
     this.plugin.trackDialog(this);
     this.contentEl.createEl('h3', { text: 'Delete variable link?' });
     this.contentEl.createEl('p', {
-      text: `Delete “${this.variableName}”? Existing tokens will remain in notes but will no longer resolve.`,
+      text: `Delete “${this.variableName}”?`,
     });
+    const replacement = addReplacementControl(this.contentEl, this.preview);
+    const impact = this.contentEl.createEl('p');
+    const updateImpact = (): void => setDeletionImpactText(impact, this.preview, replacement.checked);
+    replacement.addEventListener('change', updateImpact);
+    updateImpact();
     const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
     actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
       .addEventListener('click', () => this.close());
@@ -473,7 +546,7 @@ class DeleteManagedVariableModal extends Modal {
       attr: { type: 'button' },
     }).addEventListener('click', () => {
       this.close();
-      this.onConfirm();
+      this.onConfirm(replacement.checked);
     });
   }
 
@@ -487,9 +560,9 @@ class BulkDeleteVariablesModal extends Modal {
   constructor(
     private readonly plugin: VariableLinksPlugin,
     private readonly variableNames: readonly string[],
-    private readonly cachedTokenCount: number,
+    private readonly preview: DeletionPreview,
     private readonly hiddenCount: number,
-    private readonly onConfirm: () => void,
+    private readonly onConfirm: (replaceTokens: boolean) => void,
   ) {
     super(plugin.app);
   }
@@ -503,9 +576,11 @@ class BulkDeleteVariablesModal extends Modal {
         ? ` This includes ${this.hiddenCount} selection${this.hiddenCount === 1 ? '' : 's'} hidden by the current filters.`
         : ''}`,
     });
-    this.contentEl.createEl('p', {
-      text: `${this.cachedTokenCount} cached token${this.cachedTokenCount === 1 ? '' : 's'} will become unresolved. Note text will not be changed.`,
-    });
+    const replacement = addReplacementControl(this.contentEl, this.preview);
+    const impact = this.contentEl.createEl('p');
+    const updateImpact = (): void => setDeletionImpactText(impact, this.preview, replacement.checked);
+    replacement.addEventListener('change', updateImpact);
+    updateImpact();
     const details = this.contentEl.createEl('details');
     details.createEl('summary', { text: 'Review selected names' });
     const names = details.createEl('ul');
@@ -520,7 +595,7 @@ class BulkDeleteVariablesModal extends Modal {
       attr: { type: 'button' },
     }).addEventListener('click', () => {
       this.close();
-      this.onConfirm();
+      this.onConfirm(replacement.checked);
     });
   }
 
@@ -528,6 +603,44 @@ class BulkDeleteVariablesModal extends Modal {
     this.plugin.releaseDialog(this);
     this.contentEl.empty();
   }
+}
+
+function addReplacementControl(parent: HTMLElement, preview: DeletionPreview): HTMLInputElement {
+  const option = parent.createDiv({ cls: 'variable-links-management-center-delete-option' });
+  const label = option.createEl('label');
+  const checkbox = label.createEl('input', { attr: { type: 'checkbox' } });
+  label.createSpan({ text: 'Replace active tokens with their current values before deleting' });
+  const hint = option.createEl('p', { cls: 'variable-links-hint-text' });
+  if (preview.unresolvedNames.length) {
+    checkbox.disabled = true;
+    const names = preview.unresolvedNames.slice(0, 5).join(', ');
+    const remaining = preview.unresolvedNames.length - Math.min(preview.unresolvedNames.length, 5);
+    hint.setText(
+      `Replacement is unavailable because ${names}${remaining ? ` and ${remaining} more` : ''} cannot currently be resolved.`,
+    );
+  } else if (!preview.tokenCount) {
+    checkbox.disabled = true;
+    hint.setText('No active tokens were found to replace.');
+  } else {
+    hint.setText('Values are inserted as text without variable links appearance, cards, or hyperlinks.');
+  }
+  return checkbox;
+}
+
+function setDeletionImpactText(
+  target: HTMLElement,
+  preview: DeletionPreview,
+  replaceTokens: boolean,
+): void {
+  if (replaceTokens) {
+    target.setText(
+      `${preview.tokenCount} active token${preview.tokenCount === 1 ? '' : 's'} in ${preview.fileCount} note${preview.fileCount === 1 ? '' : 's'} will be replaced with current values. They will no longer update dynamically.`,
+    );
+    return;
+  }
+  target.setText(
+    `${preview.tokenCount} cached token${preview.tokenCount === 1 ? '' : 's'} will become unresolved. Note text will not be changed.`,
+  );
 }
 
 function readState(state: unknown): ManagementCenterState {
@@ -562,4 +675,20 @@ function readVariableSort(value: unknown): VariableSort {
 
 function compareText(left: string, right: string): number {
   return left.localeCompare(right, undefined, { sensitivity: 'base', numeric: true });
+}
+
+function formatResolvedValue(value: unknown): string {
+  if (Array.isArray(value)) return value.map(String).join(', ');
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string'
+    || typeof value === 'number'
+    || typeof value === 'boolean'
+    || typeof value === 'bigint') return String(value);
+  return JSON.stringify(value) ?? '';
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'The note changes could not be restored.';
 }

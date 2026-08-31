@@ -690,9 +690,22 @@ export class Registry {
     await this.mutateRegistryLinks((links) => {
       for (const variableName of variableNames) delete links[variableName];
     });
-    await this.load();
-    await this.plugin.indexer?.build();
-    if (guids.length) await this.plugin.tokenCache?.removeGuids(guids);
+    try {
+      await this.load();
+    } catch {
+      for (const variableName of variableNames) this.data.delete(variableName);
+      new Notice('The variables were deleted, but the registry view could not be reloaded. Reload Obsidian.');
+    }
+    try {
+      await this.plugin.indexer?.build();
+    } catch {
+      new Notice('The variables were deleted, but the search index could not be refreshed. Reload Obsidian.');
+    }
+    try {
+      if (guids.length) await this.plugin.tokenCache?.removeGuids(guids);
+    } catch {
+      new Notice('The variables were deleted, but the token cache could not be refreshed. Rebuild it from settings.');
+    }
     let collapseStateFailed = false;
     for (const variableName of variableNames) {
       try {
@@ -702,10 +715,15 @@ export class Registry {
       }
     }
     if (collapseStateFailed) {
-      new Notice('The variables were deleted, but some saved card designer collapse states could not be removed.');
+      const subject = variableNames.length === 1 ? 'The variable was' : 'The variables were';
+      new Notice(`${subject} deleted, but some saved card designer collapse state could not be removed.`);
     }
     this.plugin.livePreviewRenderer?.refresh();
-    await this.plugin.refreshManagementCenterViews();
+    try {
+      await this.plugin.refreshManagementCenterViews();
+    } catch {
+      // The saved deletion remains authoritative; open views can refresh later.
+    }
     return variableNames.length;
   }
 

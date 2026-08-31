@@ -7,7 +7,7 @@ import {
   tokenSyntaxEquals,
   type TokenSyntax,
 } from './tokenSyntax';
-import type { VariableTextCase } from './textCase';
+import { applyVariableTextCase, type VariableTextCase } from './textCase';
 
 type TokenLocation = { file: string; line: number; ch: number };
 type CachedToken = { guid: string; name: string; locations: TokenLocation[] };
@@ -36,6 +36,19 @@ export interface TokenSyntaxMigrationPlan {
   tokenCount: number;
   apply(): Promise<void>;
   rollback(): Promise<void>;
+}
+
+export interface TokenValueReplacement {
+  value: string;
+  textCase?: VariableTextCase;
+}
+
+export interface TokenValueReplacementPlan {
+  fileCount: number;
+  tokenCount: number;
+  apply(): Promise<void>;
+  rollback(): Promise<void>;
+  commit(): Promise<void>;
 }
 
 export default class TokenCache {
@@ -123,12 +136,108 @@ export default class TokenCache {
     await this.persist();
   }
 
-  async countGuidLocations(guids: readonly string[]): Promise<number> {
-    if (!this.active) return 0;
-    await this.synchronize();
-    let count = 0;
-    for (const guid of new Set(guids)) count += this.data.tokens[guid]?.locations.length ?? 0;
-    return count;
+  async getGuidLocationImpact(guids: readonly string[]): Promise<{
+    fileCount: number;
+    tokenCount: number;
+  }> {
+    if (!this.active) return { fileCount: 0, tokenCount: 0 };
+    await this.synchronize(true);
+    const files = new Set<string>();
+    let tokenCount = 0;
+    for (const guid of new Set(guids)) {
+      const locations = this.data.tokens[guid]?.locations ?? [];
+      tokenCount += locations.length;
+      for (const location of locations) files.add(location.file);
+    }
+    return { fileCount: files.size, tokenCount };
+  }
+
+  async prepareValueReplacement(
+    replacements: ReadonlyMap<string, TokenValueReplacement>,
+  ): Promise<TokenValueReplacementPlan> {
+    if (!this.active) throw new Error('The token cache is not active.');
+    await this.synchronize(true);
+    if (!this.active) throw new Error('The token cache stopped during replacement preparation.');
+
+    const paths = new Set<string>();
+    for (const name of replacements.keys()) {
+      const guid = this.registry.getVariable(name)?.guid;
+      if (!guid) continue;
+      for (const location of this.data.tokens[guid]?.locations ?? []) paths.add(location.file);
+    }
+    const changes: Array<{
+      file: TFile;
+      original: string;
+      updated: string;
+      tokenCount: number;
+    }> = [];
+    for (const path of paths) {
+      const abstractFile = this.app.vault.getAbstractFileByPath(path);
+      if (!(abstractFile instanceof TFile)) continue;
+      const original = await this.app.vault.read(abstractFile);
+      const occurrences = this.findTokens(original)
+        .filter((occurrence) => replacements.has(occurrence.name));
+      if (!occurrences.length) continue;
+      let updated = original;
+      for (const occurrence of occurrences.reverse()) {
+        const replacement = replacements.get(occurrence.name);
+        if (!replacement) continue;
+        const value = applyVariableTextCase(
+          replacement.value,
+          occurrence.textCase ?? replacement.textCase,
+        );
+        updated = updated.slice(0, occurrence.start) + value + updated.slice(occurrence.end);
+      }
+      changes.push({ file: abstractFile, original, updated, tokenCount: occurrences.length });
+    }
+
+    const applied: typeof changes = [];
+    const rollback = async (): Promise<void> => {
+      const conflictedFiles: string[] = [];
+      for (const change of [...applied].reverse()) {
+        await this.app.vault.process(change.file, (current) => {
+          if (current === change.updated) return change.original;
+          conflictedFiles.push(change.file.path);
+          return current;
+        });
+      }
+      applied.length = 0;
+      await this.rebuild();
+      if (conflictedFiles.length) {
+        throw new Error(
+          `Could not restore ${conflictedFiles.length} note${conflictedFiles.length === 1 ? '' : 's'} because they changed during deletion.`,
+        );
+      }
+    };
+    const apply = async (): Promise<void> => {
+      try {
+        for (const change of changes) {
+          await this.app.vault.process(change.file, (current) => {
+            if (current !== change.original) {
+              throw new Error(`${change.file.path} changed after the deletion preview was prepared.`);
+            }
+            return change.updated;
+          });
+          applied.push(change);
+        }
+      } catch (error) {
+        await rollback();
+        throw error;
+      }
+    };
+    const commit = async (): Promise<void> => {
+      for (const change of applied) await this.indexFile(change.file);
+      applied.length = 0;
+      this.syncTokenNames();
+      await this.persist();
+    };
+    return {
+      fileCount: changes.length,
+      tokenCount: changes.reduce((total, change) => total + change.tokenCount, 0),
+      apply,
+      rollback,
+      commit,
+    };
   }
 
   async prepareRename(guid: string, oldName: string, newName: string) {

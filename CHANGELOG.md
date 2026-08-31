@@ -22,6 +22,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added a main-workspace Management Center foundation opened from the ribbon, command palette, or Settings, ready for registry management activities.
 - Added a searchable, sortable Variable Links registry list with ownership and type filters, persistent selections, and per-variable settings and delete actions.
 - Added confirmed bulk deletion for selected Variable Links, with hidden-selection disclosure and a cached-token impact count before deletion.
+- Added an opt-in deletion choice to replace active tokens with their current text values before removing single or selected Variable Links.
 
 ### Changed
 
