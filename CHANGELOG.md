@@ -7,6 +7,7 @@ All notable user-visible changes to Variable Links are recorded here.
 ### Added
 
 - Added configurable Variable Link token prefixes and suffixes with a live example, validation, and continued recognition of previous formats.
+- Added multi-term suggestion searches across variable names, display names, source files, and properties, plus explicit `*` searches of resolved variable values.
 
 ## 1.2.6 - 2026-08-30
 

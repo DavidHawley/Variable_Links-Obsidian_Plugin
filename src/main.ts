@@ -155,6 +155,7 @@ export default class VariableLinksPlugin extends Plugin {
         this.app,
         this.indexer,
         this.registry,
+        this.resolver,
         async () => this.refreshPanelViews(),
       );
       this.registerEditorSuggest(this.suggest);

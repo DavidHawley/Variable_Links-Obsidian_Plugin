@@ -10,9 +10,17 @@ import {
 } from 'obsidian';
 import Indexer from './indexer';
 import Registry, { getVariableType, type VariableType } from './registry';
+import Resolver from './resolver';
+import {
+  formatSuggestionValue,
+  parseSuggestionQuery,
+  scoreSuggestionFields,
+  truncateSuggestionValue,
+} from './suggestionSearch';
 import {
   findVariableTokenTrigger,
   formatVariableToken,
+  getRecognizedTokenSyntaxes,
   getTokenSyntax,
   hasVariableTokenSuffixAt,
 } from './tokenSyntax';
@@ -28,11 +36,21 @@ interface SuggestItem {
   variableType?: VariableType;
 }
 
+interface CachedSuggestionValue {
+  expires: number;
+  signature: string;
+  value: string | null;
+}
+
 export default class VariableSuggest extends EditorSuggest<SuggestItem> {
+  private suggestionGeneration = 0;
+  private valueCache = new Map<string, CachedSuggestionValue>();
+
   constructor(
     app: App,
     private readonly indexer: Indexer,
     private readonly registry: Registry,
+    private readonly resolver: Resolver,
     private readonly onVariableCreated: (name: string) => Promise<void>,
   ) {
     super(app);
@@ -40,9 +58,15 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
 
   onTrigger(cursor: EditorPosition, editor: Editor, _file: TFile | null): EditorSuggestTriggerInfo | null {
     const line = editor.getLine(cursor.line);
-    const syntax = getTokenSyntax(this.registry.plugin.settings);
-    const trigger = findVariableTokenTrigger(line, cursor.ch, syntax);
-    if (!trigger) return null;
+    const trigger = findVariableTokenTrigger(
+      line,
+      cursor.ch,
+      getRecognizedTokenSyntaxes(this.registry.plugin.settings),
+    );
+    if (!trigger) {
+      this.suggestionGeneration++;
+      return null;
+    }
     return {
       start: { line: cursor.line, ch: trigger.start },
       end: { line: cursor.line, ch: cursor.ch },
@@ -50,43 +74,64 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     };
   }
 
-  getSuggestions(context: EditorSuggestContext): SuggestItem[] {
-    const query = context.query.toLowerCase();
-    const matches = (item: SuggestItem): boolean => !query
-      || [item.name, item.display, item.file, item.property, item.value]
-        .filter((value): value is string => typeof value === 'string')
-        .some((value) => value.toLowerCase().includes(query));
+  async getSuggestions(context: EditorSuggestContext): Promise<SuggestItem[]> {
+    const generation = ++this.suggestionGeneration;
+    const query = parseSuggestionQuery(context.query);
     const variables: SuggestItem[] = Array.from(this.indexer.byName.values()).map((entry) => ({
       name: entry.name,
       kind: 'variable',
       display: entry.def.display,
       file: entry.filePath,
       property: getVariableType(entry.def) === 'property' ? entry.def.property : undefined,
-      value: entry.def.value,
       variableType: getVariableType(entry.def),
     }));
+
+    if (query.valueMode) {
+      const resolved = await Promise.all(variables.map(async (item) => {
+        const value = await this.getResolvedSuggestionValue(item.name);
+        return value === null ? null : { ...item, value };
+      }));
+      if (generation !== this.suggestionGeneration) return [];
+      const resolvedItems: SuggestItem[] = [];
+      for (const item of resolved) if (item !== null) resolvedItems.push(item);
+      return this.rankItems(
+        resolvedItems,
+        query.terms,
+        (item) => [item.value],
+      ).slice(0, 100);
+    }
+
     const properties: SuggestItem[] = [];
+    const mappedProperties = new Set<string>();
+    for (const entry of this.indexer.byName.values()) {
+      if (getVariableType(entry.def) !== 'property' || !entry.filePath) continue;
+      mappedProperties.add(this.propertyKey(entry.filePath, entry.def.property));
+    }
     for (const file of this.app.vault.getMarkdownFiles()) {
       const frontmatter: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter;
       if (!this.isRecord(frontmatter)) continue;
       for (const property of Object.keys(frontmatter)) {
-        const alreadyMapped = Array.from(this.indexer.byName.values()).some((entry) =>
-          getVariableType(entry.def) === 'property'
-          && entry.filePath === file.path
-          && entry.def.property === property
-        );
         properties.push({
           name: property,
           kind: 'property',
           file: file.path,
           property,
-          alreadyMapped,
+          alreadyMapped: mappedProperties.has(this.propertyKey(file.path, property)),
         });
       }
     }
-    const propertyMatches = properties.filter(matches);
+    const variableMatches = this.rankItems(
+      variables,
+      query.terms,
+      (item) => [item.name, item.display, item.file, item.property],
+    );
+    const propertyMatches = this.rankItems(
+      properties,
+      query.terms,
+      (item) => [item.name, item.file, item.property],
+    );
     return [
-      ...variables.filter(matches),
+      ...variableMatches,
       ...propertyMatches.filter((item) => !item.alreadyMapped),
       ...propertyMatches.filter((item) => item.alreadyMapped),
     ].slice(0, 100);
@@ -101,6 +146,12 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       : `Property · ${item.file ?? ''}`;
     el.createDiv({ text: detail, cls: 'suggest-meta' });
     if (item.display) el.createDiv({ text: item.display, cls: 'suggest-sub' });
+    if (typeof item.value === 'string') {
+      el.createDiv({
+        text: `Value: ${truncateSuggestionValue(item.value)}`,
+        cls: 'suggest-sub variable-links-suggest-value',
+      });
+    }
   }
 
   selectSuggestion(item: SuggestItem, _event: MouseEvent | KeyboardEvent): void {
@@ -139,13 +190,22 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     }
 
     const line = context.editor.getLine(context.end.line);
-    const syntax = getTokenSyntax(this.registry.plugin.settings);
-    const hasAutoCloser = hasVariableTokenSuffixAt(line, context.end.ch, syntax);
-    const token = formatVariableToken(variableName, syntax);
+    const activeSyntax = getTokenSyntax(this.registry.plugin.settings);
+    const trigger = findVariableTokenTrigger(
+      line,
+      context.end.ch,
+      getRecognizedTokenSyntaxes(this.registry.plugin.settings),
+    );
+    const triggerSyntax = trigger?.start === context.start.ch ? trigger.syntax : activeSyntax;
+    const hasAutoCloser = hasVariableTokenSuffixAt(line, context.end.ch, triggerSyntax);
+    const token = formatVariableToken(variableName, activeSyntax);
+    const replaceEnd = hasAutoCloser
+      ? { line: context.end.line, ch: context.end.ch + triggerSyntax.suffix.length }
+      : context.end;
     context.editor.replaceRange(
-      hasAutoCloser ? token.slice(0, -syntax.suffix.length) : token,
+      token,
       context.start,
-      context.end,
+      replaceEnd,
     );
     context.editor.setCursor({
       line: context.start.line,
@@ -159,6 +219,49 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
         new Notice('Variable links: the variable was created, but the properties panel could not be refreshed.');
       }
     }
+  }
+
+  private rankItems(
+    items: SuggestItem[],
+    terms: readonly string[],
+    fields: (item: SuggestItem) => readonly (string | undefined)[],
+  ): SuggestItem[] {
+    const ranked: Array<{ item: SuggestItem; score: number; index: number }> = [];
+    items.forEach((item, index) => {
+      const score = scoreSuggestionFields(terms, fields(item));
+      if (score !== null) ranked.push({ item, score, index });
+    });
+    ranked.sort((left, right) => left.score - right.score || left.index - right.index);
+    return ranked.map(({ item }) => item);
+  }
+
+  private async getResolvedSuggestionValue(name: string): Promise<string | null> {
+    const definition = this.registry.getVariable(name);
+    if (!definition) return null;
+    const signature = JSON.stringify([
+      definition.guid,
+      getVariableType(definition),
+      definition.file,
+      definition.property,
+      definition.value,
+    ]);
+    const now = Date.now();
+    const cached = this.valueCache.get(name);
+    if (cached && cached.signature === signature && cached.expires > now) return cached.value;
+
+    const result = await this.resolver.resolve(name).catch(() => null);
+    const formatted = result?.ok ? formatSuggestionValue(result.value) : '';
+    const value = formatted.length ? formatted : null;
+    this.valueCache.set(name, {
+      expires: now + 2000,
+      signature,
+      value,
+    });
+    return value;
+  }
+
+  private propertyKey(file: string, property: string): string {
+    return `${file}\u0000${property}`;
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {

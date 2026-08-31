@@ -13,6 +13,7 @@ export interface VariableTokenMatch {
 export interface VariableTokenTrigger {
   start: number;
   query: string;
+  syntax: TokenSyntax;
 }
 
 export const DEFAULT_TOKEN_SYNTAX: Readonly<TokenSyntax> = Object.freeze({
@@ -143,14 +144,20 @@ export function findVariableTokenAt(
 export function findVariableTokenTrigger(
   line: string,
   cursor: number,
-  syntax: TokenSyntax = DEFAULT_TOKEN_SYNTAX,
+  syntax: TokenSyntax | readonly TokenSyntax[] = DEFAULT_TOKEN_SYNTAX,
 ): VariableTokenTrigger | null {
-  if (!syntax.prefix || !syntax.suffix || cursor < 0 || cursor > line.length) return null;
-  const fromIndex = line.lastIndexOf(syntax.prefix, cursor - 1);
-  if (fromIndex === -1) return null;
-  const query = line.slice(fromIndex + syntax.prefix.length, cursor);
-  if (query.includes(syntax.suffix) || /\s/.test(query)) return null;
-  return { start: fromIndex, query };
+  if (cursor < 0 || cursor > line.length) return null;
+  const syntaxes: readonly TokenSyntax[] = isSingleTokenSyntax(syntax) ? [syntax] : syntax;
+  let trigger: VariableTokenTrigger | null = null;
+  for (const candidate of syntaxes) {
+    if (!candidate.prefix || !candidate.suffix) continue;
+    const fromIndex = line.lastIndexOf(candidate.prefix, cursor - 1);
+    if (fromIndex === -1 || (trigger && fromIndex <= trigger.start)) continue;
+    const query = line.slice(fromIndex + candidate.prefix.length, cursor);
+    if (query.includes(candidate.suffix)) continue;
+    trigger = { start: fromIndex, query, syntax: candidate };
+  }
+  return trigger;
 }
 
 export function hasVariableTokenSuffixAt(
