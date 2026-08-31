@@ -55,6 +55,8 @@ Before a pull request or release:
 5. Confirm all release version metadata agrees.
 6. Install the build in the test vault and complete a smoke test when the change affects plugin behavior.
 
+After every successful production build intended for testing, copy `main.js`, `manifest.json`, and `styles.css` into `D:\work\Books\Testing Grounds\.obsidian\plugins\variable-links` before asking the user to smoke-test it.
+
 Do not treat a successful build as a substitute for the smoke test.
 
 ## Plans and Presentations

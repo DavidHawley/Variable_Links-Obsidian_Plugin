@@ -7,6 +7,7 @@ import { filePathFromLink } from './linkSyntax';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 import { getActiveCardBlocks } from './cardBlocks';
 import { findVariableTokens, getRecognizedTokenSyntaxes } from './tokenSyntax';
+import { isCompleteVariableCreationExpression } from './creationSyntax';
 import { applyVariableTextCase, type VariableTextCase } from './textCase';
 
 interface PreviewMode {
@@ -86,6 +87,8 @@ export class Renderer {
         syntaxes,
         (name) => this.registry.getVariable(name) !== null,
       )) {
+        if (!this.registry.getVariable(match.name)
+          && isCompleteVariableCreationExpression(match.name)) continue;
         any = true;
         const before = text.slice(lastIndex, match.start);
         if (before) frag.appendChild(document.createTextNode(before));

@@ -8,6 +8,8 @@ import {
   TFile,
   WorkspaceLeaf,
 } from 'obsidian';
+import { Prec } from '@codemirror/state';
+import { EditorView, keymap } from '@codemirror/view';
 import CaretTracker, { LastTouched } from './caretTracker';
 import {
   getEffectiveVariableAppearance,
@@ -16,8 +18,9 @@ import {
   normalizeAppearanceOpacity,
 } from './appearance';
 import Indexer from './indexer';
+import { parseCapturedTimeCreationQuery } from './dateTime';
 import { filePathFromLink } from './linkSyntax';
-import LivePreviewRenderer from './livePreviewRenderer';
+import LivePreviewRenderer, { isProtectedMarkdownRange } from './livePreviewRenderer';
 import { Registry } from './registry';
 import Renderer from './renderer';
 import Resolver from './resolver';
@@ -45,15 +48,14 @@ import {
 import {
   applyVariableTextCase,
   getVariableTextCaseLabel,
+  parseVariableTextCaseQuery,
   VARIABLE_TEXT_CASE_OPTIONS,
   wrapVariableNameWithTextCase,
   type VariableTextCase,
 } from './textCase';
 
 interface EditorWithCoordinates extends Editor {
-  cm?: {
-    posAtCoords?: (coordinates: { x: number; y: number }) => number | null;
-  };
+  cm?: EditorView;
 }
 
 interface MenuItemWithSubmenu extends MenuItem {
@@ -97,6 +99,13 @@ interface MarkdownTokenMatch {
   textCase?: VariableTextCase;
 }
 
+interface CapturedTimeEditorExpression {
+  from: EditorPosition;
+  to: EditorPosition;
+  originalText: string;
+  expression: string;
+}
+
 export default class VariableLinksPlugin extends Plugin {
   settings: VariableLinksSettings = { ...DEFAULT_SETTINGS };
   registry: Registry | null = null;
@@ -114,6 +123,8 @@ export default class VariableLinksPlugin extends Plugin {
   private lastContextClick: ContextClick | null = null;
   private openDialogs = new Set<CloseableDialog>();
   private openPanels = new Set<PluginPanelResource>();
+  private pendingCapturedTimeExpressions = new Set<string>();
+  private lastCapturedTimeExpressionAttempt = new WeakMap<Editor, string>();
 
   async onload(): Promise<void> {
     this.active = true;
@@ -172,6 +183,13 @@ export default class VariableLinksPlugin extends Plugin {
         async (request) => this.openNamedVariableCreation(request),
       );
       this.registerEditorSuggest(this.suggest);
+      this.registerEvent(this.app.workspace.on('editor-change', (editor, info) => {
+        if (info.file) this.handleCompletedCapturedTimeExpression(editor, info.file);
+      }));
+      this.registerEditorExtension(Prec.highest(keymap.of([
+        { key: 'Tab', run: (view) => this.handleCapturedTimeCompletionCommand(view) },
+        { key: 'Enter', run: (view) => this.handleCapturedTimeCompletionCommand(view) },
+      ])));
     } catch (error) {
       new Notice(`Variable Links failed to load: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -188,6 +206,8 @@ export default class VariableLinksPlugin extends Plugin {
     this.clearContextMenuResources();
     this.lastContextClick = null;
     this.suggest?.close();
+    this.pendingCapturedTimeExpressions.clear();
+    this.lastCapturedTimeExpressionAttempt = new WeakMap<Editor, string>();
     this.caretTracker?.stop();
     this.tokenCache?.stop();
     this.registry?.unload();
@@ -346,6 +366,12 @@ export default class VariableLinksPlugin extends Plugin {
       defaultDateFormat: typeof saved.defaultDateFormat === 'string'
         ? saved.defaultDateFormat
         : DEFAULT_SETTINGS.defaultDateFormat,
+      defaultTimeFormat: typeof saved.defaultTimeFormat === 'string'
+        ? saved.defaultTimeFormat
+        : DEFAULT_SETTINGS.defaultTimeFormat,
+      defaultDateTimeFormat: typeof saved.defaultDateTimeFormat === 'string'
+        ? saved.defaultDateTimeFormat
+        : DEFAULT_SETTINGS.defaultDateTimeFormat,
       infoCardEditorWidth: normalizeInfoCardEditorDimension(saved.infoCardEditorWidth),
       infoCardEditorHeight: normalizeInfoCardEditorDimension(saved.infoCardEditorHeight),
       infoCardEditorCollapsedItems: normalizeInfoCardEditorCollapsedItems(
@@ -453,6 +479,198 @@ export default class VariableLinksPlugin extends Plugin {
       request.editor.focus();
     });
     await this.app.workspace.revealLeaf(leaf);
+  }
+
+  private handleCompletedCapturedTimeExpression(editor: Editor, file: TFile): void {
+    if (!this.active || !this.suggest || !this.registry) return;
+    const candidate = this.findCompletedCapturedTimeExpression(editor);
+    if (!candidate) {
+      this.lastCapturedTimeExpressionAttempt.delete(editor);
+      return;
+    }
+    this.beginCapturedTimeCompletion(editor, file, candidate, false);
+  }
+
+  private handleCapturedTimeCompletionCommand(view: EditorView): boolean {
+    if (!this.active) return false;
+    const activeEditor = this.app.workspace.activeEditor;
+    const editor = activeEditor?.editor;
+    const file = activeEditor?.file;
+    if (!editor || !file || (editor as EditorWithCoordinates).cm !== view) return false;
+    const candidate = this.findCapturedTimeExpressionAtCaret(editor);
+    if (!candidate) return false;
+    this.suggest?.close();
+    this.beginCapturedTimeCompletion(editor, file, candidate, true);
+    return true;
+  }
+
+  private beginCapturedTimeCompletion(
+    editor: Editor,
+    file: TFile,
+    candidate: CapturedTimeEditorExpression,
+    force: boolean,
+  ): void {
+    if (!this.suggest) return;
+    const signature = `${file.path}\u0000${candidate.from.line}\u0000${candidate.from.ch}\u0000${candidate.originalText}`;
+    if ((!force && this.lastCapturedTimeExpressionAttempt.get(editor) === signature)
+      || this.pendingCapturedTimeExpressions.has(signature)) return;
+    this.lastCapturedTimeExpressionAttempt.set(editor, signature);
+    this.pendingCapturedTimeExpressions.add(signature);
+    void this.suggest.completeTypedCapturedTimeExpression(
+      editor,
+      file,
+      candidate.from,
+      candidate.to,
+      candidate.originalText,
+      candidate.expression,
+    ).finally(() => {
+      this.pendingCapturedTimeExpressions.delete(signature);
+    });
+  }
+
+  private findCompletedCapturedTimeExpression(editor: Editor): CapturedTimeEditorExpression | null {
+    const cursor = editor.getCursor();
+    const line = editor.getLine(cursor.line);
+    const tokenEnds = [cursor.ch];
+    let beforeWhitespace = cursor.ch;
+    while (beforeWhitespace > 0 && /\s/.test(line[beforeWhitespace - 1])) beforeWhitespace--;
+    if (beforeWhitespace !== cursor.ch) tokenEnds.push(beforeWhitespace);
+
+    let best: CapturedTimeEditorExpression | null = null;
+    for (const tokenEnd of tokenEnds) {
+      for (const syntax of getRecognizedTokenSyntaxes(this.settings)) {
+        const closeStart = tokenEnd - syntax.suffix.length;
+        if (closeStart < 0 || !line.startsWith(syntax.suffix, closeStart)) continue;
+        const openStart = line.lastIndexOf(syntax.prefix, closeStart - 1);
+        if (openStart === -1) continue;
+        const closingRange = this.expandRepeatedPunctuationSuffix(
+          line,
+          openStart + syntax.prefix.length,
+          closeStart,
+          tokenEnd,
+          syntax.suffix,
+        );
+        const expression = line.slice(
+          openStart + syntax.prefix.length,
+          closingRange.contentEnd,
+        ).trim();
+        const caseQuery = parseVariableTextCaseQuery(expression);
+        if (this.registry?.getVariable(caseQuery.query)) continue;
+        const creation = parseCapturedTimeCreationQuery(caseQuery.query);
+        if (!creation?.type) continue;
+        const from = { line: cursor.line, ch: openStart };
+        const to = { line: cursor.line, ch: closingRange.tokenEnd };
+        const state = (editor as EditorWithCoordinates).cm?.state;
+        if (state && isProtectedMarkdownRange(
+          state,
+          editor.posToOffset(from),
+          editor.posToOffset(to),
+        )) continue;
+        if (!best || openStart > best.from.ch) {
+          best = {
+            from,
+            to,
+            originalText: line.slice(openStart, closingRange.tokenEnd),
+            expression,
+          };
+        }
+      }
+    }
+    return best;
+  }
+
+  private findCapturedTimeExpressionAtCaret(editor: Editor): CapturedTimeEditorExpression | null {
+    const cursor = editor.getCursor();
+    const line = editor.getLine(cursor.line);
+    let best: CapturedTimeEditorExpression | null = null;
+    for (const syntax of getRecognizedTokenSyntaxes(this.settings)) {
+      const openStart = line.lastIndexOf(syntax.prefix, cursor.ch);
+      if (openStart === -1) continue;
+      const contentStart = openStart + syntax.prefix.length;
+      if (cursor.ch < contentStart) continue;
+      const closeStart = line.indexOf(syntax.suffix, contentStart);
+      const hasCloser = closeStart !== -1 && cursor.ch <= closeStart + syntax.suffix.length;
+      let contentEnd = hasCloser ? closeStart : cursor.ch;
+      let tokenEnd = hasCloser ? closeStart + syntax.suffix.length : cursor.ch;
+      if (hasCloser) {
+        const closingRange = this.expandRepeatedPunctuationSuffix(
+          line,
+          contentStart,
+          contentEnd,
+          tokenEnd,
+          syntax.suffix,
+        );
+        contentEnd = closingRange.contentEnd;
+        tokenEnd = closingRange.tokenEnd;
+      }
+      if (!hasCloser) {
+        const partialBefore = this.partialSuffixBeforeCursor(line, cursor.ch, syntax.suffix);
+        if (partialBefore > 0) {
+          contentEnd -= partialBefore;
+        } else {
+          tokenEnd += this.partialSuffixAfterCursor(line, cursor.ch, syntax.suffix);
+        }
+      }
+      const expression = line.slice(contentStart, contentEnd).trim();
+      const caseQuery = parseVariableTextCaseQuery(expression);
+      if (this.registry?.getVariable(caseQuery.query)) continue;
+      const creation = parseCapturedTimeCreationQuery(caseQuery.query);
+      if (!creation?.type) continue;
+      const from = { line: cursor.line, ch: openStart };
+      const to = { line: cursor.line, ch: tokenEnd };
+      const state = (editor as EditorWithCoordinates).cm?.state;
+      if (state && isProtectedMarkdownRange(
+        state,
+        editor.posToOffset(from),
+        editor.posToOffset(to),
+      )) continue;
+      if (!best || openStart > best.from.ch) {
+        best = {
+          from,
+          to,
+          originalText: line.slice(openStart, tokenEnd),
+          expression,
+        };
+      }
+    }
+    return best;
+  }
+
+  private partialSuffixBeforeCursor(line: string, cursor: number, suffix: string): number {
+    for (let length = suffix.length - 1; length > 0; length--) {
+      const partial = suffix.slice(0, length);
+      if (/[\p{L}\p{N}]/u.test(partial)) continue;
+      if (cursor >= length
+        && line.slice(cursor - length, cursor) === partial) return length;
+    }
+    return 0;
+  }
+
+  private expandRepeatedPunctuationSuffix(
+    line: string,
+    contentStart: number,
+    contentEnd: number,
+    tokenEnd: number,
+    suffix: string,
+  ): { contentEnd: number; tokenEnd: number } {
+    const delimiter = suffix[0];
+    if (!delimiter
+      || /[\p{L}\p{N}]/u.test(delimiter)
+      || Array.from(suffix).some((character) => character !== delimiter)) {
+      return { contentEnd, tokenEnd };
+    }
+    while (contentEnd > contentStart && line[contentEnd - 1] === delimiter) contentEnd--;
+    while (tokenEnd < line.length && line[tokenEnd] === delimiter) tokenEnd++;
+    return { contentEnd, tokenEnd };
+  }
+
+  private partialSuffixAfterCursor(line: string, cursor: number, suffix: string): number {
+    for (let length = suffix.length - 1; length > 0; length--) {
+      const partial = suffix.slice(0, length);
+      if (/[\p{L}\p{N}]/u.test(partial)) continue;
+      if (line.startsWith(partial, cursor)) return length;
+    }
+    return 0;
   }
 
   private schedule(callback: () => void, delay: number): number | null {

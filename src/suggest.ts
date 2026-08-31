@@ -12,13 +12,22 @@ import Indexer from './indexer';
 import Registry, { getVariableType, type VariableType } from './registry';
 import Resolver from './resolver';
 import {
+  automaticCapturedTimeNameBase,
+  capturedTimeShortcutLabel,
+  defaultFormatForCapturedTime,
+  formatCapturedDateTime,
+  parseCapturedTimeCreationQuery,
+  type CapturedTimeCreationQuery,
+  type CapturedTimeShortcut,
+} from './dateTime';
+import {
   isValidNamedCreationName,
   parseFixedCreationSource,
   parseNamedCreationQuery,
   type NamedCreationQuery,
   type NamedCreationType,
 } from './creationSyntax';
-import { parsePropertyLink } from './linkSyntax';
+import { parsePropertyLink, toFileLink } from './linkSyntax';
 import {
   formatSuggestionValue,
   parseSuggestionQuery,
@@ -42,7 +51,7 @@ import {
 
 interface SuggestItem {
   name: string;
-  kind: 'variable' | 'property' | 'creation';
+  kind: 'variable' | 'property' | 'creation' | 'capture';
   alreadyMapped?: boolean;
   display?: string;
   file?: string;
@@ -53,6 +62,8 @@ interface SuggestItem {
   creationType?: NamedCreationType;
   creationSource?: string;
   creationError?: string;
+  captureType?: CapturedTimeShortcut;
+  captureFormat?: string;
 }
 
 export interface VariableCreationHandoff {
@@ -109,14 +120,18 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   async getSuggestions(context: EditorSuggestContext): Promise<SuggestItem[]> {
     const generation = ++this.suggestionGeneration;
     const caseQuery = parseVariableTextCaseQuery(context.query);
-    const creationQuery = this.registry.getVariable(caseQuery.query)
+    const exactVariable = this.registry.getVariable(caseQuery.query);
+    const creationQuery = exactVariable
       ? null
       : parseNamedCreationQuery(caseQuery.query);
+    const captureQuery = exactVariable
+      ? null
+      : parseCapturedTimeCreationQuery(caseQuery.query);
     const query = parseSuggestionQuery(creationQuery?.name ?? caseQuery.query);
-    const creationItems = this.getNamedCreationSuggestions(
-      creationQuery,
-      caseQuery.textCase,
-    );
+    const creationItems = [
+      ...this.getCapturedTimeSuggestions(captureQuery, context.file, caseQuery.textCase),
+      ...this.getNamedCreationSuggestions(creationQuery, caseQuery.textCase),
+    ];
     const variables: SuggestItem[] = Array.from(this.indexer.byName.values()).map((entry) => ({
       name: entry.name,
       kind: 'variable',
@@ -181,8 +196,14 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   }
 
   renderSuggestion(item: SuggestItem, el: HTMLElement): void {
-    el.createDiv({ text: item.kind === 'creation' ? `Create ${item.name}` : item.name });
-    const detail = item.kind === 'creation'
+    el.createDiv({
+      text: item.kind === 'creation' || item.kind === 'capture'
+        ? `Create ${item.name}`
+        : item.name,
+    });
+    const detail = item.kind === 'capture'
+      ? `${capturedTimeShortcutLabel(item.captureType ?? 'datetime')} · Captured fixed value`
+      : item.kind === 'creation'
       ? item.creationSource === undefined
         ? `Open ${item.creationType === 'fixed' ? 'fixed value' : 'property value'} editor`
         : `Create ${item.creationType === 'fixed' ? 'fixed value' : 'property mapping'}`
@@ -194,6 +215,14 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     el.createDiv({ text: detail, cls: 'suggest-meta' });
     if (item.creationError) {
       el.createDiv({ text: item.creationError, cls: 'suggest-sub mod-warning' });
+    } else if (item.kind === 'capture') {
+      el.createDiv({ text: `Value: ${item.value ?? ''}`, cls: 'suggest-sub' });
+      el.createDiv({ text: `Format: ${item.captureFormat ?? ''}`, cls: 'suggest-sub' });
+      el.createDiv({
+        text: `Token: ${formatVariableToken(item.name, getTokenSyntax(this.registry.plugin.settings), item.textCase)}`,
+        cls: 'suggest-sub',
+      });
+      el.createDiv({ text: `File link: ${item.file ?? ''}`, cls: 'suggest-sub' });
     } else if (item.kind === 'creation' && item.creationSource !== undefined) {
       el.createDiv({
         text: item.creationType === 'fixed'
@@ -223,9 +252,57 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     void this.applySuggestion(item, context);
   }
 
+  async completeTypedCapturedTimeExpression(
+    editor: Editor,
+    file: TFile,
+    from: EditorPosition,
+    to: EditorPosition,
+    originalText: string,
+    expression: string,
+  ): Promise<boolean> {
+    const caseQuery = parseVariableTextCaseQuery(expression.trim());
+    if (this.registry.getVariable(caseQuery.query)) return false;
+    const query = parseCapturedTimeCreationQuery(caseQuery.query);
+    if (!query?.type) return false;
+    const requestedName = query.requestedName?.trim();
+    if (requestedName && this.registry.getVariable(requestedName)) {
+      if (this.hasTextCaseNameConflict(requestedName, caseQuery.textCase)) return true;
+      if (this.replaceCreationExpression(
+        editor,
+        from,
+        to,
+        originalText,
+        requestedName,
+        caseQuery.textCase,
+        true,
+      )) {
+        new Notice(`Variable links: ${requestedName} already exists; inserted the existing token.`);
+      }
+      return true;
+    }
+    const item = this.getCapturedTimeSuggestions(query, file, caseQuery.textCase)
+      .find((candidate) => candidate.captureType === query.type);
+    if (!item) return false;
+    await this.completeCapturedTimeItem(item, editor, file, from, to, originalText, true);
+    return true;
+  }
+
   private async applySuggestion(item: SuggestItem, context: EditorSuggestContext): Promise<void> {
     let variableName = item.name;
     let createdVariable = false;
+    if (item.kind === 'capture') {
+      const target = this.getReplacementTarget(context);
+      await this.completeCapturedTimeItem(
+        item,
+        context.editor,
+        context.file,
+        context.start,
+        target.replaceEnd,
+        context.editor.getRange(context.start, target.replaceEnd),
+        false,
+      );
+      return;
+    }
     if (item.kind === 'creation') {
       if (item.creationError) {
         new Notice(`Variable links: ${item.creationError}`);
@@ -402,6 +479,141 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
           textCase,
         };
       });
+  }
+
+  private getCapturedTimeSuggestions(
+    query: CapturedTimeCreationQuery | null,
+    file: TFile,
+    textCase: VariableTextCase | undefined,
+  ): SuggestItem[] {
+    if (!query) return [];
+    const requestedName = query.requestedName?.trim();
+    if (query.requestedName !== undefined && !requestedName) return [];
+    if (requestedName && this.registry.getVariable(requestedName)) return [];
+    const syntax = getTokenSyntax(this.registry.plugin.settings);
+    const capturedAt = new Date();
+    const types: CapturedTimeShortcut[] = ['date', 'time', 'datetime'];
+    return types
+      .filter((type) => query.type
+        ? type === query.type
+        : !query.typeQuery || type.startsWith(query.typeQuery))
+      .map((type) => {
+        const name = requestedName ?? this.nextCapturedTimeName(file.basename, type);
+        const format = query.hasFormat
+          ? query.format ?? ''
+          : defaultFormatForCapturedTime(type, this.registry.plugin.settings);
+        let creationError = '';
+        if (!isValidNamedCreationName(name)) {
+          creationError = 'Variable names in creation expressions cannot contain spaces.';
+        } else if (name.includes(syntax.prefix) || name.includes(syntax.suffix)) {
+          creationError = requestedName
+            ? 'The variable name contains the active token prefix or suffix.'
+            : 'The automatic name conflicts with the active token format. Use Name=DATE, Name=TIME, or Name=DATETIME.';
+        }
+        const formatted = formatCapturedDateTime(capturedAt, format);
+        if (!creationError && !formatted.ok) creationError = formatted.error;
+        return {
+          name,
+          kind: 'capture' as const,
+          file: toFileLink(file.path),
+          value: formatted.ok ? formatted.value : '',
+          captureType: type,
+          captureFormat: format,
+          creationError: creationError || undefined,
+          textCase,
+        };
+      });
+  }
+
+  private async completeCapturedTimeItem(
+    item: SuggestItem,
+    editor: Editor,
+    file: TFile,
+    from: EditorPosition,
+    to: EditorPosition,
+    originalText: string,
+    preserveCursorAfterRange: boolean,
+  ): Promise<void> {
+    if (item.creationError) {
+      new Notice(`Variable links: ${item.creationError}`);
+      return;
+    }
+    if (this.registry.getVariable(item.name)) {
+      new Notice(`Variable links: ${item.name} already exists. The creation expression was not applied.`);
+      return;
+    }
+    if (this.hasTextCaseNameConflict(item.name, item.textCase)) return;
+    if (editor.getRange(from, to) !== originalText) return;
+    try {
+      await this.registry.saveVariable(item.name, {
+        type: 'fixed',
+        file: '',
+        property: '',
+        value: item.value ?? '',
+        link: toFileLink(file.path),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      new Notice(`Variable links: could not create ${item.name}: ${detail}`);
+      return;
+    }
+    if (!this.replaceCreationExpression(
+      editor,
+      from,
+      to,
+      originalText,
+      item.name,
+      item.textCase,
+      preserveCursorAfterRange,
+    )) {
+      new Notice(`Variable links: ${item.name} was created, but the edited expression was not replaced.`);
+      return;
+    }
+    try {
+      await this.indexer.build();
+      await this.onVariableCreated(item.name);
+    } catch {
+      new Notice('Variable links: the variable was created, but dependent views could not be refreshed.');
+    }
+  }
+
+  private replaceCreationExpression(
+    editor: Editor,
+    from: EditorPosition,
+    to: EditorPosition,
+    originalText: string,
+    name: string,
+    textCase: VariableTextCase | undefined,
+    preserveCursorAfterRange: boolean,
+  ): boolean {
+    if (editor.getRange(from, to) !== originalText) return false;
+    const token = formatVariableToken(
+      name,
+      getTokenSyntax(this.registry.plugin.settings),
+      textCase,
+    );
+    const cursor = editor.getCursor();
+    editor.replaceRange(token, from, to);
+    const cursorAfterRange = preserveCursorAfterRange
+      && cursor.line === to.line
+      && cursor.ch >= to.ch;
+    editor.setCursor(cursorAfterRange
+      ? { line: cursor.line, ch: cursor.ch + token.length - originalText.length }
+      : { line: from.line, ch: from.ch + token.length });
+    editor.focus();
+    return true;
+  }
+
+  private nextCapturedTimeName(fileName: string, type: CapturedTimeShortcut): string {
+    const base = automaticCapturedTimeNameBase(fileName);
+    const label = capturedTimeShortcutLabel(type);
+    let number = 1;
+    let name = '';
+    do {
+      name = `${base}_${label}_${String(number).padStart(2, '0')}`;
+      number++;
+    } while (this.registry.getVariable(name) || this.indexer.byName.has(name));
+    return name;
   }
 
   private applyTextCaseToSuggestions(

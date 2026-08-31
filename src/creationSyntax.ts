@@ -1,3 +1,5 @@
+import { parseCapturedTimeCreationQuery } from './dateTime';
+
 export type NamedCreationType = 'fixed' | 'property';
 
 export interface NamedCreationQuery {
@@ -57,6 +59,13 @@ export function parseFixedCreationSource(source: string): FixedCreationSourceRes
 
 export function isValidNamedCreationName(name: string): boolean {
   return name.length > 0 && !/\s/.test(name);
+}
+
+export function isCompleteVariableCreationExpression(value: string): boolean {
+  const captured = parseCapturedTimeCreationQuery(value);
+  if (captured?.type) return true;
+  const named = parseNamedCreationQuery(value);
+  return named?.type !== undefined;
 }
 
 function isEscaped(value: string, index: number): boolean {

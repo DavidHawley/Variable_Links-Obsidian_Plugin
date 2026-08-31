@@ -36,6 +36,8 @@ export interface VariableLinksSettings {
   openInNewPane: boolean;
   suggestionFuzzy: boolean;
   defaultDateFormat: string;
+  defaultTimeFormat: string;
+  defaultDateTimeFormat: string;
   infoCardEditorWidth: number | null;
   infoCardEditorHeight: number | null;
   infoCardEditorCollapsedItems: Record<string, string[]>;
@@ -63,6 +65,8 @@ export const DEFAULT_SETTINGS: VariableLinksSettings = {
   openInNewPane: false,
   suggestionFuzzy: true,
   defaultDateFormat: 'YYYY-MM-DD',
+  defaultTimeFormat: 'HH:mm:ss',
+  defaultDateTimeFormat: 'YYYY-MM-DD HH:mm:ss',
   infoCardEditorWidth: null,
   infoCardEditorHeight: null,
   infoCardEditorCollapsedItems: {},
@@ -319,13 +323,37 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         control: { type: 'toggle', key: 'suggestionFuzzy' },
       },
       {
-        name: 'Default date format',
-        desc: 'Format used for date properties when a variable does not specify one.',
-        control: {
-          type: 'text',
-          key: 'defaultDateFormat',
-          placeholder: 'YYYY-MM-DD',
-        },
+        type: 'group',
+        heading: 'Captured date and time',
+        items: [
+          {
+            name: 'Default date format',
+            desc: 'Format used by DATE shortcuts without an inline format.',
+            control: {
+              type: 'text',
+              key: 'defaultDateFormat',
+              placeholder: 'YYYY-MM-DD',
+            },
+          },
+          {
+            name: 'Default time format',
+            desc: 'Format used by TIME shortcuts without an inline format.',
+            control: {
+              type: 'text',
+              key: 'defaultTimeFormat',
+              placeholder: 'HH:mm:ss',
+            },
+          },
+          {
+            name: 'Default date-time format',
+            desc: 'Format used by DATETIME shortcuts without an inline format.',
+            control: {
+              type: 'text',
+              key: 'defaultDateTimeFormat',
+              placeholder: 'YYYY-MM-DD HH:mm:ss',
+            },
+          },
+        ],
       },
     ];
   }
@@ -344,7 +372,10 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       || key === 'tokenSuffix'
       || key === 'legacyTokenSyntaxes') return;
 
-    if (key === 'registryFilePath' || key === 'defaultDateFormat') {
+    if (key === 'registryFilePath'
+      || key === 'defaultDateFormat'
+      || key === 'defaultTimeFormat'
+      || key === 'defaultDateTimeFormat') {
       if (typeof value !== 'string') return;
       this.variableLinksPlugin.settings[key] = value.trim();
     } else if (key === 'readingViewHoverDelaySeconds') {

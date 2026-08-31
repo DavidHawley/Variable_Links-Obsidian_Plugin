@@ -11,6 +11,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added multi-term suggestion searches across variable names, display names, source files, and properties, plus explicit `*` searches of resolved variable values.
 - Added per-token text-case markers, autocomplete and context-menu controls, and a saved default text case for each Variable Link.
 - Added named `FIXED` and `PROPERTY` creation suggestions with inline sources or a prefilled Properties-panel handoff.
+- Added `DATE`, `TIME`, and `DATETIME` shortcuts that capture a formatted fixed value, link it to the current note, and complete through suggestions, normal typing, Tab, or Enter.
 
 ## 1.2.6 - 2026-08-30
 

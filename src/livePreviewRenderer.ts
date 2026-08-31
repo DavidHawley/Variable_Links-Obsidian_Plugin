@@ -11,6 +11,7 @@ import {
 } from '@codemirror/view';
 import Resolver from './resolver';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
+import { isCompleteVariableCreationExpression } from './creationSyntax';
 import { findVariableTokens, getRecognizedTokenSyntaxes } from './tokenSyntax';
 import { applyVariableTextCase, type VariableTextCase } from './textCase';
 const refreshVariableLinks = StateEffect.define<void>();
@@ -74,10 +75,14 @@ function isInsideWikiLinkTarget(state: EditorState, from: number, to: number): b
   return alias === -1 || relativeFrom < alias;
 }
 
+export function isProtectedMarkdownRange(state: EditorState, from: number, to: number): boolean {
+  return isInsideNonProseSyntax(state, from, to)
+    || isInsideWikiLinkTarget(state, from, to);
+}
+
 function shouldRenderToken(state: EditorState, from: number, to: number): boolean {
   return isLivePreview(state)
-    && !isInsideNonProseSyntax(state, from, to)
-    && !isInsideWikiLinkTarget(state, from, to);
+    && !isProtectedMarkdownRange(state, from, to);
 }
 
 export default class LivePreviewRenderer {
@@ -187,6 +192,8 @@ export default class LivePreviewRenderer {
           const name = match.name;
           const from = range.from + match.start;
           const to = range.from + match.end;
+          if (!this.resolver.registry.getVariable(name)
+            && isCompleteVariableCreationExpression(name)) continue;
           if (selection.from <= to && selection.to >= from) continue;
           if (!shouldRenderToken(view.state, from, to)) continue;
           builder.add(from, to, Decoration.replace({
