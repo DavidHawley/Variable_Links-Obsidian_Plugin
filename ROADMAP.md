@@ -197,7 +197,12 @@ This document records planned improvements to Variable Links. Plans may change a
 
 #### Managed-variable bulk tools
 
-- Add a dedicated, resizable management view opened from Settings or a command that lists every Variable Link, including manual entries, managed entries, and entries whose original Autolink profile was later deleted.
+- Add a custom Management Center workspace view that opens in the main editor area as a normal tab, similar to an Obsidian Bases file, rather than using a modal or sidebar-only interface.
+- Open or focus one existing Management Center tab instead of creating duplicates, and let Obsidian preserve, move, close, and restore it with the workspace.
+- Provide a command, a Settings button, and a clickable left-ribbon action with a clear icon for opening the Management Center.
+- Build a tab-ready Management Center shell, but expose only the Variables activity in 1.3; add other management activities incrementally without creating separate competing windows.
+- Preserve the Variables activity's search, sorting, filters, and GUID-based selection while the user works in other tabs or panes.
+- List every Variable Link, including manual entries, managed entries, and entries whose original Autolink profile was later deleted.
 - Keep each entry on one line with a selection checkbox on the left and compact Open settings and Delete actions on the right; truncate long fields visually while exposing their complete values accessibly.
 - Add a sticky toolbar with search, sorting by name, type, source, property, or profile, and filters for all, manual, managed, or one Autolink profile.
 - Allow Select all visible, preserve selection across searching and sorting, track selection by GUID rather than name, and always show the total selected count.
@@ -297,18 +302,21 @@ This document records planned improvements to Variable Links. Plans may change a
 2. Add multi-term suggestion matching, ranking, and explicit resolved-value search.
 3. Add displayed-text case markers, per-variable defaults, autocomplete, context-menu controls, and compatibility handling.
 4. Define the Autolink profile, managed-entry, note-property, precedence, and preview data models without changing notes or the registry automatically.
-5. Add exact-file and folder scanning, preview, conflict handling, confirmed synchronization, file-move behavior, and explicit managed-variable bulk tools.
-6. Add built-in Card preset selection and ordered Card-property population while keeping the full custom template system in 1.4.
-7. Add captured date and time shortcuts and the shared formatter on top of the centralized token language.
-8. Add contextual help, complete protected-context and compatibility testing, install the build in the test vault, and perform the final smoke test.
+5. Add exact-file and folder scanning, preview, conflict handling, confirmed synchronization, and file-move behavior.
+6. Add the main-workspace Management Center shell, Variables activity, ribbon/command/Settings entry points, row actions, bulk deletion, and mass rename.
+7. Add built-in Card preset selection and ordered Card-property population while keeping the full custom template system in 1.4.
+8. Add captured date and time shortcuts and the shared formatter on top of the centralized token language.
+9. Add contextual help, complete protected-context and compatibility testing, install the build in the test vault, and perform the final smoke test.
 
 ## 1.4.0
 
 > **Planning gate:** Review and iterate on the complete Card type, template, rule, population, and registry-management editing behavior before implementation begins. Build on the Autolink profiles, stable template identifiers, basic Card population, and management view introduced in 1.3 rather than creating parallel systems. Keep the first version declarative and understandable rather than adding a scripting language.
 
-### Direct registry management
+### Management Center expansion and direct registry management
 
 - Extend the 1.3 Variable Link management view with direct editing while preserving its compact single-line collapsed rows.
+- Add focused Autolink, Templates and rules, and Diagnostics activities as tabs in the same Management Center when their workflows are mature enough to move beyond Settings or standalone dialogs.
+- Keep each activity backed by the existing profile, template, rule, registry, and diagnostic systems rather than duplicating storage or validation inside the Management Center.
 - Allow safe, simple values such as Display name and Favorite to be edited inline.
 - Provide an expandable row inspector or adjacent detail editor for variable type, source note, property, fixed value, file link, default text case, appearance, Card, and Autolink ownership information.
 - Reuse the existing Properties-panel validation, type-change confirmation, property suggestions, rename protections, and Card editor instead of implementing different rules in the manager.
