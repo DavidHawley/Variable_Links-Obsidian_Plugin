@@ -2,7 +2,7 @@ import { App, Editor, EditorPosition, MarkdownView, TFile } from 'obsidian';
 import type VariableLinksPlugin from './main';
 import Registry, { VariableDefinition } from './registry';
 import Resolver from './resolver';
-import { findVariableTokenAt, getTokenSyntax } from './tokenSyntax';
+import { findVariableTokenAt, getRecognizedTokenSyntaxes } from './tokenSyntax';
 
 export interface LastTouched {
   name: string;
@@ -48,7 +48,7 @@ export default class CaretTracker {
   }
 
   findTokenAtIndex(text: string, index: number): { name: string; start: number; end: number } | null {
-    return findVariableTokenAt(text, index, getTokenSyntax(this.plugin.settings));
+    return findVariableTokenAt(text, index, getRecognizedTokenSyntaxes(this.plugin.settings));
   }
 
   private async runLoop(generation: number): Promise<void> {

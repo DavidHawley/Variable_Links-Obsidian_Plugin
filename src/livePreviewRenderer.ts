@@ -11,7 +11,7 @@ import {
 } from '@codemirror/view';
 import Resolver from './resolver';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
-import { findVariableTokens, getTokenSyntax } from './tokenSyntax';
+import { findVariableTokens, getRecognizedTokenSyntaxes } from './tokenSyntax';
 const refreshVariableLinks = StateEffect.define<void>();
 
 const NON_PROSE_NODE_FRAGMENTS = [
@@ -154,7 +154,7 @@ export default class LivePreviewRenderer {
     const buildDecorations = (view: EditorView): DecorationSet => {
       const builder = new RangeSetBuilder<Decoration>();
       if (!this.active || !isLivePreview(view.state)) return builder.finish();
-      const syntax = getTokenSyntax(this.resolver.registry.plugin.settings);
+      const syntaxes = getRecognizedTokenSyntaxes(this.resolver.registry.plugin.settings);
       const selection = view.state.selection.main;
       const visibleLineRanges: Array<{ from: number; to: number }> = [];
       for (const range of view.visibleRanges) {
@@ -167,7 +167,7 @@ export default class LivePreviewRenderer {
 
       for (const range of visibleLineRanges) {
         const text = view.state.sliceDoc(range.from, range.to);
-        for (const match of findVariableTokens(text, syntax)) {
+        for (const match of findVariableTokens(text, syntaxes)) {
           const name = match.name;
           const from = range.from + match.start;
           const to = range.from + match.end;

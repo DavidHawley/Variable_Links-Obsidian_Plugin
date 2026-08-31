@@ -14,6 +14,7 @@ import {
 import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
 import { filePathFromLink } from './linkSyntax';
+import { getTokenSyntax } from './tokenSyntax';
 
 export type VariableType = 'property' | 'fixed';
 
@@ -371,6 +372,10 @@ export class Registry {
     const oldName = previousName?.trim();
     const type = getVariableType(definition);
     if (!variableName) throw new Error('Variable name is required.');
+    const tokenSyntax = getTokenSyntax(this.plugin.settings);
+    if (variableName.includes(tokenSyntax.prefix) || variableName.includes(tokenSyntax.suffix)) {
+      throw new Error('Variable names cannot contain the active token prefix or suffix.');
+    }
     if (type === 'property' && !definition.file?.trim()) throw new Error('A source note is required.');
     if (type === 'property' && !definition.property?.trim()) {
       throw new Error('A property name is required.');

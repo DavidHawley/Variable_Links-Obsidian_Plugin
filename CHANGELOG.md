@@ -2,6 +2,12 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
+## 1.3.0 - Unreleased
+
+### Added
+
+- Added configurable Variable Link token prefixes and suffixes with a live example, validation, and continued recognition of previous formats.
+
 ## 1.2.6 - 2026-08-30
 
 ### Added

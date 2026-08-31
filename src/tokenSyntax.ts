@@ -7,6 +7,7 @@ export interface VariableTokenMatch {
   name: string;
   start: number;
   end: number;
+  syntax: TokenSyntax;
 }
 
 export interface VariableTokenTrigger {
@@ -19,6 +20,35 @@ export const DEFAULT_TOKEN_SYNTAX: Readonly<TokenSyntax> = Object.freeze({
   suffix: '}}',
 });
 
+export const MAX_TOKEN_DELIMITER_LENGTH = 12;
+
+export function normalizeTokenDelimiter(value: unknown, fallback: string): string {
+  if (typeof value !== 'string'
+    || value.length === 0
+    || value.length > MAX_TOKEN_DELIMITER_LENGTH
+    || value.trim().length === 0
+    || /[\r\n]/.test(value)) return fallback;
+  return value;
+}
+
+export function normalizeLegacyTokenSyntaxes(
+  value: unknown,
+  active: TokenSyntax,
+): TokenSyntax[] {
+  if (!Array.isArray(value)) return [];
+  const syntaxes: TokenSyntax[] = [];
+  for (const candidate of value) {
+    if (!isRecord(candidate)) continue;
+    const prefix = normalizeTokenDelimiter(candidate.prefix, '');
+    const suffix = normalizeTokenDelimiter(candidate.suffix, '');
+    const syntax = { prefix, suffix };
+    if (!prefix || !suffix || prefix === suffix || tokenSyntaxEquals(active, syntax)) continue;
+    if (syntaxes.some((existing) => tokenSyntaxEquals(existing, syntax))) continue;
+    syntaxes.push(syntax);
+  }
+  return syntaxes.slice(0, 5);
+}
+
 export function getTokenSyntax(settings?: unknown): TokenSyntax {
   if (!isRecord(settings)) return { ...DEFAULT_TOKEN_SYNTAX };
   const prefix = typeof settings.tokenPrefix === 'string' && settings.tokenPrefix.length > 0
@@ -30,6 +60,25 @@ export function getTokenSyntax(settings?: unknown): TokenSyntax {
   return { prefix, suffix };
 }
 
+export function getRecognizedTokenSyntaxes(settings?: unknown): TokenSyntax[] {
+  const active = getTokenSyntax(settings);
+  const syntaxes = [active];
+  if (!isRecord(settings) || !Array.isArray(settings.legacyTokenSyntaxes)) return syntaxes;
+  for (const value of settings.legacyTokenSyntaxes) {
+    if (!isRecord(value)) continue;
+    const prefix = typeof value.prefix === 'string' ? value.prefix : '';
+    const suffix = typeof value.suffix === 'string' ? value.suffix : '';
+    if (!prefix || !suffix || prefix === suffix || /[\r\n]/.test(prefix + suffix)) continue;
+    if (syntaxes.some((syntax) => tokenSyntaxEquals(syntax, { prefix, suffix }))) continue;
+    syntaxes.push({ prefix, suffix });
+  }
+  return syntaxes;
+}
+
+export function tokenSyntaxEquals(left: TokenSyntax, right: TokenSyntax): boolean {
+  return left.prefix === right.prefix && left.suffix === right.suffix;
+}
+
 export function formatVariableToken(
   name: string,
   syntax: TokenSyntax = DEFAULT_TOKEN_SYNTAX,
@@ -39,16 +88,43 @@ export function formatVariableToken(
 
 export function findVariableTokens(
   text: string,
-  syntax: TokenSyntax = DEFAULT_TOKEN_SYNTAX,
+  syntax: TokenSyntax | readonly TokenSyntax[] = DEFAULT_TOKEN_SYNTAX,
 ): VariableTokenMatch[] {
-  if (!text || !syntax.prefix || !syntax.suffix) return [];
-  const pattern = createVariableTokenPattern(syntax);
+  if (!text) return [];
+  const syntaxes: readonly TokenSyntax[] = isSingleTokenSyntax(syntax) ? [syntax] : syntax;
+  const candidates: Array<VariableTokenMatch & { priority: number }> = [];
+  syntaxes.forEach((candidateSyntax, priority) => {
+    if (!candidateSyntax.prefix || !candidateSyntax.suffix) return;
+    const pattern = createVariableTokenPattern(candidateSyntax);
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const name = match[1]?.trim();
+      if (!name) continue;
+      candidates.push({
+        name,
+        start: match.index,
+        end: pattern.lastIndex,
+        syntax: candidateSyntax,
+        priority,
+      });
+    }
+  });
+  candidates.sort((left, right) =>
+    left.start - right.start || left.priority - right.priority || right.end - left.end
+  );
+
   const matches: VariableTokenMatch[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    const name = match[1]?.trim();
-    if (!name) continue;
-    matches.push({ name, start: match.index, end: pattern.lastIndex });
+  for (const candidate of candidates) {
+    const overlaps = matches.some((match) =>
+      candidate.start < match.end && candidate.end > match.start
+    );
+    if (overlaps) continue;
+    matches.push({
+      name: candidate.name,
+      start: candidate.start,
+      end: candidate.end,
+      syntax: candidate.syntax,
+    });
   }
   return matches;
 }
@@ -56,12 +132,11 @@ export function findVariableTokens(
 export function findVariableTokenAt(
   text: string,
   index: number,
-  syntax: TokenSyntax = DEFAULT_TOKEN_SYNTAX,
+  syntax: TokenSyntax | readonly TokenSyntax[] = DEFAULT_TOKEN_SYNTAX,
 ): VariableTokenMatch | null {
   if (index < 0 || index > text.length) return null;
-  const contentEndOffset = syntax.suffix.length;
   return findVariableTokens(text, syntax).find((match) =>
-    index >= match.start && index <= match.end - contentEndOffset
+    index >= match.start && index <= match.end - match.syntax.suffix.length
   ) ?? null;
 }
 
@@ -102,4 +177,10 @@ function escapeRegExp(value: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isSingleTokenSyntax(
+  value: TokenSyntax | readonly TokenSyntax[],
+): value is TokenSyntax {
+  return !Array.isArray(value);
 }

@@ -32,7 +32,14 @@ import {
 } from './settings';
 import VariableSuggest from './suggest';
 import TokenCache from './tokenCache';
-import { findVariableTokens, formatVariableToken, getTokenSyntax } from './tokenSyntax';
+import {
+  findVariableTokens,
+  formatVariableToken,
+  getRecognizedTokenSyntaxes,
+  getTokenSyntax,
+  normalizeLegacyTokenSyntaxes,
+  normalizeTokenDelimiter,
+} from './tokenSyntax';
 
 interface EditorWithCoordinates extends Editor {
   cm?: {
@@ -225,6 +232,14 @@ export default class VariableLinksPlugin extends Plugin {
     await this.refreshPanelViews();
   }
 
+  async refreshAfterTokenSyntaxChange(): Promise<void> {
+    if (!this.active) return;
+    await this.tokenCache?.rebuild();
+    if (!this.active) return;
+    this.livePreviewRenderer?.refresh();
+    await this.refreshPanelViews();
+  }
+
   private async updateOpenedFileTokenCache(file: TFile): Promise<void> {
     if (!this.active) return;
     try {
@@ -254,10 +269,29 @@ export default class VariableLinksPlugin extends Plugin {
     const loaded: unknown = await this.loadData();
     const saved = this.isRecord(loaded) ? loaded : {};
     const defaultRegistryPath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/registry.json`;
+    let tokenPrefix = normalizeTokenDelimiter(
+      saved.tokenPrefix,
+      DEFAULT_SETTINGS.tokenPrefix,
+    );
+    let tokenSuffix = normalizeTokenDelimiter(
+      saved.tokenSuffix,
+      DEFAULT_SETTINGS.tokenSuffix,
+    );
+    if (tokenPrefix === tokenSuffix) {
+      tokenPrefix = DEFAULT_SETTINGS.tokenPrefix;
+      tokenSuffix = DEFAULT_SETTINGS.tokenSuffix;
+    }
+    const activeTokenSyntax = { prefix: tokenPrefix, suffix: tokenSuffix };
     this.settings = {
       registryFilePath: typeof saved.registryFilePath === 'string'
         ? saved.registryFilePath
         : defaultRegistryPath,
+      tokenPrefix,
+      tokenSuffix,
+      legacyTokenSyntaxes: normalizeLegacyTokenSyntaxes(
+        saved.legacyTokenSyntaxes,
+        activeTokenSyntax,
+      ),
       enableInfoCards: typeof saved.enableInfoCards === 'boolean'
         ? saved.enableInfoCards
         : DEFAULT_SETTINGS.enableInfoCards,
@@ -552,9 +586,9 @@ export default class VariableLinksPlugin extends Plugin {
   ): VariableTokenContext | null {
     if (!position) return null;
     const line = editor.getLine(position.line);
-    const syntax = getTokenSyntax(this.settings);
+    const syntaxes = getRecognizedTokenSyntaxes(this.settings);
     const matchingTokens: VariableTokenContext[] = [];
-    for (const match of findVariableTokens(line, syntax)) {
+    for (const match of findVariableTokens(line, syntaxes)) {
       if (expectedName && match.name !== expectedName) continue;
       const token = {
         name: match.name,
@@ -648,7 +682,7 @@ export default class VariableLinksPlugin extends Plugin {
 
   private findMarkdownTokenMatches(source: string): MarkdownTokenMatch[] {
     const matches: MarkdownTokenMatch[] = [];
-    for (const match of findVariableTokens(source, getTokenSyntax(this.settings))) {
+    for (const match of findVariableTokens(source, getRecognizedTokenSyntaxes(this.settings))) {
       if (this.isMarkdownCodePosition(source, match.start)) continue;
       matches.push(match);
     }

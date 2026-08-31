@@ -6,7 +6,7 @@ import InfoCard from './card';
 import { filePathFromLink } from './linkSyntax';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 import { getActiveCardBlocks } from './cardBlocks';
-import { findVariableTokens, getTokenSyntax } from './tokenSyntax';
+import { findVariableTokens, getRecognizedTokenSyntaxes } from './tokenSyntax';
 
 interface PreviewMode {
   rerender?: (force: boolean) => void;
@@ -55,7 +55,7 @@ export class Renderer {
 
   async processElement(el: HTMLElement): Promise<void> {
     if (!this.enabled) return;
-    const syntax = getTokenSyntax(this.registry.plugin.settings);
+    const syntaxes = getRecognizedTokenSyntaxes(this.registry.plugin.settings);
     // Walk text nodes and replace Variable Link token occurrences.
     const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     const nodes: Text[] = [];
@@ -67,7 +67,10 @@ export class Renderer {
       // Skipping our own rendered spans makes this processor idempotent without
       // storing a marker on Obsidian's reusable Reading View section elements.
       if (parent.closest('code, pre, .cm-s, .variable-links-token')) continue;
-      if ((n.nodeValue || '').includes(syntax.prefix)) nodes.push(n as Text);
+      const value = n.nodeValue || '';
+      if (syntaxes.some((syntax) => value.includes(syntax.prefix))) {
+        nodes.push(n as Text);
+      }
     }
 
     const resolutions: Promise<void>[] = [];
@@ -77,7 +80,7 @@ export class Renderer {
       let lastIndex = 0;
       const frag = createFragment();
       let any = false;
-      for (const match of findVariableTokens(text, syntax)) {
+      for (const match of findVariableTokens(text, syntaxes)) {
         any = true;
         const before = text.slice(lastIndex, match.start);
         if (before) frag.appendChild(document.createTextNode(before));

@@ -1,6 +1,11 @@
 import { App, EventRef, Plugin, TAbstractFile, TFile } from 'obsidian';
 import Registry from './registry';
-import { findVariableTokens, formatVariableToken, getTokenSyntax } from './tokenSyntax';
+import {
+  findVariableTokens,
+  formatVariableToken,
+  getRecognizedTokenSyntaxes,
+  type TokenSyntax,
+} from './tokenSyntax';
 
 type TokenLocation = { file: string; line: number; ch: number };
 type CachedToken = { guid: string; name: string; locations: TokenLocation[] };
@@ -9,7 +14,14 @@ type CacheData = {
   files: Record<string, { mtime: number; size: number }>;
   tokens: Record<string, CachedToken>;
 };
-type Occurrence = { name: string; start: number; end: number; line: number; ch: number };
+type Occurrence = {
+  name: string;
+  start: number;
+  end: number;
+  line: number;
+  ch: number;
+  syntax: TokenSyntax;
+};
 
 export default class TokenCache {
   private app: App;
@@ -222,9 +234,9 @@ export default class TokenCache {
 
   private replaceToken(content: string, oldName: string, newName: string) {
     const occurrences = this.findTokens(content).filter((occurrence) => occurrence.name === oldName);
-    const replacement = formatVariableToken(newName, getTokenSyntax(this.registry.plugin.settings));
     let updated = content;
     for (const occurrence of occurrences.reverse()) {
+      const replacement = formatVariableToken(newName, occurrence.syntax);
       updated = updated.slice(0, occurrence.start) + replacement + updated.slice(occurrence.end);
     }
     return updated;
@@ -232,7 +244,7 @@ export default class TokenCache {
 
   private findTokens(content: string): Occurrence[] {
     const occurrences: Occurrence[] = [];
-    const syntax = getTokenSyntax(this.registry.plugin.settings);
+    const syntaxes = getRecognizedTokenSyntaxes(this.registry.plugin.settings);
     const linePattern = /[^\r\n]*(?:\r\n|\n|\r|$)/g;
     let offset = 0;
     let lineNumber = 1;
@@ -249,14 +261,15 @@ export default class TokenCache {
         if (!fence) { fence = marker; fenceLength = fenceMatch[1].length; }
         else if (fence === marker && fenceMatch[1].length >= fenceLength) { fence = null; fenceLength = 0; }
       } else if (!fence) {
-        for (const tokenMatch of findVariableTokens(line, syntax)) {
+        for (const tokenMatch of findVariableTokens(line, syntaxes)) {
           if (this.isInsideInlineCode(line, tokenMatch.start)) continue;
           occurrences.push({
             name: tokenMatch.name,
             start: offset + tokenMatch.start,
             end: offset + tokenMatch.end,
             line: lineNumber,
-            ch: tokenMatch.start + 1
+            ch: tokenMatch.start + 1,
+            syntax: tokenMatch.syntax,
           });
         }
       }

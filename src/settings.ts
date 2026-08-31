@@ -6,9 +6,21 @@ import {
   type VariableDecoration,
 } from './appearance';
 import VariableLinksPlugin from './main';
+import {
+  DEFAULT_TOKEN_SYNTAX,
+  MAX_TOKEN_DELIMITER_LENGTH,
+  formatVariableToken,
+  getTokenSyntax,
+  normalizeLegacyTokenSyntaxes,
+  tokenSyntaxEquals,
+  type TokenSyntax,
+} from './tokenSyntax';
 
 export interface VariableLinksSettings {
   registryFilePath: string;
+  tokenPrefix: string;
+  tokenSuffix: string;
+  legacyTokenSyntaxes: TokenSyntax[];
   enableInfoCards: boolean;
   readingViewHoverDelaySeconds: number;
   livePreviewHoverDelaySeconds: number;
@@ -32,6 +44,9 @@ type SettingKey = keyof VariableLinksSettings;
 
 export const DEFAULT_SETTINGS: VariableLinksSettings = {
   registryFilePath: '',
+  tokenPrefix: DEFAULT_TOKEN_SYNTAX.prefix,
+  tokenSuffix: DEFAULT_TOKEN_SYNTAX.suffix,
+  legacyTokenSyntaxes: [],
   enableInfoCards: true,
   readingViewHoverDelaySeconds: 0.5,
   livePreviewHoverDelaySeconds: 3,
@@ -110,6 +125,17 @@ export class VariableLinksSettingTab extends PluginSettingTab {
           key: 'registryFilePath',
           placeholder: 'Select a registry file',
         },
+      },
+      {
+        type: 'group',
+        heading: 'Variable Link syntax',
+        items: [
+          {
+            name: 'Token prefix and suffix',
+            desc: 'Choose the literal characters around Variable Link names. Existing formats remain recognized until you remove them below.',
+            render: (setting) => this.renderTokenSyntaxEditor(setting.controlEl),
+          },
+        ],
       },
       {
         name: 'Update token cache',
@@ -245,7 +271,10 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     if (!this.isSettingKey(key)) return;
     if (key === 'infoCardEditorWidth'
       || key === 'infoCardEditorHeight'
-      || key === 'infoCardEditorCollapsedItems') return;
+      || key === 'infoCardEditorCollapsedItems'
+      || key === 'tokenPrefix'
+      || key === 'tokenSuffix'
+      || key === 'legacyTokenSyntaxes') return;
 
     if (key === 'registryFilePath' || key === 'defaultDateFormat') {
       if (typeof value !== 'string') return;
@@ -293,6 +322,169 @@ export class VariableLinksSettingTab extends PluginSettingTab {
 
   private isAppearanceSettingKey(key: SettingKey): boolean {
     return key.startsWith('defaultAppearance') || key === 'savedAppearanceColors';
+  }
+
+  private renderTokenSyntaxEditor(controlEl: HTMLElement): () => void {
+    const editor = controlEl.createDiv({ cls: 'variable-links-token-syntax-editor' });
+    const fields = editor.createDiv({ cls: 'variable-links-token-syntax-fields' });
+    const prefixLabel = fields.createEl('label', { text: 'Prefix' });
+    const prefixInput = prefixLabel.createEl('input', {
+      type: 'text',
+      attr: {
+        maxlength: String(MAX_TOKEN_DELIMITER_LENGTH),
+        'aria-label': 'Variable link token prefix',
+      },
+    });
+    const suffixLabel = fields.createEl('label', { text: 'Suffix' });
+    const suffixInput = suffixLabel.createEl('input', {
+      type: 'text',
+      attr: {
+        maxlength: String(MAX_TOKEN_DELIMITER_LENGTH),
+        'aria-label': 'Variable link token suffix',
+      },
+    });
+    const active = getTokenSyntax(this.variableLinksPlugin.settings);
+    prefixInput.value = active.prefix;
+    suffixInput.value = active.suffix;
+
+    const preview = editor.createDiv({ cls: 'variable-links-token-syntax-preview' });
+    const status = editor.createDiv({ cls: 'variable-links-token-syntax-status' });
+    const applyButton = editor.createEl('button', {
+      text: 'Use for new tokens',
+      attr: { type: 'button' },
+    });
+    const legacy = editor.createDiv({ cls: 'variable-links-token-syntax-legacy' });
+    const cleanups: Array<() => void> = [];
+    let editorActive = true;
+
+    const proposedSyntax = (): TokenSyntax => ({
+      prefix: prefixInput.value,
+      suffix: suffixInput.value,
+    });
+    const validationMessage = (syntax: TokenSyntax): { error?: string; warning?: string } => {
+      if (!syntax.prefix.length || !syntax.suffix.length) {
+        return { error: 'Prefix and suffix are required.' };
+      }
+      if (!syntax.prefix.trim().length || !syntax.suffix.trim().length) {
+        return { error: 'Prefix and suffix cannot contain only whitespace.' };
+      }
+      if (/[\r\n]/.test(syntax.prefix + syntax.suffix)) {
+        return { error: 'Prefix and suffix cannot contain line breaks.' };
+      }
+      if (syntax.prefix.length > MAX_TOKEN_DELIMITER_LENGTH
+        || syntax.suffix.length > MAX_TOKEN_DELIMITER_LENGTH) {
+        return { error: `Prefix and suffix can contain at most ${MAX_TOKEN_DELIMITER_LENGTH} characters.` };
+      }
+      if (syntax.prefix === syntax.suffix) {
+        const mathWarning = syntax.prefix.includes('$')
+          ? ' Dollar signs are also reserved for Markdown math.'
+          : '';
+        return { error: `Prefix and suffix must be different.${mathWarning}` };
+      }
+      const conflictingName = Array.from(this.variableLinksPlugin.registry?.data.keys() ?? [])
+        .find((name) => name.includes(syntax.prefix) || name.includes(syntax.suffix));
+      if (conflictingName) {
+        return { error: `The existing variable “${conflictingName}” contains the proposed prefix or suffix.` };
+      }
+
+      const combined = syntax.prefix + syntax.suffix;
+      if (combined.includes('$')) {
+        return { warning: 'Dollar signs delimit inline and block math in Obsidian, so this token format will not work reliably.' };
+      }
+      if (/\[\[|\]\]|!\[|`|<!--|-->|\*|_|#/.test(combined)) {
+        return { warning: 'This format may conflict with Markdown or Obsidian syntax. Test it carefully before migrating existing tokens.' };
+      }
+      if (/^\s|\s$/.test(syntax.prefix) || /^\s|\s$/.test(syntax.suffix)) {
+        return { warning: 'Leading or trailing spaces are treated as literal parts of the token format.' };
+      }
+      if (syntax.prefix.includes(syntax.suffix) || syntax.suffix.includes(syntax.prefix)) {
+        return { warning: 'Overlapping prefix and suffix text may make tokens difficult to recognize.' };
+      }
+      return {};
+    };
+    const updatePreview = (): void => {
+      const syntax = proposedSyntax();
+      const validation = validationMessage(syntax);
+      preview.textContent = `Example: ${formatVariableToken('Variable', syntax)}`;
+      status.textContent = validation.error ?? validation.warning ?? '';
+      status.classList.toggle('is-error', Boolean(validation.error));
+      status.classList.toggle('is-warning', !validation.error && Boolean(validation.warning));
+      applyButton.disabled = Boolean(validation.error) || tokenSyntaxEquals(active, syntax);
+    };
+
+    const renderLegacyFormats = (): void => {
+      legacy.empty();
+      legacy.createEl('strong', { text: 'Previous formats' });
+      const formats = this.variableLinksPlugin.settings.legacyTokenSyntaxes;
+      if (!formats.length) {
+        legacy.createSpan({ text: 'None', cls: 'mod-muted' });
+        return;
+      }
+      for (const syntax of formats) {
+        const row = legacy.createDiv({ cls: 'variable-links-token-syntax-legacy-row' });
+        row.createEl('code', { text: formatVariableToken('Variable', syntax) });
+        const removeButton = row.createEl('button', {
+          text: 'Stop recognizing',
+          attr: {
+            type: 'button',
+            'aria-label': `Stop recognizing ${formatVariableToken('Variable', syntax)}`,
+          },
+        });
+        const remove = async (): Promise<void> => {
+          removeButton.disabled = true;
+          this.variableLinksPlugin.settings.legacyTokenSyntaxes = formats.filter(
+            (candidate) => !tokenSyntaxEquals(candidate, syntax),
+          );
+          await this.variableLinksPlugin.saveSettings();
+          await this.variableLinksPlugin.refreshAfterTokenSyntaxChange();
+          if (editorActive) this.update();
+        };
+        const onRemove = (): void => void remove().catch((error: unknown) => {
+          removeButton.disabled = false;
+          new Notice(`Variable Links: could not remove the previous format: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        removeButton.addEventListener('click', onRemove);
+        cleanups.push(() => removeButton.removeEventListener('click', onRemove));
+      }
+    };
+
+    const apply = async (): Promise<void> => {
+      const next = proposedSyntax();
+      const validation = validationMessage(next);
+      if (validation.error || tokenSyntaxEquals(active, next)) return;
+      applyButton.disabled = true;
+      const history = normalizeLegacyTokenSyntaxes(
+        [active, ...this.variableLinksPlugin.settings.legacyTokenSyntaxes],
+        next,
+      );
+      this.variableLinksPlugin.settings.tokenPrefix = next.prefix;
+      this.variableLinksPlugin.settings.tokenSuffix = next.suffix;
+      this.variableLinksPlugin.settings.legacyTokenSyntaxes = history;
+      await this.variableLinksPlugin.saveSettings();
+      await this.variableLinksPlugin.refreshAfterTokenSyntaxChange();
+      if (!editorActive) return;
+      new Notice(`Variable Links: new tokens now use ${formatVariableToken('Variable', next)}.`);
+      this.update();
+    };
+    const onInput = (): void => updatePreview();
+    const onApply = (): void => void apply().catch((error: unknown) => {
+      applyButton.disabled = false;
+      new Notice(`Variable Links: could not change the token format: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    prefixInput.addEventListener('input', onInput);
+    suffixInput.addEventListener('input', onInput);
+    applyButton.addEventListener('click', onApply);
+    cleanups.push(
+      () => prefixInput.removeEventListener('input', onInput),
+      () => suffixInput.removeEventListener('input', onInput),
+      () => applyButton.removeEventListener('click', onApply),
+    );
+    updatePreview();
+    renderLegacyFormats();
+    return () => {
+      editorActive = false;
+      cleanups.forEach((cleanup) => cleanup());
+    };
   }
 
   private renderSavedAppearanceColors(controlEl: HTMLElement): () => void {
