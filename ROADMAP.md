@@ -60,9 +60,9 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.3.0
 
-> **Target release date: September 24, 2026.** Use September 23 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-syntax, captured date/time, named-creation, and contextual-help work described below.
+> **Target release date: September 24, 2026.** Use September 23 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-language, file and folder autolinking, basic Card population, captured date/time, named-creation, and contextual-help work described below.
 
-> **Planning gate:** Before implementation begins, review the complete 1.3 roadmap with the user and iterate on any unclear behavior, format rules, interface choices, scope, or implementation order. Begin development only after the user approves the revised plan.
+> **Planning gate approved:** The revised 1.3 direction was approved on August 31, 2026. Review any newly discovered ambiguity with the user before expanding the agreed scope.
 
 ### Custom Variable Link token syntax
 
@@ -70,6 +70,10 @@ This document records planned improvements to Variable Links. Plans may change a
 - Show a live example of the resulting token format in Settings.
 - Treat configured prefix and suffix characters literally rather than as pattern syntax.
 - Centralize token parsing and formatting so Reading View, Live Preview, insertion, switching, caret detection, renaming, and token caching use the same rules.
+- Establish a consistent creation grammar using `Name=TYPE:source`, with the source omitted when the selected type opens an editor.
+- Support expressions such as `{{Price=PROPERTY:[[Items/Sword]]#price}}`, `{{Status=FIXED:Draft}}`, and `{{Started=DATE:YYYY-MM-DD}}`.
+- Support quoted fixed values such as `{{Summary=FIXED:"Work in progress"}}`, including clear escaping rules for quotes and active token delimiters.
+- Keep folder scans and other bulk operations out of token expressions. A token may create or reference one Variable Link, but it must not silently mutate an entire folder.
 
 #### Validation and compatibility warnings
 
@@ -93,6 +97,55 @@ This document records planned improvements to Variable Links. Plans may change a
 
 - Test custom formats in Source Mode, Live Preview, Reading View, Insert, Favorites, Switch token, Properties, renaming, missing variables, token caching, and Info Cards.
 - Test multiple active and legacy formats, migration cancellation, partial-write recovery, conflicting Markdown syntax, repeated tokens, and tokens at line boundaries.
+- Test unquoted and quoted creation sources, escaped characters, explicit file-property links, incomplete expressions, and malformed type or source separators.
+
+### File and folder autolinking
+
+- Add reusable Autolink profiles that can target one file or a folder, with an option to include subfolders.
+- Store profiles in the Variable Links registry so they remain portable and synchronized with the rest of the plugin data.
+- Let each matching note generate one managed Variable Link by default, using the note filename or a configurable name pattern when the note does not provide an explicit name.
+- Let a profile define the value property, built-in Card preset, and ordered list of note properties to include in the Card.
+- Keep generated entries compatible with the existing registry, GUID, rename, token-cache, file-move, property-link, and Card systems.
+- Record which profile manages each generated entry so synchronization can distinguish generated data from manual customization.
+
+#### Note properties and overrides
+
+- Recognize the following canonical note properties:
+  - `variablelink_name` for the permanent Variable Link name.
+  - `variablelink_value_property` for the note property whose value the Variable Link displays.
+  - `variablelink_template` for the stable built-in Card preset or future custom template identifier.
+  - `variablelink_card_properties` for an ordered YAML list of note properties shown on the Card.
+- Use the correctly spelled `variablelink_template` as the documented field name and show a clear warning for likely misspellings rather than silently ignoring them.
+- Treat note properties as overrides rather than requiring every matching note to repeat its folder defaults.
+- Apply configuration in this order: explicit note properties, an exact-file profile, the closest matching folder profile, broader parent-folder profiles, and plugin defaults.
+- Require a distinct Variable Link name and value source. Do not assume that a display value, filename, property name, and permanent token name are interchangeable.
+
+#### Scan, preview, and synchronization
+
+- Add commands or Settings actions to preview autolinks for the current file, a selected folder, or all enabled profiles.
+- Before applying changes, list proposed additions, safe updates, naming collisions, invalid properties, unmatched notes, and entries that would leave a profile's scope.
+- Make preview and explicit confirmation the initial 1.3 workflow. Design the profile data for a later opt-in automatic mode without introducing silent background registry mutations in the first release.
+- Never overwrite a manually customized Variable Link or Card without explicit confirmation.
+- Resolve names deterministically and never replace an existing unrelated variable when a generated name collides.
+- When a source note is renamed or moved, update its managed file pointer. If it leaves the profile scope, flag it for review instead of deleting it automatically.
+- When a profile or note property changes, update only the parts still managed by that profile and preserve manual overrides.
+- Provide a rescan action that is safe to repeat and produces no duplicate variables or Card items.
+
+#### Basic Card population and presets
+
+- Add stable identifiers for a small set of built-in Card presets suitable for simple, compact, and property-focused Cards.
+- Let `variablelink_template` select one of these presets in 1.3 while reserving the same identifier field for the custom template system planned for 1.4.
+- Populate the Card from `variablelink_card_properties` or the profile's ordered Card-property list.
+- Preserve the listed order, identify missing properties in the preview, and avoid adding the same property twice.
+- Apply generated Card configuration as a snapshot so later profile changes do not silently replace a customized Card.
+- Keep custom template creation, the visual template manager, advanced rule building, and bulk template replacement in 1.4.
+
+#### Autolinking testing
+
+- Test exact-file and nested-folder profiles, subfolder inclusion, precedence, note overrides, naming patterns, collisions, missing value properties, and repeated scans.
+- Test note creation, rename, move into and out of scope, property changes, deleted files, registry reloads, and plugin reloads.
+- Test generated property links, token renaming, Card-property order, missing Card properties, manual Card customization, and all built-in presets.
+- Test preview cancellation and partial failures to confirm that no unrelated registry entry or note is modified.
 
 ### Captured date and time variable shortcuts
 
@@ -119,6 +172,7 @@ This document records planned improvements to Variable Links. Plans may change a
 - Treat text before `=` as the requested permanent variable name when a creation suggestion is selected.
 - Support named date and time creation, including `{{Deadline=DATE}}`, `{{Started=TIME}}`, `{{Created=DATETIME}}`, and formatted forms such as `{{Moment=TIME:YYYY-MM-DD HH:mm}}`.
 - Apply the same naming syntax to every supported variable type, including fixed values and property mappings.
+- Support complete one-line creation expressions such as `{{Price=PROPERTY:[[Items/Sword]]#price}}` and `{{Status=FIXED:Draft}}` when their source is valid.
 - Let `{{Name=FIXED}}` open the fixed-value editor with the name filled in, and let `{{Name=PROPERTY}}` open the property-mapping editor with the name filled in.
 - Let a selected unmapped-property suggestion use the text before `=` as its new Variable Link name.
 - Replace a successful creation expression with its permanent token, such as replacing `{{Deadline=DATE}}` with `{{Deadline}}`.
@@ -165,13 +219,23 @@ This document records planned improvements to Variable Links. Plans may change a
 - Add missing help controls where a new user could not reasonably predict the result of a setting.
 - Check that the help remains useful without obscuring the normal workflow or crowding narrow layouts.
 
+### Suggested implementation order
+
+1. Centralize token parsing and formatting, then add the `Name=TYPE:source` grammar, quoted sources, custom delimiters, and migration support.
+2. Define the Autolink profile, managed-entry, note-property, precedence, and preview data models without changing notes or the registry automatically.
+3. Add exact-file and folder scanning, preview, conflict handling, confirmed synchronization, and file-move behavior.
+4. Add built-in Card preset selection and ordered Card-property population while keeping the full custom template system in 1.4.
+5. Add captured date and time shortcuts and the shared formatter on top of the centralized token language.
+6. Add contextual help, complete protected-context and compatibility testing, install the build in the test vault, and perform the final smoke test.
+
 ## 1.4.0
 
-> **Planning gate:** Review and iterate on the complete Card type, template, rule, and population behavior before implementation begins. Keep the first version declarative and understandable rather than adding a scripting language.
+> **Planning gate:** Review and iterate on the complete Card type, template, rule, and population behavior before implementation begins. Build on the Autolink profiles, stable template identifiers, and basic Card population introduced in 1.3 rather than creating a second file and folder matching system. Keep the first version declarative and understandable rather than adding a scripting language.
 
 ### Rule-based Info Card templates
 
 - Add reusable Info Card templates that users can name, describe, preview, and apply to multiple Variable Links.
+- Allow 1.3 Autolink profiles and `variablelink_template` note properties to select custom templates after those templates become available.
 - Let a template define the Card layout, blocks, tables, labels, appearance, and population rules without being tied to one variable.
 - Add user-defined Card types such as Person, Place, Project, Event, or any custom category.
 - Keep Card types separate from the existing Fixed value and Property value variable types.
@@ -191,7 +255,7 @@ This document records planned improvements to Variable Links. Plans may change a
 #### Card type and rule builder
 
 - Add an understandable rule builder with enabled/disabled rules, drag ordering, and explicit priority.
-- Allow rules to match variable type, variable name, source file or folder, linked property name, file link presence, note tags, and selected frontmatter properties or values.
+- Allow rules to match variable type, variable name, the source scope already defined by a 1.3 Autolink profile, linked property name, file link presence, note tags, and selected frontmatter properties or values.
 - Support Match all and Match any condition groups without allowing arbitrary executable code.
 - Let a matching rule assign a Card type, choose a template, and define how the template should be populated.
 - Stop after the first matching rule by default, with a deliberate option to continue to compatible lower-priority rules.
