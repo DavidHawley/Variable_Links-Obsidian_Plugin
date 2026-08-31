@@ -7,6 +7,7 @@ import {
 } from './appearance';
 import {
   createAutolinkProfile,
+  DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES,
   type AutolinkCardPreset,
   type AutolinkProfile,
   type AutolinkScopeType,
@@ -506,9 +507,19 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       label.createSpan({ text: labelText });
       return label;
     };
-    const enabledLabel = field('Enabled');
-    const enabled = enabledLabel.createEl('input', { type: 'checkbox' });
-    enabled.checked = profile.enabled;
+    const checkboxField = (
+      labelText: string,
+      checked: boolean,
+    ): { label: HTMLLabelElement; input: HTMLInputElement } => {
+      const label = body.createEl('label', {
+        cls: 'variable-links-autolink-profile-field variable-links-autolink-profile-checkbox',
+      });
+      const input = label.createEl('input', { type: 'checkbox' });
+      input.checked = checked;
+      label.createSpan({ text: labelText });
+      return { label, input };
+    };
+    const { input: enabled } = checkboxField('Enabled', profile.enabled);
     const name = field('Profile name').createEl('input', { type: 'text' });
     name.value = profile.name;
     const scope = field('Scope').createEl('select');
@@ -518,9 +529,10 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     const path = field('Vault path').createEl('input', { type: 'text' });
     path.value = profile.path;
     path.placeholder = profile.scopeType === 'file' ? 'Folder/Note.md' : 'Folder';
-    const subfoldersLabel = field('Include subfolders');
-    const subfolders = subfoldersLabel.createEl('input', { type: 'checkbox' });
-    subfolders.checked = profile.includeSubfolders;
+    const { label: subfoldersLabel, input: subfolders } = checkboxField(
+      'Include subfolders',
+      profile.includeSubfolders,
+    );
     const valueProperty = field('Value property').createEl('input', { type: 'text' });
     valueProperty.value = profile.valueProperty;
     valueProperty.placeholder = 'Status';
@@ -543,10 +555,34 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     cardProperties.rows = 3;
     cardProperties.value = profile.cardProperties.join('\n');
     cardProperties.placeholder = 'One note property per line';
+    const { input: allowOverrides } = checkboxField(
+      'Allow note overrides',
+      profile.allowOverrides,
+    );
+    const { label: customOverridesLabel, input: customOverrides } = checkboxField(
+      'Use custom override property names',
+      profile.customOverridePropertyNames,
+    );
+    const overrideNameLabel = field('Variable name override');
+    const overrideName = overrideNameLabel.createEl('input', { type: 'text' });
+    overrideName.value = profile.overrideProperties.name;
+    const overrideValueLabel = field('Value property override');
+    const overrideValue = overrideValueLabel.createEl('input', { type: 'text' });
+    overrideValue.value = profile.overrideProperties.valueProperty;
+    const overrideTemplateLabel = field('Card template override');
+    const overrideTemplate = overrideTemplateLabel.createEl('input', { type: 'text' });
+    overrideTemplate.value = profile.overrideProperties.template;
+    const overrideCardPropertiesLabel = field('Card properties override');
+    const overrideCardProperties = overrideCardPropertiesLabel.createEl('input', { type: 'text' });
+    overrideCardProperties.value = profile.overrideProperties.cardProperties;
     const status = body.createDiv({ cls: 'variable-links-hint-text' });
     const actions = body.createDiv({ cls: 'variable-links-autolink-profile-actions' });
     const preview = actions.createEl('button', { text: 'Preview matches', attr: { type: 'button' } });
     const save = actions.createEl('button', { text: 'Save profile', attr: { type: 'button' } });
+    const restoreOverrideNames = actions.createEl('button', {
+      text: 'Restore standard names',
+      attr: { type: 'button' },
+    });
     const remove = actions.createEl('button', {
       text: 'Delete',
       cls: 'mod-warning',
@@ -555,15 +591,34 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     const updateState = (): void => {
       const folder = scope.value === 'folder';
       subfoldersLabel.hidden = !folder;
+      customOverridesLabel.hidden = !allowOverrides.checked;
+      const showOverrideNames = allowOverrides.checked && customOverrides.checked;
+      overrideNameLabel.hidden = !showOverrideNames;
+      overrideValueLabel.hidden = !showOverrideNames;
+      overrideTemplateLabel.hidden = !showOverrideNames;
+      overrideCardPropertiesLabel.hidden = !showOverrideNames;
+      restoreOverrideNames.hidden = !showOverrideNames;
       path.placeholder = folder ? 'Folder' : 'Folder/Note.md';
-      const error = enabled.checked && !path.value.trim()
+      const overrideNames = [
+        overrideName.value.trim(),
+        overrideValue.value.trim(),
+        overrideTemplate.value.trim(),
+        overrideCardProperties.value.trim(),
+      ];
+      const overrideError = showOverrideNames && overrideNames.some((value) => !value)
+        ? 'Custom override property names cannot be blank.'
+        : showOverrideNames && new Set(overrideNames).size !== overrideNames.length
+          ? 'Custom override property names must be different from each other.'
+          : '';
+      const error = overrideError || (enabled.checked && !path.value.trim()
         ? 'An enabled profile requires a vault path.'
         : enabled.checked && !valueProperty.value.trim()
           ? 'An enabled profile requires a value property.'
-          : '';
+          : '');
       status.textContent = error || 'Profiles are saved now but will not scan notes until the synchronization checkpoint.';
       status.classList.toggle('is-error', Boolean(error));
       save.disabled = Boolean(error);
+      preview.disabled = Boolean(error);
     };
     const currentProfile = (): AutolinkProfile => ({
       id: profile.id,
@@ -576,11 +631,31 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       namePattern: namePattern.value,
       cardPreset: cardPreset.value as AutolinkCardPreset,
       cardProperties: cardProperties.value.split(/\r?\n|,/),
+      allowOverrides: allowOverrides.checked,
+      customOverridePropertyNames: customOverrides.checked,
+      overrideProperties: {
+        name: overrideName.value,
+        valueProperty: overrideValue.value,
+        template: overrideTemplate.value,
+        cardProperties: overrideCardProperties.value,
+      },
     });
     listen(scope, 'change', updateState);
     listen(enabled, 'change', updateState);
+    listen(allowOverrides, 'change', updateState);
+    listen(customOverrides, 'change', updateState);
     listen(path, 'input', updateState);
     listen(valueProperty, 'input', updateState);
+    for (const input of [overrideName, overrideValue, overrideTemplate, overrideCardProperties]) {
+      listen(input, 'input', updateState);
+    }
+    listen(restoreOverrideNames, 'click', () => {
+      overrideName.value = DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.name;
+      overrideValue.value = DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.valueProperty;
+      overrideTemplate.value = DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.template;
+      overrideCardProperties.value = DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.cardProperties;
+      updateState();
+    });
     listen(preview, 'click', () => {
       const registry = this.variableLinksPlugin.registry;
       if (registry) openAutolinkProfilePreview(

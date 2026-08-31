@@ -1399,6 +1399,16 @@
   gap: 8px;
 }
 
+.variable-links-autolink-profile-field[hidden],
+.variable-links-autolink-profile-actions > button[hidden] {
+  display: none;
+}
+
+.variable-links-autolink-profile-field.variable-links-autolink-profile-checkbox {
+  grid-template-columns: auto minmax(0, 1fr);
+  justify-content: start;
+}
+
 .variable-links-autolink-profile-field > input:not([type="checkbox"]),
 .variable-links-autolink-profile-field > select,
 .variable-links-autolink-profile-field > textarea {

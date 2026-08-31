@@ -2,6 +2,7 @@ import { App, Modal, TFile } from 'obsidian';
 import type VariableLinksPlugin from './main';
 import type Registry from './registry';
 import {
+  DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES,
   profileMatchesPath,
   type AutolinkCardPreset,
   type AutolinkProfile,
@@ -13,6 +14,7 @@ interface AutolinkPreviewItem {
   valueProperty: string;
   cardPreset: AutolinkCardPreset;
   cardProperties: string[];
+  overrideSummary: string;
   warnings: string[];
 }
 
@@ -47,7 +49,7 @@ class AutolinkPreviewModal extends Modal {
     if (items.length) {
       const table = this.contentEl.createEl('table', { cls: 'variable-links-autolink-preview-table' });
       const header = table.createEl('thead').createEl('tr');
-      for (const label of ['Note', 'Variable name', 'Value property', 'Card', 'Status']) {
+      for (const label of ['Note', 'Variable name', 'Value property', 'Card', 'Overrides', 'Status']) {
         header.createEl('th', { text: label });
       }
       const body = table.createEl('tbody');
@@ -59,6 +61,7 @@ class AutolinkPreviewModal extends Modal {
         row.createEl('td', {
           text: `${item.cardPreset}${item.cardProperties.length ? ` · ${item.cardProperties.join(', ')}` : ''}`,
         });
+        row.createEl('td', { text: item.overrideSummary });
         row.createEl('td', {
           text: item.warnings.length ? item.warnings.join(' ') : 'Ready',
           cls: item.warnings.length ? 'mod-warning' : '',
@@ -94,19 +97,40 @@ class AutolinkPreviewModal extends Modal {
     const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
     const metadata = isRecord(frontmatter) ? frontmatter : {};
     const warnings: string[] = [];
-    const explicitName = readString(metadata.variablelink_name, 'variablelink_name', warnings);
+    const overrideProperties = this.profile.customOverridePropertyNames
+      ? this.profile.overrideProperties
+      : DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES;
+    const overrideEntries: Array<{ label: string; property: string }> = [
+      { label: 'name', property: overrideProperties.name },
+      { label: 'value property', property: overrideProperties.valueProperty },
+      { label: 'template', property: overrideProperties.template },
+      { label: 'Card properties', property: overrideProperties.cardProperties },
+    ];
+    const presentOverrides = overrideEntries.filter(({ property }) =>
+      Object.prototype.hasOwnProperty.call(metadata, property)
+    );
+    const allowOverrides = this.profile.allowOverrides;
+    const explicitName = allowOverrides
+      ? readString(metadata[overrideProperties.name], overrideProperties.name, warnings)
+      : '';
     const explicitValueProperty = readString(
-      metadata.variablelink_value_property,
-      'variablelink_value_property',
+      allowOverrides ? metadata[overrideProperties.valueProperty] : undefined,
+      overrideProperties.valueProperty,
       warnings,
     );
-    const template = readString(metadata.variablelink_template, 'variablelink_template', warnings);
-    if (Object.prototype.hasOwnProperty.call(metadata, 'variablelink_templete')) {
+    const template = readString(
+      allowOverrides ? metadata[overrideProperties.template] : undefined,
+      overrideProperties.template,
+      warnings,
+    );
+    if (allowOverrides
+      && overrideProperties.template === DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.template
+      && Object.prototype.hasOwnProperty.call(metadata, 'variablelink_templete')) {
       warnings.push('Use variablelink_template instead of variablelink_templete.');
     }
     const cardPreset = normalizePreset(template, this.profile.cardPreset, warnings);
     const cardProperties = readStringList(
-      metadata.variablelink_card_properties,
+      allowOverrides ? metadata[overrideProperties.cardProperties] : undefined,
       this.profile.cardProperties,
       warnings,
     );
@@ -121,7 +145,22 @@ class AutolinkPreviewModal extends Modal {
         warnings.push(`Missing Card property “${property}”.`);
       }
     }
-    return { file, name, valueProperty, cardPreset, cardProperties, warnings };
+    const overrideSummary = allowOverrides
+      ? presentOverrides.length
+        ? `Applied: ${presentOverrides.map(({ label }) => label).join(', ')}`
+        : 'Allowed; none present'
+      : presentOverrides.length
+        ? `Ignored: ${presentOverrides.map(({ label }) => label).join(', ')}`
+        : 'Disabled';
+    return {
+      file,
+      name,
+      valueProperty,
+      cardPreset,
+      cardProperties,
+      overrideSummary,
+      warnings,
+    };
   }
 }
 

@@ -1,6 +1,20 @@
 export type AutolinkScopeType = 'file' | 'folder';
 export type AutolinkCardPreset = 'none' | 'classic' | 'compact' | 'profile';
 
+export interface AutolinkOverrideProperties {
+  name: string;
+  valueProperty: string;
+  template: string;
+  cardProperties: string;
+}
+
+export const DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES: AutolinkOverrideProperties = {
+  name: 'variablelink_name',
+  valueProperty: 'variablelink_value_property',
+  template: 'variablelink_template',
+  cardProperties: 'variablelink_card_properties',
+};
+
 export interface AutolinkProfile {
   id: string;
   name: string;
@@ -12,6 +26,9 @@ export interface AutolinkProfile {
   namePattern: string;
   cardPreset: AutolinkCardPreset;
   cardProperties: string[];
+  allowOverrides: boolean;
+  customOverridePropertyNames: boolean;
+  overrideProperties: AutolinkOverrideProperties;
 }
 
 export interface ManagedAutolinkEntry {
@@ -32,6 +49,9 @@ export function createAutolinkProfile(id = createAutolinkId()): AutolinkProfile 
     namePattern: '',
     cardPreset: 'none',
     cardProperties: [],
+    allowOverrides: true,
+    customOverridePropertyNames: false,
+    overrideProperties: { ...DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES },
   };
 }
 
@@ -61,9 +81,35 @@ export function normalizeAutolinkProfiles(value: unknown): AutolinkProfile[] {
       namePattern: typeof item.namePattern === 'string' ? item.namePattern.trim() : '',
       cardPreset,
       cardProperties: normalizeStringList(item.cardProperties),
+      allowOverrides: item.allowOverrides !== false,
+      customOverridePropertyNames: item.customOverridePropertyNames === true,
+      overrideProperties: normalizeOverrideProperties(item.overrideProperties),
     });
   }
   return profiles;
+}
+
+function normalizeOverrideProperties(value: unknown): AutolinkOverrideProperties {
+  const source = isRecord(value) ? value : {};
+  return {
+    name: normalizePropertyName(source.name, DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.name),
+    valueProperty: normalizePropertyName(
+      source.valueProperty,
+      DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.valueProperty,
+    ),
+    template: normalizePropertyName(
+      source.template,
+      DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.template,
+    ),
+    cardProperties: normalizePropertyName(
+      source.cardProperties,
+      DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.cardProperties,
+    ),
+  };
+}
+
+function normalizePropertyName(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
 }
 
 export function normalizeVaultPath(value: unknown): string {
