@@ -48,7 +48,12 @@ export default class CaretTracker {
   }
 
   findTokenAtIndex(text: string, index: number): { name: string; start: number; end: number } | null {
-    return findVariableTokenAt(text, index, getRecognizedTokenSyntaxes(this.plugin.settings));
+    return findVariableTokenAt(
+      text,
+      index,
+      getRecognizedTokenSyntaxes(this.plugin.settings),
+      (name) => this.registry.getVariable(name) !== null,
+    );
   }
 
   private async runLoop(generation: number): Promise<void> {

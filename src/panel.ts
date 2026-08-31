@@ -49,6 +49,10 @@ import {
 } from './registry';
 import type { ResolveResult } from './resolver';
 import { formatVariableToken, getTokenSyntax } from './tokenSyntax';
+import {
+  normalizeVariableTextCase,
+  VARIABLE_TEXT_CASE_OPTIONS,
+} from './textCase';
 
 export const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
 
@@ -2257,6 +2261,15 @@ export class VariablePropertiesView extends ItemView {
       definition.display ?? '',
       'e.g. John Smith',
     );
+    const textCaseRow = editControls.createDiv({ cls: 'variable-links-panel-field' });
+    textCaseRow.createEl('label', { text: 'Default text case:' });
+    const textCaseInput = textCaseRow.createEl('select', {
+      attr: { 'aria-label': 'Default text case' },
+    });
+    for (const option of VARIABLE_TEXT_CASE_OPTIONS) {
+      textCaseInput.createEl('option', { value: option.value, text: option.label });
+    }
+    textCaseInput.value = definition.textCase ?? '';
     const updateTypeFields = (): void => {
       if (propertyLinkRow) propertyLinkRow.hidden = activeType !== 'property';
       if (fixedValueRow) fixedValueRow.hidden = activeType !== 'fixed';
@@ -2522,6 +2535,7 @@ export class VariablePropertiesView extends ItemView {
           value: hasFixedValue ? fixedValueInput.value : undefined,
           link: fileLinkInput.value.trim() ? toFileLink(fileLinkInput.value) : undefined,
           display: displayInput.value,
+          textCase: normalizeVariableTextCase(textCaseInput.value),
           favorite,
           appearance: useDefaultsInput.checked ? undefined : nextAppearance,
           customAppearance: nextAppearance,

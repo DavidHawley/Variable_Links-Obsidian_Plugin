@@ -12,6 +12,7 @@ import {
 import Resolver from './resolver';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 import { findVariableTokens, getRecognizedTokenSyntaxes } from './tokenSyntax';
+import { applyVariableTextCase, type VariableTextCase } from './textCase';
 const refreshVariableLinks = StateEffect.define<void>();
 
 const NON_PROSE_NODE_FRAGMENTS = [
@@ -119,21 +120,32 @@ export default class LivePreviewRenderer {
   }
 
   createExtension(): Extension {
-    const renderVariable = (name: string, el: HTMLElement): void => {
-      void this.resolveInto(name, el);
+    const renderVariable = (
+      name: string,
+      textCase: VariableTextCase | undefined,
+      el: HTMLElement,
+    ): void => {
+      void this.resolveInto(name, textCase, el);
     };
 
     class VariableWidget extends WidgetType {
       constructor(
         private readonly name: string,
+        private readonly textCase: VariableTextCase | undefined,
         private readonly revision: number,
-        private readonly render: (name: string, el: HTMLElement) => void,
+        private readonly render: (
+          name: string,
+          textCase: VariableTextCase | undefined,
+          el: HTMLElement,
+        ) => void,
       ) {
         super();
       }
 
       eq(other: VariableWidget): boolean {
-        return other.name === this.name && other.revision === this.revision;
+        return other.name === this.name
+          && other.textCase === this.textCase
+          && other.revision === this.revision;
       }
 
       toDOM(): HTMLElement {
@@ -142,7 +154,7 @@ export default class LivePreviewRenderer {
           text: '…',
         });
         el.dataset.var = this.name;
-        this.render(this.name, el);
+        this.render(this.name, this.textCase, el);
         return el;
       }
 
@@ -167,14 +179,18 @@ export default class LivePreviewRenderer {
 
       for (const range of visibleLineRanges) {
         const text = view.state.sliceDoc(range.from, range.to);
-        for (const match of findVariableTokens(text, syntaxes)) {
+        for (const match of findVariableTokens(
+          text,
+          syntaxes,
+          (name) => this.resolver.registry.getVariable(name) !== null,
+        )) {
           const name = match.name;
           const from = range.from + match.start;
           const to = range.from + match.end;
           if (selection.from <= to && selection.to >= from) continue;
           if (!shouldRenderToken(view.state, from, to)) continue;
           builder.add(from, to, Decoration.replace({
-            widget: new VariableWidget(name, this.revision, renderVariable),
+            widget: new VariableWidget(name, match.textCase, this.revision, renderVariable),
           }));
         }
       }
@@ -206,7 +222,11 @@ export default class LivePreviewRenderer {
     });
   }
 
-  private async resolveInto(name: string, el: HTMLElement): Promise<void> {
+  private async resolveInto(
+    name: string,
+    tokenTextCase: VariableTextCase | undefined,
+    el: HTMLElement,
+  ): Promise<void> {
     applyVariableAppearance(
       el,
       getEffectiveVariableAppearance(
@@ -223,9 +243,13 @@ export default class LivePreviewRenderer {
         el.title = result.error ?? '';
         return;
       }
-      el.textContent = Array.isArray(result.value)
+      const value = Array.isArray(result.value)
         ? result.value.map(String).join(', ')
         : String(result.value);
+      el.textContent = applyVariableTextCase(
+        value,
+        tokenTextCase ?? this.resolver.registry.getVariable(name)?.textCase,
+      );
     } catch {
       if (!this.active) return;
       el.textContent = `[Missing: ${name}]`;

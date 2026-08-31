@@ -18,12 +18,19 @@ import {
   truncateSuggestionValue,
 } from './suggestionSearch';
 import {
+  canRepresentVariableTextCase,
   findVariableTokenTrigger,
   formatVariableToken,
   getRecognizedTokenSyntaxes,
   getTokenSyntax,
   hasVariableTokenSuffixAt,
 } from './tokenSyntax';
+import {
+  getVariableTextCaseLabel,
+  parseVariableTextCaseQuery,
+  wrapVariableNameWithTextCase,
+  type VariableTextCase,
+} from './textCase';
 
 interface SuggestItem {
   name: string;
@@ -34,6 +41,7 @@ interface SuggestItem {
   property?: string;
   value?: string;
   variableType?: VariableType;
+  textCase?: VariableTextCase;
 }
 
 interface CachedSuggestionValue {
@@ -76,7 +84,8 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
 
   async getSuggestions(context: EditorSuggestContext): Promise<SuggestItem[]> {
     const generation = ++this.suggestionGeneration;
-    const query = parseSuggestionQuery(context.query);
+    const caseQuery = parseVariableTextCaseQuery(context.query);
+    const query = parseSuggestionQuery(caseQuery.query);
     const variables: SuggestItem[] = Array.from(this.indexer.byName.values()).map((entry) => ({
       name: entry.name,
       kind: 'variable',
@@ -94,11 +103,11 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       if (generation !== this.suggestionGeneration) return [];
       const resolvedItems: SuggestItem[] = [];
       for (const item of resolved) if (item !== null) resolvedItems.push(item);
-      return this.rankItems(
+      return this.applyTextCaseToSuggestions(this.rankItems(
         resolvedItems,
         query.terms,
         (item) => [item.value],
-      ).slice(0, 100);
+      ).slice(0, 100), context.query, caseQuery.textCase);
     }
 
     const properties: SuggestItem[] = [];
@@ -130,11 +139,11 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       query.terms,
       (item) => [item.name, item.file, item.property],
     );
-    return [
+    return this.applyTextCaseToSuggestions([
       ...variableMatches,
       ...propertyMatches.filter((item) => !item.alreadyMapped),
       ...propertyMatches.filter((item) => item.alreadyMapped),
-    ].slice(0, 100);
+    ].slice(0, 100), context.query, caseQuery.textCase);
   }
 
   renderSuggestion(item: SuggestItem, el: HTMLElement): void {
@@ -146,6 +155,12 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       : `Property · ${item.file ?? ''}`;
     el.createDiv({ text: detail, cls: 'suggest-meta' });
     if (item.display) el.createDiv({ text: item.display, cls: 'suggest-sub' });
+    if (item.textCase) {
+      el.createDiv({
+        text: `Text case: ${getVariableTextCaseLabel(item.textCase)}`,
+        cls: 'suggest-sub',
+      });
+    }
     if (typeof item.value === 'string') {
       el.createDiv({
         text: `Value: ${truncateSuggestionValue(item.value)}`,
@@ -163,6 +178,9 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   private async applySuggestion(item: SuggestItem, context: EditorSuggestContext): Promise<void> {
     let variableName = item.name;
     let createdVariable = false;
+    if (item.kind === 'variable' && this.hasTextCaseNameConflict(variableName, item.textCase)) {
+      return;
+    }
     if (item.kind === 'property') {
       const base = (item.property ?? item.name)
         .trim()
@@ -173,6 +191,8 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
         variableName = `${base}_${String(number).padStart(2, '0')}`;
         number++;
       } while (this.registry.getVariable(variableName) || this.indexer.byName.has(variableName));
+
+      if (this.hasTextCaseNameConflict(variableName, item.textCase)) return;
 
       try {
         await this.registry.saveVariable(variableName, {
@@ -198,7 +218,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     );
     const triggerSyntax = trigger?.start === context.start.ch ? trigger.syntax : activeSyntax;
     const hasAutoCloser = hasVariableTokenSuffixAt(line, context.end.ch, triggerSyntax);
-    const token = formatVariableToken(variableName, activeSyntax);
+    const token = formatVariableToken(variableName, activeSyntax, item.textCase);
     const replaceEnd = hasAutoCloser
       ? { line: context.end.line, ch: context.end.ch + triggerSyntax.suffix.length }
       : context.end;
@@ -233,6 +253,36 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     });
     ranked.sort((left, right) => left.score - right.score || left.index - right.index);
     return ranked.map(({ item }) => item);
+  }
+
+  private applyTextCaseToSuggestions(
+    items: SuggestItem[],
+    rawQuery: string,
+    textCase: VariableTextCase | undefined,
+  ): SuggestItem[] {
+    if (!textCase) return items;
+    const literalPrefix = rawQuery.trim().toLocaleLowerCase();
+    return items.map((item) => {
+      const selectsLiteralPunctuationName = item.kind === 'variable'
+        && literalPrefix.length > 0
+        && item.name.toLocaleLowerCase().startsWith(literalPrefix);
+      return selectsLiteralPunctuationName ? item : { ...item, textCase };
+    });
+  }
+
+  private hasTextCaseNameConflict(
+    variableName: string,
+    textCase: VariableTextCase | undefined,
+  ): boolean {
+    if (!textCase) return false;
+    if (canRepresentVariableTextCase(
+      variableName,
+      textCase,
+      (name) => this.registry.getVariable(name) !== null,
+    )) return false;
+    const wrappedName = wrapVariableNameWithTextCase(variableName, textCase);
+    new Notice(`Variable links: cannot apply this text case because ${wrappedName} conflicts with an existing variable name.`);
+    return true;
   }
 
   private async getResolvedSuggestionValue(name: string): Promise<string | null> {

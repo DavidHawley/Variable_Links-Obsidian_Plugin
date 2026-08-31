@@ -7,6 +7,7 @@ import {
   tokenSyntaxEquals,
   type TokenSyntax,
 } from './tokenSyntax';
+import type { VariableTextCase } from './textCase';
 
 type TokenLocation = { file: string; line: number; ch: number };
 type CachedToken = { guid: string; name: string; locations: TokenLocation[] };
@@ -22,6 +23,7 @@ type Occurrence = {
   line: number;
   ch: number;
   syntax: TokenSyntax;
+  textCase?: VariableTextCase;
 };
 type MarkdownProtectionState = {
   htmlComment: boolean;
@@ -205,7 +207,7 @@ export default class TokenCache {
       let updated = original;
       for (const occurrence of occurrences.reverse()) {
         updated = updated.slice(0, occurrence.start)
-          + formatVariableToken(occurrence.name, nextSyntax)
+          + formatVariableToken(occurrence.name, nextSyntax, occurrence.textCase)
           + updated.slice(occurrence.end);
       }
       changes.push({
@@ -332,7 +334,7 @@ export default class TokenCache {
     const occurrences = this.findTokens(content).filter((occurrence) => occurrence.name === oldName);
     let updated = content;
     for (const occurrence of occurrences.reverse()) {
-      const replacement = formatVariableToken(newName, occurrence.syntax);
+      const replacement = formatVariableToken(newName, occurrence.syntax, occurrence.textCase);
       updated = updated.slice(0, occurrence.start) + replacement + updated.slice(occurrence.end);
     }
     return updated;
@@ -381,7 +383,11 @@ export default class TokenCache {
         if (!fence) { fence = marker; fenceLength = fenceMatch[1].length; }
         else if (fence === marker && fenceMatch[1].length >= fenceLength) { fence = null; fenceLength = 0; }
       } else if (!fence) {
-        for (const tokenMatch of findVariableTokens(line, syntaxes)) {
+        for (const tokenMatch of findVariableTokens(
+          line,
+          syntaxes,
+          (name) => this.registry.getVariable(name) !== null,
+        )) {
           const protection = this.scanMarkdownProtection(
             line,
             tokenMatch.start,
@@ -396,6 +402,7 @@ export default class TokenCache {
             line: lineNumber,
             ch: tokenMatch.start + 1,
             syntax: tokenMatch.syntax,
+            textCase: tokenMatch.textCase,
           });
         }
         const endState = this.scanMarkdownProtection(

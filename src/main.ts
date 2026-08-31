@@ -33,13 +33,22 @@ import {
 import VariableSuggest from './suggest';
 import TokenCache from './tokenCache';
 import {
+  canRepresentVariableTextCase,
   findVariableTokens,
   formatVariableToken,
   getRecognizedTokenSyntaxes,
   getTokenSyntax,
   normalizeLegacyTokenSyntaxes,
   normalizeTokenDelimiter,
+  type TokenSyntax,
 } from './tokenSyntax';
+import {
+  applyVariableTextCase,
+  getVariableTextCaseLabel,
+  VARIABLE_TEXT_CASE_OPTIONS,
+  wrapVariableNameWithTextCase,
+  type VariableTextCase,
+} from './textCase';
 
 interface EditorWithCoordinates extends Editor {
   cm?: {
@@ -68,6 +77,8 @@ interface VariableTokenContext {
   name: string;
   from: EditorPosition;
   to: EditorPosition;
+  syntax: TokenSyntax;
+  textCase?: VariableTextCase;
 }
 
 interface CloseableDialog {
@@ -83,6 +94,7 @@ interface MarkdownTokenMatch {
   start: number;
   end: number;
   name: string;
+  textCase?: VariableTextCase;
 }
 
 export default class VariableLinksPlugin extends Plugin {
@@ -475,6 +487,7 @@ export default class VariableLinksPlugin extends Plugin {
             item.onClick(() => void this.copyResolvedMarkdown(copySource));
           }
         });
+        this.addTextCaseMenu(submenu, tokenContext, editor);
         this.addSwitchTokenMenu(
           submenu,
           tokenContext,
@@ -570,6 +583,45 @@ export default class VariableLinksPlugin extends Plugin {
     });
   }
 
+  private addTextCaseMenu(
+    menu: Menu,
+    tokenContext: VariableTokenContext | null,
+    editor: Editor,
+  ): void {
+    menu.addItem((item) => {
+      const enabled = tokenContext !== null && this.hasSubmenu(item);
+      item.setTitle('Text case').setIcon('case-sensitive').setDisabled(!enabled);
+      if (!enabled || !tokenContext || !this.hasSubmenu(item)) return;
+      const submenu = item.setSubmenu();
+      this.enableNestedSubmenuSwitch(menu, item, submenu);
+      submenu.addItem((caseItem) => {
+        caseItem
+          .setTitle('Use variable default')
+          .setIcon(tokenContext.textCase === undefined ? 'check' : 'rotate-ccw')
+          .onClick(() => this.switchVariableTokenTextCase(editor, tokenContext, undefined));
+      });
+      submenu.addSeparator();
+      for (const option of VARIABLE_TEXT_CASE_OPTIONS) {
+        if (!option.value) continue;
+        const textCase = option.value;
+        const hasNameConflict = !canRepresentVariableTextCase(
+          tokenContext.name,
+          textCase,
+          (name) => Boolean(this.registry?.getVariable(name)),
+        );
+        submenu.addItem((caseItem) => {
+          caseItem
+            .setTitle(hasNameConflict
+              ? `${getVariableTextCaseLabel(textCase)} (name conflict)`
+              : getVariableTextCaseLabel(textCase))
+            .setIcon(tokenContext.textCase === textCase ? 'check' : 'case-sensitive')
+            .setDisabled(hasNameConflict)
+            .onClick(() => this.switchVariableTokenTextCase(editor, tokenContext, textCase));
+        });
+      }
+    });
+  }
+
   private getContextVariableToken(
     editor: Editor,
     position: EditorPosition | null,
@@ -589,12 +641,18 @@ export default class VariableLinksPlugin extends Plugin {
     const line = editor.getLine(position.line);
     const syntaxes = getRecognizedTokenSyntaxes(this.settings);
     const matchingTokens: VariableTokenContext[] = [];
-    for (const match of findVariableTokens(line, syntaxes)) {
+    for (const match of findVariableTokens(
+      line,
+      syntaxes,
+      (name) => Boolean(this.registry?.getVariable(name)),
+    )) {
       if (expectedName && match.name !== expectedName) continue;
       const token = {
         name: match.name,
         from: { line: position.line, ch: match.start },
         to: { line: position.line, ch: match.end },
+        syntax: match.syntax,
+        textCase: match.textCase,
       };
       if (position.ch >= match.start && position.ch <= match.end) return token;
       if (expectedName) matchingTokens.push(token);
@@ -638,7 +696,35 @@ export default class VariableLinksPlugin extends Plugin {
     tokenContext: VariableTokenContext,
     variableName: string,
   ): void {
-    const token = formatVariableToken(variableName, getTokenSyntax(this.settings));
+    const token = formatVariableToken(
+      variableName,
+      getTokenSyntax(this.settings),
+      tokenContext.textCase,
+    );
+    editor.replaceRange(token, tokenContext.from, tokenContext.to);
+    editor.setCursor({
+      line: tokenContext.from.line,
+      ch: tokenContext.from.ch + token.length,
+    });
+    editor.focus();
+  }
+
+  private switchVariableTokenTextCase(
+    editor: Editor,
+    tokenContext: VariableTokenContext,
+    textCase: VariableTextCase | undefined,
+  ): void {
+    const representable = !textCase || canRepresentVariableTextCase(
+      tokenContext.name,
+      textCase,
+      (name) => Boolean(this.registry?.getVariable(name)),
+    );
+    if (!representable) {
+      const conflictingName = wrapVariableNameWithTextCase(tokenContext.name, textCase);
+      new Notice(`Variable links: cannot apply this text case because ${conflictingName} conflicts with an existing variable name.`);
+      return;
+    }
+    const token = formatVariableToken(tokenContext.name, tokenContext.syntax, textCase);
     editor.replaceRange(token, tokenContext.from, tokenContext.to);
     editor.setCursor({
       line: tokenContext.from.line,
@@ -658,10 +744,11 @@ export default class VariableLinksPlugin extends Plugin {
     const matches = this.findMarkdownTokenMatches(source);
     const cache = new Map<string, Promise<string>>();
     const replacements = await Promise.all(matches.map((match) => {
-      let replacement = cache.get(match.name);
+      const cacheKey = `${match.name}\u0000${match.textCase ?? ''}`;
+      let replacement = cache.get(cacheKey);
       if (!replacement) {
-        replacement = this.renderCopiedVariableMarkdown(match.name);
-        cache.set(match.name, replacement);
+        replacement = this.renderCopiedVariableMarkdown(match.name, match.textCase);
+        cache.set(cacheKey, replacement);
       }
       return replacement;
     }));
@@ -683,7 +770,11 @@ export default class VariableLinksPlugin extends Plugin {
 
   private findMarkdownTokenMatches(source: string): MarkdownTokenMatch[] {
     const matches: MarkdownTokenMatch[] = [];
-    for (const match of findVariableTokens(source, getRecognizedTokenSyntaxes(this.settings))) {
+    for (const match of findVariableTokens(
+      source,
+      getRecognizedTokenSyntaxes(this.settings),
+      (name) => Boolean(this.registry?.getVariable(name)),
+    )) {
       if (this.isMarkdownCodePosition(source, match.start)) continue;
       matches.push(match);
     }
@@ -721,12 +812,18 @@ export default class VariableLinksPlugin extends Plugin {
     return inlineFenceLength > 0;
   }
 
-  private async renderCopiedVariableMarkdown(variableName: string): Promise<string> {
+  private async renderCopiedVariableMarkdown(
+    variableName: string,
+    tokenTextCase?: VariableTextCase,
+  ): Promise<string> {
     const definition = this.registry?.getVariable(variableName);
     const result = await this.resolver?.resolve(variableName).catch(() => null);
-    const value = result?.ok
+    const rawValue = result?.ok
       ? this.formatCopiedValue(result.value)
       : `[Missing: ${variableName}]`;
+    const value = result?.ok
+      ? applyVariableTextCase(rawValue, tokenTextCase ?? definition?.textCase)
+      : rawValue;
     const explicitLink = filePathFromLink(definition?.link ?? '');
     const resolvedLink = result?.sourceFile?.path.replace(/\.md$/i, '') ?? '';
     const link = explicitLink || resolvedLink;

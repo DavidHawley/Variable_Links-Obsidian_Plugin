@@ -1,4 +1,4 @@
-import { App, EventRef, Notice, TFile, parseYaml, stringifyYaml } from 'obsidian';
+import { App, EventRef, Modal, Notice, TFile, parseYaml, stringifyYaml } from 'obsidian';
 import {
   normalizeVariableAppearance,
   type VariableAppearance,
@@ -15,10 +15,60 @@ import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
 import { filePathFromLink } from './linkSyntax';
 import { getTokenSyntax } from './tokenSyntax';
+import {
+  normalizeVariableTextCase,
+  parseVariableTextCaseMarker,
+  type VariableTextCase,
+} from './textCase';
 
 export type VariableType = 'property' | 'fixed';
 
 const REGISTRY_POLL_INTERVAL_MS = 1000;
+
+class ReservedTextCaseNameModal extends Modal {
+  private settled = false;
+
+  constructor(
+    private readonly plugin: VariableLinksPlugin,
+    private readonly variableName: string,
+    private readonly settle: (confirmed: boolean) => void,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    this.contentEl.createEl('h3', { text: 'Use a reserved-looking variable name?' });
+    this.contentEl.createEl('p', {
+      text: `“${this.variableName}” begins and ends like token text-case syntax. Exact-name compatibility means it can take priority over a formatted token with the same text.`,
+    });
+    this.contentEl.createEl('p', {
+      text: 'Use a different name unless this punctuation is intentional.',
+    });
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Cancel' })
+      .addEventListener('click', () => this.choose(false));
+    actions.createEl('button', { text: 'Use name anyway', cls: 'mod-warning' })
+      .addEventListener('click', () => this.choose(true));
+  }
+
+  onClose(): void {
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+    if (!this.settled) this.finish(false);
+  }
+
+  private choose(confirmed: boolean): void {
+    this.finish(confirmed);
+    this.close();
+  }
+
+  private finish(confirmed: boolean): void {
+    if (this.settled) return;
+    this.settled = true;
+    this.settle(confirmed);
+  }
+}
 
 export interface VariableDefinition {
   guid?: string;
@@ -28,6 +78,7 @@ export interface VariableDefinition {
   value?: string;
   link?: string;
   display?: string;
+  textCase?: VariableTextCase;
   favorite?: boolean;
   appearance?: VariableAppearance;
   customAppearance?: VariableAppearance;
@@ -159,6 +210,7 @@ export class Registry {
           value: this.toFixedValue(raw.value),
           link: typeof raw.link === 'string' ? raw.link : undefined,
           display: typeof raw.display === 'string' ? raw.display : undefined,
+          textCase: normalizeVariableTextCase(raw.textCase),
           favorite: raw.favorite === true,
           appearance: normalizeVariableAppearance(raw.appearance),
           customAppearance: normalizeVariableAppearance(raw.customAppearance),
@@ -386,6 +438,12 @@ export class Registry {
     }
 
     const existing = this.data.get(oldName || variableName);
+    if (!this.data.has(variableName)
+      && variableName !== oldName
+      && parseVariableTextCaseMarker(variableName)
+      && !await this.confirmReservedTextCaseName(variableName)) {
+      throw new Error('The variable name change was cancelled.');
+    }
     const guid = existing?.guid || definition.guid || this.createGuid();
     const normalized: Partial<VariableDefinition> = {
       guid,
@@ -399,6 +457,9 @@ export class Registry {
     }
     if (Object.prototype.hasOwnProperty.call(definition, 'link')) {
       normalized.link = definition.link?.trim() || undefined;
+    }
+    if (Object.prototype.hasOwnProperty.call(definition, 'textCase')) {
+      normalized.textCase = normalizeVariableTextCase(definition.textCase);
     }
     if (Object.prototype.hasOwnProperty.call(definition, 'card')) normalized.card = definition.card;
     if (Object.prototype.hasOwnProperty.call(definition, 'appearance')) {
@@ -425,6 +486,9 @@ export class Registry {
         else delete updated.display;
         if (Object.prototype.hasOwnProperty.call(definition, 'link') && !definition.link?.trim()) {
           delete updated.link;
+        }
+        if (Object.prototype.hasOwnProperty.call(definition, 'textCase') && !normalized.textCase) {
+          delete updated.textCase;
         }
         if (Object.prototype.hasOwnProperty.call(definition, 'value')
           && definition.value === undefined) delete updated.value;
@@ -497,6 +561,12 @@ export class Registry {
       new Notice('The variable was deleted, but its saved card designer collapse state could not be removed.');
     }
     this.plugin.livePreviewRenderer?.refresh();
+  }
+
+  private confirmReservedTextCaseName(variableName: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      new ReservedTextCaseNameModal(this.plugin, variableName, resolve).open();
+    });
   }
 
   extractFrontmatter(content: string): Record<string, unknown> | null {

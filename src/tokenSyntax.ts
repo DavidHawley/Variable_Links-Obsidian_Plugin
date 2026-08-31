@@ -1,3 +1,9 @@
+import {
+  parseVariableTextCaseMarker,
+  wrapVariableNameWithTextCase,
+  type VariableTextCase,
+} from './textCase';
+
 export interface TokenSyntax {
   prefix: string;
   suffix: string;
@@ -8,6 +14,7 @@ export interface VariableTokenMatch {
   start: number;
   end: number;
   syntax: TokenSyntax;
+  textCase?: VariableTextCase;
 }
 
 export interface VariableTokenTrigger {
@@ -83,13 +90,27 @@ export function tokenSyntaxEquals(left: TokenSyntax, right: TokenSyntax): boolea
 export function formatVariableToken(
   name: string,
   syntax: TokenSyntax = DEFAULT_TOKEN_SYNTAX,
+  textCase?: VariableTextCase,
 ): string {
-  return `${syntax.prefix}${name}${syntax.suffix}`;
+  return `${syntax.prefix}${wrapVariableNameWithTextCase(name, textCase)}${syntax.suffix}`;
+}
+
+export function canRepresentVariableTextCase(
+  name: string,
+  textCase: VariableTextCase,
+  exactNameExists: (name: string) => boolean,
+): boolean {
+  const parsed = interpretVariableTokenName(
+    wrapVariableNameWithTextCase(name, textCase),
+    exactNameExists,
+  );
+  return parsed.name === name && parsed.textCase === textCase;
 }
 
 export function findVariableTokens(
   text: string,
   syntax: TokenSyntax | readonly TokenSyntax[] = DEFAULT_TOKEN_SYNTAX,
+  exactNameExists?: (name: string) => boolean,
 ): VariableTokenMatch[] {
   if (!text) return [];
   const syntaxes: readonly TokenSyntax[] = isSingleTokenSyntax(syntax) ? [syntax] : syntax;
@@ -99,13 +120,15 @@ export function findVariableTokens(
     const pattern = createVariableTokenPattern(candidateSyntax);
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null) {
-      const name = match[1]?.trim();
-      if (!name) continue;
+      const rawName = match[1]?.trim();
+      if (!rawName) continue;
+      const parsed = interpretVariableTokenName(rawName, exactNameExists);
       candidates.push({
-        name,
+        name: parsed.name,
         start: match.index,
         end: pattern.lastIndex,
         syntax: candidateSyntax,
+        textCase: parsed.textCase,
         priority,
       });
     }
@@ -125,6 +148,7 @@ export function findVariableTokens(
       start: candidate.start,
       end: candidate.end,
       syntax: candidate.syntax,
+      textCase: candidate.textCase,
     });
   }
   return matches;
@@ -134,9 +158,10 @@ export function findVariableTokenAt(
   text: string,
   index: number,
   syntax: TokenSyntax | readonly TokenSyntax[] = DEFAULT_TOKEN_SYNTAX,
+  exactNameExists?: (name: string) => boolean,
 ): VariableTokenMatch | null {
   if (index < 0 || index > text.length) return null;
-  return findVariableTokens(text, syntax).find((match) =>
+  return findVariableTokens(text, syntax, exactNameExists).find((match) =>
     index >= match.start && index <= match.end - match.syntax.suffix.length
   ) ?? null;
 }
@@ -176,6 +201,17 @@ function createVariableTokenPattern(syntax: TokenSyntax): RegExp {
   const prefix = escapeRegExp(syntax.prefix);
   const suffix = escapeRegExp(syntax.suffix);
   return new RegExp(`${prefix}\\s*((?:(?!${suffix})\\S)+?)\\s*${suffix}`, 'g');
+}
+
+function interpretVariableTokenName(
+  rawName: string,
+  exactNameExists?: (name: string) => boolean,
+): { name: string; textCase?: VariableTextCase } {
+  if (exactNameExists?.(rawName)) return { name: rawName };
+  const parsed = parseVariableTextCaseMarker(rawName, exactNameExists);
+  return parsed
+    ? { name: parsed.name, textCase: parsed.textCase }
+    : { name: rawName };
 }
 
 function escapeRegExp(value: string): string {

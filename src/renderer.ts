@@ -7,6 +7,7 @@ import { filePathFromLink } from './linkSyntax';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 import { getActiveCardBlocks } from './cardBlocks';
 import { findVariableTokens, getRecognizedTokenSyntaxes } from './tokenSyntax';
+import { applyVariableTextCase, type VariableTextCase } from './textCase';
 
 interface PreviewMode {
   rerender?: (force: boolean) => void;
@@ -80,7 +81,11 @@ export class Renderer {
       let lastIndex = 0;
       const frag = createFragment();
       let any = false;
-      for (const match of findVariableTokens(text, syntaxes)) {
+      for (const match of findVariableTokens(
+        text,
+        syntaxes,
+        (name) => this.registry.getVariable(name) !== null,
+      )) {
         any = true;
         const before = text.slice(lastIndex, match.start);
         if (before) frag.appendChild(document.createTextNode(before));
@@ -100,7 +105,7 @@ export class Renderer {
 
         // Resolve while the fragment is detached so table cells do not reflow
         // from a placeholder to their final value during scrolling.
-        resolutions.push(this.resolvePlaceholder(varName, placeholder));
+        resolutions.push(this.resolvePlaceholder(varName, placeholder, match.textCase));
 
         lastIndex = match.end;
       }
@@ -265,7 +270,11 @@ export class Renderer {
     state.clientY = event.clientY;
   }
 
-  private async resolvePlaceholder(variableName: string, placeholder: HTMLElement): Promise<void> {
+  private async resolvePlaceholder(
+    variableName: string,
+    placeholder: HTMLElement,
+    tokenTextCase?: VariableTextCase,
+  ): Promise<void> {
     try {
       const result = await this.resolver.resolve(variableName);
       if (!this.enabled) return;
@@ -275,9 +284,13 @@ export class Renderer {
         placeholder.title = result.error ?? 'Unknown error';
         return;
       }
-      placeholder.textContent = Array.isArray(result.value)
+      const value = Array.isArray(result.value)
         ? result.value.map(String).join(', ')
         : String(result.value);
+      placeholder.textContent = applyVariableTextCase(
+        value,
+        tokenTextCase ?? this.registry.getVariable(variableName)?.textCase,
+      );
     } catch {
       if (!this.enabled) return;
       placeholder.textContent = `[Missing: ${variableName}]`;
