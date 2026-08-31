@@ -19,6 +19,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added a confirmation prompt before deleting an Autolink profile, including notice that its generated Variable Links remain in the registry.
 - Added built-in Card snapshots for newly generated Autolink variables, preserving the configured Card-property order and matching the Card Designer presets.
 - Added an opt-in Apply all action for replacing same-name Variable Links from an Autolink preview while keeping other warning types excluded.
+- Added a main-workspace Management Center foundation opened from the ribbon, command palette, or Settings, ready for registry management activities.
 
 ### Changed
 

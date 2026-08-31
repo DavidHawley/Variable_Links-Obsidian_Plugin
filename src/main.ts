@@ -160,6 +160,7 @@ export default class VariableLinksPlugin extends Plugin {
       this.schedule(() => this.livePreviewRenderer?.refresh(), 0);
 
       const panelModule = await import('./panel');
+      const managementModule = await import('./managementCenter');
       if (!this.active) return;
       this.registerView(
         panelModule.VIEW_TYPE_VARIABLE_PANEL,
@@ -169,6 +170,18 @@ export default class VariableLinksPlugin extends Plugin {
         id: 'open-variable-properties',
         name: 'Open variable properties',
         callback: () => void this.openVariableProperties(),
+      });
+      this.registerView(
+        managementModule.VIEW_TYPE_MANAGEMENT_CENTER,
+        (leaf) => new managementModule.ManagementCenterView(leaf, this),
+      );
+      this.addCommand({
+        id: 'open-management-center',
+        name: 'Open management center',
+        callback: () => void this.openManagementCenter(),
+      });
+      this.addRibbonIcon('database', 'Open variable links management center', () => {
+        void this.openManagementCenter();
       });
 
       this.registerVariableContextMenu();
@@ -264,6 +277,7 @@ export default class VariableLinksPlugin extends Plugin {
     if (!this.active) return;
     this.livePreviewRenderer?.refresh();
     await this.refreshPanelViews();
+    await this.refreshManagementCenterViews();
   }
 
   async refreshAfterTokenSyntaxChange(): Promise<void> {
@@ -272,6 +286,7 @@ export default class VariableLinksPlugin extends Plugin {
     if (!this.active) return;
     this.livePreviewRenderer?.refresh();
     await this.refreshPanelViews();
+    await this.refreshManagementCenterViews();
   }
 
   private async updateOpenedFileTokenCache(file: TFile): Promise<void> {
@@ -292,6 +307,7 @@ export default class VariableLinksPlugin extends Plugin {
       if (!this.active) return;
       this.livePreviewRenderer?.refresh();
       await this.refreshPanelViews();
+      await this.refreshManagementCenterViews();
     } catch (error) {
       if (this.active) {
         new Notice(`Variable links: could not update moved note references: ${error instanceof Error ? error.message : String(error)}`);
@@ -445,6 +461,33 @@ export default class VariableLinksPlugin extends Plugin {
       await leaf.view.selectVariable(variableName);
     }
     await this.app.workspace.revealLeaf(leaf);
+  }
+
+  async openManagementCenter(): Promise<void> {
+    if (!this.active) return;
+    const managementModule = await import('./managementCenter');
+    if (!this.active) return;
+    let leaf = this.app.workspace
+      .getLeavesOfType(managementModule.VIEW_TYPE_MANAGEMENT_CENTER)[0] ?? null;
+    if (!leaf) {
+      leaf = this.app.workspace.getLeaf('tab');
+      await leaf.setViewState({
+        type: managementModule.VIEW_TYPE_MANAGEMENT_CENTER,
+        active: true,
+        state: { activity: 'variables' },
+      });
+    }
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  async refreshManagementCenterViews(): Promise<void> {
+    const managementModule = await import('./managementCenter');
+    if (!this.active) return;
+    for (const leaf of this.app.workspace.getLeavesOfType(
+      managementModule.VIEW_TYPE_MANAGEMENT_CENTER,
+    )) {
+      if (leaf.view instanceof managementModule.ManagementCenterView) leaf.view.refresh();
+    }
   }
 
   private async openNamedVariableCreation(request: VariableCreationHandoff): Promise<void> {

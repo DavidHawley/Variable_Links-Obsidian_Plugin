@@ -464,6 +464,7 @@ export class Registry {
       if (!this.isRecord(registry['variable-links'])) registry['variable-links'] = {};
     });
     await this.load();
+    await this.plugin.refreshManagementCenterViews();
   }
 
   async applyManagedAutolinkVariables(
@@ -672,6 +673,7 @@ export class Registry {
       }
     }
     this.plugin.livePreviewRenderer?.refresh();
+    await this.plugin.refreshManagementCenterViews();
   }
 
   async deleteVariable(name: string) {
@@ -688,6 +690,7 @@ export class Registry {
       new Notice('The variable was deleted, but its saved card designer collapse state could not be removed.');
     }
     this.plugin.livePreviewRenderer?.refresh();
+    await this.plugin.refreshManagementCenterViews();
   }
 
   private confirmReservedTextCaseName(variableName: string): Promise<boolean> {

@@ -245,6 +245,19 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         },
       },
       {
+        name: 'Management center',
+        desc: 'Open Variable Links management tools in a main workspace tab.',
+        render: (setting) => {
+          const button = setting.controlEl.createEl('button', {
+            text: 'Open',
+            attr: { type: 'button' },
+          });
+          const onClick = (): void => void this.variableLinksPlugin.openManagementCenter();
+          button.addEventListener('click', onClick);
+          return () => button.removeEventListener('click', onClick);
+        },
+      },
+      {
         type: 'group',
         heading: 'Autolink profiles',
         items: [
