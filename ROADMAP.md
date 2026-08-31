@@ -197,11 +197,17 @@ This document records planned improvements to Variable Links. Plans may change a
 
 #### Managed-variable bulk tools
 
-- Add a management view that lists Variable Links created by each Autolink profile, including entries whose original profile was later deleted.
-- Allow users to select individual managed Variable Links or select every managed link belonging to one profile.
-- Add a separately confirmed bulk-delete action that removes only selected entries carrying the matching Autolink ownership metadata; never include manual or unrelated Variable Links.
+- Add a dedicated, resizable management view opened from Settings or a command that lists every Variable Link, including manual entries, managed entries, and entries whose original Autolink profile was later deleted.
+- Keep each entry on one line with a selection checkbox on the left and compact Open settings and Delete actions on the right; truncate long fields visually while exposing their complete values accessibly.
+- Add a sticky toolbar with search, sorting by name, type, source, property, or profile, and filters for all, manual, managed, or one Autolink profile.
+- Allow Select all visible, preserve selection across searching and sorting, track selection by GUID rather than name, and always show the total selected count.
+- Open an entry in the existing Variable Link Properties panel from its row rather than creating a second editing implementation in 1.3.
+- Keep direct cell and field editing out of the 1.3 manager; expand it in 1.4 after the list, selection, and safety behavior is proven.
+- Allow users to select individual Variable Links, all visible results, or every managed link belonging to one profile.
+- Add a separately confirmed bulk-delete action for the selected entries without silently including hidden or unrelated rows.
 - Before deletion, show how many cached tokens will become unresolved and clearly state that note text will remain unchanged.
-- Add a mass-rename workflow based on a revised profile name pattern, with a complete old-name/new-name preview before confirmation.
+- Keep the existing single-entry Delete confirmation available from each row.
+- Add mass-rename modes for prefix, suffix, find and replace, and reapplying an Autolink profile's name pattern, with a complete old-name/new-name preview before confirmation.
 - Detect duplicate or occupied names before renaming and cancel the whole batch if every rename cannot be completed safely.
 - Reuse GUID-backed token rename and rollback protection so confirmed mass renames update verified tokens without broad text replacement.
 - Keep selective deletion and mass rename explicit user actions; profile deletion alone must not delete or rename generated Variable Links.
@@ -298,7 +304,18 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.4.0
 
-> **Planning gate:** Review and iterate on the complete Card type, template, rule, and population behavior before implementation begins. Build on the Autolink profiles, stable template identifiers, and basic Card population introduced in 1.3 rather than creating a second file and folder matching system. Keep the first version declarative and understandable rather than adding a scripting language.
+> **Planning gate:** Review and iterate on the complete Card type, template, rule, population, and registry-management editing behavior before implementation begins. Build on the Autolink profiles, stable template identifiers, basic Card population, and management view introduced in 1.3 rather than creating parallel systems. Keep the first version declarative and understandable rather than adding a scripting language.
+
+### Direct registry management
+
+- Extend the 1.3 Variable Link management view with direct editing while preserving its compact single-line collapsed rows.
+- Allow safe, simple values such as Display name and Favorite to be edited inline.
+- Provide an expandable row inspector or adjacent detail editor for variable type, source note, property, fixed value, file link, default text case, appearance, Card, and Autolink ownership information.
+- Reuse the existing Properties-panel validation, type-change confirmation, property suggestions, rename protections, and Card editor instead of implementing different rules in the manager.
+- Show unsaved changes clearly and provide Save and Cancel controls per edited entry.
+- Add previewed multi-edit operations only for fields that can be applied consistently across every selected entry; never silently replace Cards, appearance, or mappings with incompatible values.
+- Keep selection stable by GUID during direct edits and refresh safely when the registry changes externally.
+- Test inline and expanded editing with search filters, sorting, selected rows, renamed variables, deleted entries, narrow windows, keyboard navigation, and plugin unload cleanup.
 
 ### Rule-based Info Card templates
 
@@ -370,3 +387,4 @@ This document records planned improvements to Variable Links. Plans may change a
 2. Add manual template application, previews, replacement modes, and undo before enabling automation.
 3. Add the declarative rule builder, priorities, manual overrides, and rule explanations.
 4. Add automatic population, explicit re-evaluation, and the optional bulk workflow after single-Card smoke testing succeeds.
+5. Extend the 1.3 registry manager with direct editing and carefully limited multi-edit operations after its read, selection, rename, and deletion workflows are stable.
