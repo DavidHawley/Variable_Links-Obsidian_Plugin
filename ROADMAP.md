@@ -60,7 +60,7 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.3.0
 
-> **Target release date: September 4, 2026.** Use September 3 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-syntax, dynamic date/time, and contextual-help work described below.
+> **Target release date: September 24, 2026.** Use September 23 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-syntax, captured date/time, named-creation, and contextual-help work described below.
 
 > **Planning gate:** Before implementation begins, review the complete 1.3 roadmap with the user and iterate on any unclear behavior, format rules, interface choices, scope, or implementation order. Begin development only after the user approves the revised plan.
 
@@ -94,32 +94,51 @@ This document records planned improvements to Variable Links. Plans may change a
 - Test custom formats in Source Mode, Live Preview, Reading View, Insert, Favorites, Switch token, Properties, renaming, missing variables, token caching, and Info Cards.
 - Test multiple active and legacy formats, migration cancellation, partial-write recovery, conflicting Markdown syntax, repeated tokens, and tokens at line boundaries.
 
-### Dynamic date and time tokens
+### Captured date and time variable shortcuts
 
-- Add `{{DATE}}`, using the existing default date format setting.
-- Add `{{TIME}}`, using `HH:mm:ss` as its initial default format.
-- Support an inline format override, including `{{DATE:DD/MM/YYYY HH:mm:ss}}`, `{{DATE:MM-DD-YY}}`, and `{{TIME:hh:mm:ss A}}`.
+- Add `DATE`, `TIME`, and `DATETIME` creation shortcuts that capture the current moment once and save the result as a normal fixed-value Variable Link.
+- Link the created fixed variable to the note where it was inserted so the rendered value also acts as a shortcut back to that note.
+- Replace the temporary creation expression with the permanent Variable Link token after the registry entry is saved; date and time values must not continue changing after creation.
+- Add editable Default date, Default time, and Default date-time format settings.
+- Use the selected shortcut only to choose its default format and automatic-name label: `DATE`, `TIME`, and `DATETIME` must otherwise use exactly the same formatter and support every date and time component.
+- Allow an inline format to override the selected default for one creation. For example, `{{DATE:HH:mm:ss}}`, `{{TIME:YYYY-MM-DD}}`, and `{{DATETIME:WW}}` are all valid.
 - Keep formats case-sensitive so `MM` means month and `mm` means minutes.
 - Support full, abbreviated, and single-letter weekdays using `WW`, `www`, and `w`.
 - Support useful date and time parts, month names, 12-hour and 24-hour clocks, AM/PM, and escaped literal text.
-- Apply the active custom token prefix and suffix to built-in tokens as well as registered variables.
-- Reserve the built-in DATE and TIME forms and warn when an existing registered variable conflicts with them.
-- Keep built-in tokens out of variable properties, favorites, renaming, Info Cards, and registry editing.
+- Use the active custom token prefix and suffix for creation expressions and the permanent tokens they produce.
 
-#### Rendering and automatic updates
+#### Automatic names
 
-- Use one shared formatter and resolver in Reading View, Live Preview, suggestions, context menus, insertion, and Copy Markdown.
-- Keep date and time tokens raw in Source Mode, code, YAML, math, comments, link destinations, raw HTML, and other protected Markdown contexts.
-- Refresh visible tokens only as often as their formats require: every second for seconds, every minute for hours or minutes, and at the date boundary for date-only values.
-- Use a single plugin-owned scheduler and release its timers and listeners when the plugin unloads.
-- Show a clear warning for unsupported or incomplete formats instead of producing misleading output.
+- Build automatic names from the first five valid characters of the current filename, followed by the shortcut label and a two-digit sequence.
+- Use names such as `{{FileN_Date_01}}`, `{{FileN_Time_01}}`, and `{{FileN_DateTime_01}}`.
+- Remove spaces and characters that are unsafe in Variable Link names, and use a clear fallback when the filename does not provide five usable characters.
+- Increment the sequence until an unused variable name is found; never overwrite an existing variable.
 
-#### Insertion and testing
+#### Named creation expressions
 
-- Put DATE, TIME, and common formatted examples near the top of token suggestions.
-- Add an Insert date or time section to relevant insertion menus and place the caret in the editable portion of a format template.
-- Make Copy Markdown copy the displayed date or time value in prose while preserving raw syntax in protected content.
-- Test 12-hour and 24-hour time, leading zeroes, seconds, minute and day changes, month and weekday names, invalid formats, local timezones, custom delimiters, plugin reload, and timer cleanup.
+- Treat text before `=` as the requested permanent variable name when a creation suggestion is selected.
+- Support named date and time creation, including `{{Deadline=DATE}}`, `{{Started=TIME}}`, `{{Created=DATETIME}}`, and formatted forms such as `{{Moment=TIME:YYYY-MM-DD HH:mm}}`.
+- Apply the same naming syntax to every supported variable type, including fixed values and property mappings.
+- Let `{{Name=FIXED}}` open the fixed-value editor with the name filled in, and let `{{Name=PROPERTY}}` open the property-mapping editor with the name filled in.
+- Let a selected unmapped-property suggestion use the text before `=` as its new Variable Link name.
+- Replace a successful creation expression with its permanent token, such as replacing `{{Deadline=DATE}}` with `{{Deadline}}`.
+- Never overwrite an existing variable with a named creation expression. Offer to insert the existing variable or require a different name.
+- Keep creation as an explicit editor or suggestion action; Reading View and background rendering must never create or modify registry entries.
+
+#### Suggestions and formatting help
+
+- Put DATE, TIME, DATETIME, FIXED, and PROPERTY creation entries above ordinary suggestion matches.
+- When `=` is present, treat the left side as the proposed name and use the right side to filter creation types, properties, and date/time shortcuts.
+- Preview the captured value, resulting permanent token, variable type, and current-note link before the user confirms a creation suggestion.
+- Show a clear warning for unsupported, incomplete, or ambiguous formats instead of saving a misleading value.
+- Use one date and time format reference for all three shortcuts because their formatter capabilities are identical.
+
+#### Testing
+
+- Test automatic and custom names, filename sanitizing, sequence collisions, existing-name conflicts, and registry-write failures.
+- Test fixed-value and property creation through `Name=type`, property suggestions, editor handoff, cancellation, and the final inserted token.
+- Test all three shortcuts with date-only, time-only, and combined formats to prove that they share the same formatter.
+- Test 12-hour and 24-hour time, leading zeroes, month and weekday names, invalid formats, local timezones, custom delimiters, protected Markdown contexts, and plugin reload.
 
 ### Contextual help controls
 
@@ -134,9 +153,10 @@ This document records planned improvements to Variable Links. Plans may change a
 
 #### Date and time format help
 
-- Place a help button beside the default date and time format settings and beside inline format controls.
+- Place a help button beside the default date, default time, and default date-time format settings and beside inline format controls.
 - Show a live preview using the current local date and time.
-- Include a format-reference table, copyable examples, literal-text instructions, and a clear explanation of case-sensitive parts such as `MM` and `mm`.
+- Include one shared format-reference table, copyable examples, literal-text instructions, and a clear explanation of case-sensitive parts such as `MM` and `mm`.
+- Explain that DATE, TIME, and DATETIME all accept the complete format language and differ only in their editable defaults and automatic-name labels.
 - Validate formats as they are entered and use the help popup to explain any unsupported or ambiguous part.
 
 #### Final help review
@@ -144,3 +164,77 @@ This document records planned improvements to Variable Links. Plans may change a
 - Review every Settings section, Variable Link Properties section, Card editor section, and relevant menu before the 1.3 smoke test.
 - Add missing help controls where a new user could not reasonably predict the result of a setting.
 - Check that the help remains useful without obscuring the normal workflow or crowding narrow layouts.
+
+## 1.4.0
+
+> **Planning gate:** Review and iterate on the complete Card type, template, rule, and population behavior before implementation begins. Keep the first version declarative and understandable rather than adding a scripting language.
+
+### Rule-based Info Card templates
+
+- Add reusable Info Card templates that users can name, describe, preview, and apply to multiple Variable Links.
+- Let a template define the Card layout, blocks, tables, labels, appearance, and population rules without being tied to one variable.
+- Add user-defined Card types such as Person, Place, Project, Event, or any custom category.
+- Keep Card types separate from the existing Fixed value and Property value variable types.
+- Allow each Card type to have a default template while permitting multiple templates for the same type.
+- Allow a Variable Link to use an automatically selected Card type or a manual Card type override.
+- Preserve existing Info Cards exactly until the user explicitly applies a template or enables automatic application.
+
+#### Template manager
+
+- Add a template manager for creating a blank template, saving the current Card as a template, duplicating, renaming, reordering, previewing, and deleting templates.
+- Give every template a stable internal identifier so renaming it does not break Card types or rules.
+- Let users choose whether saving a Card as a template includes its layout, appearance, content blocks, population rules, or any combination of those parts.
+- Show which Card types and rules use a template before allowing it to be deleted.
+- Keep a deleted or modified template from damaging existing Cards by storing the applied Card configuration independently.
+- Support both the original simple Card layout and the block layout, while making block layouts the more capable template format.
+
+#### Card type and rule builder
+
+- Add an understandable rule builder with enabled/disabled rules, drag ordering, and explicit priority.
+- Allow rules to match variable type, variable name, source file or folder, linked property name, file link presence, note tags, and selected frontmatter properties or values.
+- Support Match all and Match any condition groups without allowing arbitrary executable code.
+- Let a matching rule assign a Card type, choose a template, and define how the template should be populated.
+- Stop after the first matching rule by default, with a deliberate option to continue to compatible lower-priority rules.
+- Make a manual Card type or template selection override automatic rules until the user chooses to resume automatic matching.
+- Include a rule tester that explains which rule matched a selected Variable Link and why higher-priority rules did not match.
+
+#### Automatic population
+
+- Evaluate Card rules when a new Variable Link is created and when the user explicitly asks to re-evaluate an existing Card.
+- Provide user-selectable behavior for automatic application, confirmation before applying, or suggestion only.
+- Let templates populate content from the variable name, display name, resolved value, variable type, source file, source path, property name, optional file link, tags, and selected note properties.
+- Allow template property blocks and tables to use explicit property names, include and exclude lists, or simple name-pattern rules.
+- Let population rules hide an optional block, leave it empty, or use fallback text when its source value is unavailable.
+- Treat applying a template as a snapshot: later template or rule changes must not silently rewrite existing customized Cards.
+- Add explicit Re-evaluate rules and Reapply template actions for users who want to update an existing Card.
+
+#### Applying and reapplying templates
+
+- Preview the resulting Card and summarize the proposed changes before replacing existing content or appearance.
+- Offer Fill missing items only as the safest default for an existing Card.
+- Also offer Replace layout, Replace appearance, and Replace the complete Card as deliberate choices.
+- Preserve an undoable copy of the prior Card configuration whenever a template is applied or reapplied.
+- Support applying a template to one Variable Link first, then add a separately confirmed bulk-application workflow after the single-Card behavior is proven safe.
+
+#### Card editor integration
+
+- Add Card type, Applied template, and Rule status controls to the Card properties panel.
+- Add Apply template, Re-evaluate rules, Resume automatic matching, and Save as template actions in appropriate Card editor menus.
+- Clearly distinguish a manually selected template from one chosen by an automatic rule.
+- Keep template and rule controls usable in narrow panels, on mobile, with keyboard navigation, and with screen readers.
+- Add the contextual `?` help controls established in 1.3 wherever template inheritance, matching, or replacement behavior needs explanation.
+
+#### Compatibility and testing
+
+- Test existing simple and block-layout Cards to confirm they remain unchanged until the user acts.
+- Test template creation, duplication, renaming, deletion warnings, stable identifiers, previews, and undo restoration.
+- Test rule priority, Match all and Match any groups, manual overrides, no-match behavior, disabled rules, and rule explanations.
+- Test missing properties, renamed files and variables, changed tags, fixed and property variables, deleted templates, and registry reloads.
+- Test single-Card and bulk application, each replacement mode, narrow layouts, mobile, themes, keyboard operation, and plugin unload cleanup.
+
+#### Suggested implementation order
+
+1. Define Card types and the reusable template format, then add the template manager and Save as template workflow.
+2. Add manual template application, previews, replacement modes, and undo before enabling automation.
+3. Add the declarative rule builder, priorities, manual overrides, and rule explanations.
+4. Add automatic population, explicit re-evaluation, and the optional bulk workflow after single-Card smoke testing succeeds.

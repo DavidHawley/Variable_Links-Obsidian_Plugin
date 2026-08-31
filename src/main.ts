@@ -111,11 +111,17 @@ export default class VariableLinksPlugin extends Plugin {
       this.tokenCache = new TokenCache(this.app, this, this.registry);
       await this.tokenCache.initialize();
       if (!this.active) return;
+      this.registerEvent(this.app.workspace.on('file-open', (file) => {
+        if (file) void this.updateOpenedFileTokenCache(file);
+      }));
+      this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+        if (file instanceof TFile) void this.updateMovedFileReferences(file, oldPath);
+      }));
 
       this.resolver = new Resolver(this.app, this.registry);
       this.renderer = new Renderer(this.app, this.registry, this.resolver, this.indexer);
-      this.registerMarkdownPostProcessor((element) => {
-        if (this.renderer) void this.renderer.processElement(element);
+      this.registerMarkdownPostProcessor(async (element) => {
+        if (this.renderer) await this.renderer.processElement(element);
       });
 
       this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver);
@@ -144,13 +150,6 @@ export default class VariableLinksPlugin extends Plugin {
         async () => this.refreshPanelViews(),
       );
       this.registerEditorSuggest(this.suggest);
-
-      this.registerEvent(this.app.vault.on('modify', (file) => {
-        if (!this.active || !(file instanceof TFile)) return;
-        if (file.path === this.registry?.registryFile?.path) {
-          this.schedule(() => void this.indexer?.build(), 100);
-        }
-      }));
     } catch (error) {
       new Notice(`Variable Links failed to load: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -213,6 +212,41 @@ export default class VariableLinksPlugin extends Plugin {
 
   onCaretVariableChanged(_last: LastTouched): void {
     if (this.active) void this.refreshPanelViews();
+  }
+
+  async refreshAfterRegistryReload(): Promise<void> {
+    if (!this.active) return;
+    await this.indexer?.build();
+    if (!this.active) return;
+    await this.tokenCache?.rebuild();
+    if (!this.active) return;
+    this.livePreviewRenderer?.refresh();
+    await this.refreshPanelViews();
+  }
+
+  private async updateOpenedFileTokenCache(file: TFile): Promise<void> {
+    if (!this.active) return;
+    try {
+      await this.tokenCache?.updateFile(file);
+    } catch {
+      // A later file-open or vault event will retry the cache update.
+    }
+  }
+
+  private async updateMovedFileReferences(file: TFile, oldPath: string): Promise<void> {
+    if (!this.active || !this.registry || oldPath === this.registry.registryPath) return;
+    try {
+      const updated = await this.registry.updateFileReferences(oldPath, file.path);
+      if (!this.active || !updated) return;
+      await this.indexer?.build();
+      if (!this.active) return;
+      this.livePreviewRenderer?.refresh();
+      await this.refreshPanelViews();
+    } catch (error) {
+      if (this.active) {
+        new Notice(`Variable links: could not update moved note references: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 
   async loadSettings(): Promise<void> {

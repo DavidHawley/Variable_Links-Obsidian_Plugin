@@ -60,6 +60,12 @@ export default class TokenCache {
     await this.synchronize(true);
   }
 
+  async updateFile(file: TFile): Promise<void> {
+    if (!this.active || !this.isMarkdown(file)) return;
+    await this.indexFile(file);
+    await this.persist();
+  }
+
   async synchronize(force = false) {
     if (!this.active) return;
     const generation = this.generation;

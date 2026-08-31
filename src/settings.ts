@@ -112,6 +112,11 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         },
       },
       {
+        name: 'Update token cache',
+        desc: 'Rescan every Markdown file and update the recorded Variable Link locations.',
+        render: (setting) => this.renderTokenCacheUpdateButton(setting.controlEl),
+      },
+      {
         type: 'group',
         heading: 'Default variable appearance',
         items: [
@@ -275,6 +280,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     if (key === 'registryFilePath') {
       try {
         await this.variableLinksPlugin.registry?.load();
+        await this.variableLinksPlugin.refreshAfterRegistryReload();
       } catch (error) {
         new Notice(`Failed to load registry: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -310,6 +316,44 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       cleanups.push(() => input.removeEventListener('change', onChange));
     }
     return () => cleanups.forEach((cleanup) => cleanup());
+  }
+
+  private renderTokenCacheUpdateButton(controlEl: HTMLElement): () => void {
+    const button = controlEl.createEl('button', {
+      text: 'Update',
+      attr: { type: 'button' },
+    });
+    let active = true;
+    const updateTokenCache = async (): Promise<void> => {
+      const tokenCache = this.variableLinksPlugin.tokenCache;
+      if (!tokenCache) {
+        new Notice('Variable links: token cache is unavailable.');
+        return;
+      }
+      button.disabled = true;
+      button.textContent = 'Updating…';
+      try {
+        await tokenCache.rebuild();
+        if (active) new Notice('Variable links: token cache updated.');
+      } catch (error) {
+        if (active) {
+          new Notice(`Variable links: token cache update failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } finally {
+        if (active) {
+          button.disabled = false;
+          button.textContent = 'Update';
+        }
+      }
+    };
+    const onClick = (): void => {
+      void updateTokenCache();
+    };
+    button.addEventListener('click', onClick);
+    return () => {
+      active = false;
+      button.removeEventListener('click', onClick);
+    };
   }
 }
 
