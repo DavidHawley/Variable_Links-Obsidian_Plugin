@@ -18,6 +18,7 @@ import { getTokenSyntax } from './tokenSyntax';
 import { parseVariableTextCaseMarker } from './textCase';
 import { filePathFromLink } from './linkSyntax';
 import { renderNamePattern, type NamePatternContext } from './namePattern';
+import { addContextHelpButton } from './contextHelp';
 
 export const VIEW_TYPE_MANAGEMENT_CENTER = 'variable-links-management-center';
 
@@ -662,7 +663,13 @@ class MassRenameVariablesModal extends Modal {
     mode.createEl('option', { text: 'Find and replace', value: 'replace' });
     mode.createEl('option', { text: 'Pattern', value: 'pattern' });
     const wordSetting = controls.createDiv({ cls: 'setting-item' });
-    wordSetting.createDiv({ text: 'Word selection', cls: 'setting-item-name' });
+    const wordName = wordSetting.createDiv({ text: 'Word selection', cls: 'setting-item-name' });
+    addContextHelpButton(
+      wordName,
+      this.plugin,
+      'Mass rename word processing',
+      (parent) => this.renderWordProcessingHelp(parent),
+    );
     const wordControl = wordSetting.createDiv({ cls: 'setting-item-control' });
     const wordSelection = wordControl.createEl('select', { attr: { 'aria-label': 'Word selection' } });
     wordSelection.createEl('option', { text: 'Whole result', value: 'whole' });
@@ -1043,6 +1050,28 @@ class MassRenameVariablesModal extends Modal {
       selectedWords = indexes.map((index) => words[index - 1] ?? '');
     }
     return { value: selectedWords.join(this.outputSeparator).trim(), errors: [] };
+  }
+
+  private renderWordProcessingHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Word processing runs after the selected rename mode or naming pattern creates each proposed name.',
+    });
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Whole result keeps every detected word; First word and last word keep one; Custom order uses 1-based positions such as 2, 1.',
+    });
+    details.createEl('li', {
+      text: 'The split checkboxes choose which spaces, commas, or underscores count as word boundaries.',
+    });
+    details.createEl('li', {
+      text: 'Output separator is inserted between retained words. Leave it blank to join them directly.',
+    });
+    details.createEl('li', {
+      text: 'Leave whitespace unchanged prevents spaces from acting as word boundaries; selected comma or underscore boundaries still apply.',
+    });
+    details.createEl('li', {
+      text: 'Repeated custom order positions are allowed. Invalid or unavailable positions appear as row problems before anything is renamed.',
+    });
   }
 
   private getNewName(entry: VariableEntry, index: number): { errors: string[]; value: string } {

@@ -262,6 +262,18 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       {
         type: 'group',
         heading: 'Autolink profiles',
+        extraButtons: [(button) => {
+          button
+            .setIcon('circle-help')
+            .setTooltip('Autolink profiles help')
+            .onClick(() => openContextHelp(
+              this.variableLinksPlugin,
+              'Autolink profiles',
+              button.extraSettingsEl,
+              (parent) => this.renderAutolinkProfilesHelp(parent),
+            ));
+          button.extraSettingsEl.setAttribute('aria-label', 'Autolink profiles help');
+        }],
         items: [
           {
             name: 'Profiles',
@@ -726,6 +738,32 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     });
     details.createEl('li', {
       text: 'An individual card can disable only its own live preview hover from the card properties panel.',
+    });
+  }
+
+  private renderAutolinkProfilesHelp(parent: HTMLElement): void {
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'A profile matches one exact file or a folder, optionally including its subfolders. More specific matching profiles take priority.',
+    });
+    details.createEl('li', {
+      text: 'Value property chooses the note property displayed by each generated variable. Name pattern controls its permanent variable name.',
+    });
+    details.createEl('li', {
+      text: 'Preview matches reads notes without changing the registry. Apply safe additions creates only non-conflicting entries.',
+    });
+    details.createEl('li', {
+      text: 'Allow overwrite and apply all are required before same-name entries can be replaced; other warnings remain excluded.',
+    });
+    details.createEl('li', {
+      text: 'Allow note overrides lets matching notes replace profile defaults through standard or custom property names.',
+    });
+    details.createEl('li', {
+      text: 'Card presets are saved as snapshots, so later profile changes do not silently replace a customized card.',
+    });
+    parent.createEl('p', {
+      text: 'Deleting a profile does not delete the managed variable links it already created.',
+      cls: 'variable-links-hint-text',
     });
   }
 

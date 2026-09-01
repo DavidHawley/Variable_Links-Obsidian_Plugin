@@ -2414,7 +2414,13 @@ export class VariablePropertiesView extends ItemView {
       'e.g. John Smith',
     );
     const textCaseRow = editControls.createDiv({ cls: 'variable-links-panel-field' });
-    textCaseRow.createEl('label', { text: 'Default text case:' });
+    const textCaseLabel = textCaseRow.createEl('label', { text: 'Default text case:' });
+    addContextHelpButton(
+      textCaseLabel,
+      this.plugin,
+      'Default text case',
+      (helpParent) => this.renderTextCaseHelp(helpParent),
+    );
     const textCaseInput = textCaseRow.createEl('select', {
       attr: { 'aria-label': 'Default text case' },
     });
@@ -3224,6 +3230,28 @@ export class VariablePropertiesView extends ItemView {
     details.createEl('li', {
       text: 'Restore defaults replaces the custom draft with the current defaults and returns the variable to inherited mode.',
     });
+  }
+
+  private renderTextCaseHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'The default changes only how this variable’s value is displayed. It never changes the saved fixed value or source property.',
+    });
+    parent.createEl('p', {
+      text: 'A case marker on one token overrides this default for that token. The same choices are available from the token context menu.',
+    });
+    const syntax = getTokenSyntax(this.plugin.settings);
+    const examples = parent.createEl('ul');
+    for (const [name, meaning] of [
+      ['.Name.', 'Lowercase first letter'],
+      ['..Name..', 'Lowercase all'],
+      ["'Name'", 'Uppercase first letter'],
+      ["''Name''", 'Capitalize each word'],
+      ["'''Name'''", 'Uppercase all'],
+    ] as const) {
+      const item = examples.createEl('li');
+      item.createEl('code', { text: formatVariableToken(name, syntax) });
+      item.createSpan({ text: ` — ${meaning}` });
+    }
   }
 
 

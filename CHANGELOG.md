@@ -32,6 +32,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added contextual help for token-format migration, variable types, and property-link behavior.
 - Added contextual help for variable-appearance inheritance and global or per-card hover behavior.
 - Added contextual help throughout the Card Designer for layouts, card and block styling, Stack containers, property tables, and property display controls.
+- Completed the contextual-help review with guidance for Autolink safety, text-case overrides, and mass-rename word processing.
 
 ### Changed
 
