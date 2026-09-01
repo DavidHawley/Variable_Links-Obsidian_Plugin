@@ -60,9 +60,9 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.3.0
 
-> **Target release date: September 24, 2026.** Use September 23 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-syntax, captured date/time, named-creation, and contextual-help work described below.
+> **Target release date: September 24, 2026.** Use September 23 for final validation, installation in the test vault, and smoke testing. Keep the 1.3 scope limited to the related token-language and displayed-text case controls, file and folder autolinking, basic Card population, captured date/time, named-creation, and contextual-help work described below.
 
-> **Planning gate:** Before implementation begins, review the complete 1.3 roadmap with the user and iterate on any unclear behavior, format rules, interface choices, scope, or implementation order. Begin development only after the user approves the revised plan.
+> **Planning gate approved:** The revised 1.3 direction was approved on August 31, 2026. Review any newly discovered ambiguity with the user before expanding the agreed scope.
 
 ### Custom Variable Link token syntax
 
@@ -70,6 +70,10 @@ This document records planned improvements to Variable Links. Plans may change a
 - Show a live example of the resulting token format in Settings.
 - Treat configured prefix and suffix characters literally rather than as pattern syntax.
 - Centralize token parsing and formatting so Reading View, Live Preview, insertion, switching, caret detection, renaming, and token caching use the same rules.
+- Establish a consistent creation grammar using `Name=TYPE:source`, with the source omitted when the selected type opens an editor.
+- Support expressions such as `{{Price=PROPERTY:[[Items/Sword]]#price}}`, `{{Status=FIXED:Draft}}`, and `{{Started=DATE:YYYY-MM-DD}}`.
+- Support quoted fixed values such as `{{Summary=FIXED:"Work in progress"}}`, including clear escaping rules for quotes and active token delimiters.
+- Keep folder scans and other bulk operations out of token expressions. A token may create or reference one Variable Link, but it must not silently mutate an entire folder.
 
 #### Validation and compatibility warnings
 
@@ -93,6 +97,132 @@ This document records planned improvements to Variable Links. Plans may change a
 
 - Test custom formats in Source Mode, Live Preview, Reading View, Insert, Favorites, Switch token, Properties, renaming, missing variables, token caching, and Info Cards.
 - Test multiple active and legacy formats, migration cancellation, partial-write recovery, conflicting Markdown syntax, repeated tokens, and tokens at line boundaries.
+- Test unquoted and quoted creation sources, escaped characters, explicit file-property links, incomplete expressions, and malformed type or source separators.
+
+### Displayed-text case controls
+
+- Add compact, matching markers inside a Variable Link token to change only its displayed value:
+  - `{{.Name.}}` lowercases the first letter.
+  - `{{..Name..}}` lowercases every letter.
+  - `{{'Name'}}` uppercases the first letter.
+  - `{{''Name''}}` uppercases the first letter of each word.
+  - `{{'''Name'''}}` uppercases every letter.
+- Treat `Name` as the referenced permanent Variable Link in every example; markers must never become part of the registry lookup or alter the stored value.
+- Require the same marker and repetition count at both ends. Unmatched punctuation remains ordinary token-name or suggestion-query text.
+- Give an exact existing variable name priority over interpreting its leading and trailing punctuation as case markers, preserving compatibility with existing names such as `'Name'`.
+- Warn when a new variable name has the same shape as reserved case-marker syntax, while continuing to support already-existing exact names.
+- Apply case conversion to the final displayed text using Unicode-aware operations, leaving numbers and punctuation unchanged.
+- Apply token-level case consistently in Reading View, Live Preview, links, and Copy Markdown without changing link destinations, Info Card data, source properties, or fixed values.
+- Preserve the case marker when renaming a variable, changing token delimiters, migrating token formats, switching a token, or rebuilding the token cache.
+
+#### Defaults and token controls
+
+- Add a Default text case dropdown near Display name in the Variable Properties panel with Keep original, Lowercase first letter, Uppercase first letter, Capitalize each word, lowercase all, and UPPERCASE ALL choices.
+- Store the default on the Variable Link definition rather than in global appearance settings.
+- Let a case marker on an individual token override the variable's default; a bare token uses the saved default.
+- Add the same choices to the token context menu so a token can be changed without manually remembering or editing punctuation.
+- Make suggestions recognize an opening case marker, show the active case mode, and insert the selected Variable Link with a matching closing marker.
+
+#### Case-control testing
+
+- Test every marker with lowercase, uppercase, mixed-case, Unicode, punctuation-leading, numeric, boolean, array, empty, and missing values.
+- Test bare tokens with every per-variable default and verify that token-level markers override the default.
+- Test existing punctuation-shaped variable names, unmatched markers, custom and previous token delimiters, autocomplete, token switching, renaming, migration, token caching, links, and Copy Markdown.
+- Confirm protected Markdown contexts remain raw and that case formatting never modifies registry data or source-note properties.
+
+### Multi-term and value suggestion search
+
+- Allow spaces in an editor suggestion query and treat the query as case-insensitive, space-separated search terms.
+- Require every ordinary search term to match at least one searchable field, while allowing different terms to match the variable name, display name, source file path, or property name.
+- Let a query such as `{{john stat` find a Status variable sourced from `Characters/John Smith.md`.
+- Keep existing variables ahead of property-creation suggestions, and keep properties without an existing mapping ahead of already-mapped properties.
+- Rank exact matches first, followed by starts-with, whole-word, and substring matches.
+- Preserve the active custom token prefix and suffix when triggering suggestions and inserting the selected result.
+
+#### Resolved-value search
+
+- Treat one leading `*` in the suggestion query as an explicit resolved-value search operator.
+- Search only existing variables in value mode; do not include unmapped-property creation suggestions.
+- Require every term after `*` to match the current resolved value, with support for text, numbers, true/false values, and readable array values.
+- Show the matched value beneath each result and truncate very long previews without changing the stored value.
+- Resolve values only while value mode is active, cache them briefly while the user continues typing, and discard stale asynchronous results when the query changes.
+- Treat the leading `*` only as a suggestion operator. Never include it in the Variable Link token inserted after a result is selected.
+
+#### Suggestion-search testing
+
+- Test terms that match one field, terms split across multiple fields, case differences, repeated spaces, no matches, and ranking ties.
+- Test fixed and property values, arrays, numbers, booleans, empty or missing values, long previews, changed property values, and rapid query changes.
+- Test normal and value searches with the default format, custom formats, previous recognized formats, and token suffixes already present after the caret.
+
+### File and folder autolinking
+
+- Add reusable Autolink profiles that can target one file or a folder, with an option to include subfolders.
+- Store profiles in the Variable Links registry so they remain portable and synchronized with the rest of the plugin data.
+- Let each matching note generate one managed Variable Link by default, using the note filename or a configurable name pattern when the note does not provide an explicit name.
+- Let a profile define the value property, built-in Card preset, and ordered list of note properties to include in the Card.
+- Keep generated entries compatible with the existing registry, GUID, rename, token-cache, file-move, property-link, and Card systems.
+- Record which profile manages each generated entry so synchronization can distinguish generated data from manual customization.
+
+#### Note properties and overrides
+
+- Recognize the following canonical note properties:
+  - `variablelink_name` for the permanent Variable Link name.
+  - `variablelink_value_property` for the note property whose value the Variable Link displays.
+  - `variablelink_template` for the stable built-in Card preset or future custom template identifier.
+  - `variablelink_card_properties` for an ordered YAML list of note properties shown on the Card.
+- Use the correctly spelled `variablelink_template` as the documented field name and show a clear warning for likely misspellings rather than silently ignoring them.
+- Treat note properties as overrides rather than requiring every matching note to repeat its folder defaults.
+- Apply configuration in this order: explicit note properties, an exact-file profile, the closest matching folder profile, broader parent-folder profiles, and plugin defaults.
+- Require a distinct Variable Link name and value source. Do not assume that a display value, filename, property name, and permanent token name are interchangeable.
+
+#### Scan, preview, and synchronization
+
+- Add commands or Settings actions to preview autolinks for the current file, a selected folder, or all enabled profiles.
+- Before applying changes, list proposed additions, safe updates, naming collisions, invalid properties, unmatched notes, and entries that would leave a profile's scope.
+- Make preview and explicit confirmation the initial 1.3 workflow. Design the profile data for a later opt-in automatic mode without introducing silent background registry mutations in the first release.
+- Never overwrite a manually customized Variable Link or Card without explicit confirmation.
+- Resolve names deterministically and never replace an existing unrelated variable when a generated name collides.
+- When a source note is renamed or moved, update its managed file pointer. If it leaves the profile scope, flag it for review instead of deleting it automatically.
+- When a profile or note property changes, update only the parts still managed by that profile and preserve manual overrides.
+- Provide a rescan action that is safe to repeat and produces no duplicate variables or Card items.
+
+#### Basic Card population and presets
+
+- Add stable identifiers for a small set of built-in Card presets suitable for simple, compact, and property-focused Cards.
+- Let `variablelink_template` select one of these presets in 1.3 while reserving the same identifier field for the custom template system planned for 1.4.
+- Populate the Card from `variablelink_card_properties` or the profile's ordered Card-property list.
+- Preserve the listed order, identify missing properties in the preview, and avoid adding the same property twice.
+- Apply generated Card configuration as a snapshot so later profile changes do not silently replace a customized Card.
+- Keep custom template creation, the visual template manager, advanced rule building, and bulk template replacement in 1.4.
+
+#### Managed-variable bulk tools
+
+- Add a custom Management Center workspace view that opens in the main editor area as a normal tab, similar to an Obsidian Bases file, rather than using a modal or sidebar-only interface.
+- Open or focus one existing Management Center tab instead of creating duplicates, and let Obsidian preserve, move, close, and restore it with the workspace.
+- Provide a command, a Settings button, and a clickable left-ribbon action with a clear icon for opening the Management Center.
+- Build a tab-ready Management Center shell, but expose only the Variables activity in 1.3; add other management activities incrementally without creating separate competing windows.
+- Preserve the Variables activity's search, sorting, filters, and GUID-based selection while the user works in other tabs or panes.
+- List every Variable Link, including manual entries, managed entries, and entries whose original Autolink profile was later deleted.
+- Keep each entry on one line with a selection checkbox on the left and compact Open settings and Delete actions on the right; truncate long fields visually while exposing their complete values accessibly.
+- Add a sticky toolbar with search, sorting by name, type, source, property, or profile, and filters for all, manual, managed, or one Autolink profile.
+- Allow Select all visible, preserve selection across searching and sorting, track selection by GUID rather than name, and always show the total selected count.
+- Open an entry in the existing Variable Link Properties panel from its row rather than creating a second editing implementation in 1.3.
+- Keep direct cell and field editing out of the 1.3 manager; expand it in 1.4 after the list, selection, and safety behavior is proven.
+- Allow users to select individual Variable Links, all visible results, or every managed link belonging to one profile.
+- Add a separately confirmed bulk-delete action for the selected entries without silently including hidden or unrelated rows.
+- Before deletion, show how many cached tokens will become unresolved and clearly state that note text will remain unchanged.
+- Keep the existing single-entry Delete confirmation available from each row.
+- Add mass-rename modes for prefix, suffix, find and replace, and reapplying an Autolink profile's name pattern, with a complete old-name/new-name preview before confirmation.
+- Detect duplicate or occupied names before renaming and cancel the whole batch if every rename cannot be completed safely.
+- Reuse GUID-backed token rename and rollback protection so confirmed mass renames update verified tokens without broad text replacement.
+- Keep selective deletion and mass rename explicit user actions; profile deletion alone must not delete or rename generated Variable Links.
+
+#### Autolinking testing
+
+- Test exact-file and nested-folder profiles, subfolder inclusion, precedence, note overrides, naming patterns, collisions, missing value properties, and repeated scans.
+- Test note creation, rename, move into and out of scope, property changes, deleted files, registry reloads, and plugin reloads.
+- Test generated property links, token renaming, Card-property order, missing Card properties, manual Card customization, and all built-in presets.
+- Test preview cancellation and partial failures to confirm that no unrelated registry entry or note is modified.
 
 ### Captured date and time variable shortcuts
 
@@ -119,6 +249,7 @@ This document records planned improvements to Variable Links. Plans may change a
 - Treat text before `=` as the requested permanent variable name when a creation suggestion is selected.
 - Support named date and time creation, including `{{Deadline=DATE}}`, `{{Started=TIME}}`, `{{Created=DATETIME}}`, and formatted forms such as `{{Moment=TIME:YYYY-MM-DD HH:mm}}`.
 - Apply the same naming syntax to every supported variable type, including fixed values and property mappings.
+- Support complete one-line creation expressions such as `{{Price=PROPERTY:[[Items/Sword]]#price}}` and `{{Status=FIXED:Draft}}` when their source is valid.
 - Let `{{Name=FIXED}}` open the fixed-value editor with the name filled in, and let `{{Name=PROPERTY}}` open the property-mapping editor with the name filled in.
 - Let a selected unmapped-property suggestion use the text before `=` as its new Variable Link name.
 - Replace a successful creation expression with its permanent token, such as replacing `{{Deadline=DATE}}` with `{{Deadline}}`.
@@ -165,13 +296,39 @@ This document records planned improvements to Variable Links. Plans may change a
 - Add missing help controls where a new user could not reasonably predict the result of a setting.
 - Check that the help remains useful without obscuring the normal workflow or crowding narrow layouts.
 
+### Suggested implementation order
+
+1. Centralize token parsing and formatting, then add the `Name=TYPE:source` grammar, quoted sources, custom delimiters, and migration support.
+2. Add multi-term suggestion matching, ranking, and explicit resolved-value search.
+3. Add displayed-text case markers, per-variable defaults, autocomplete, context-menu controls, and compatibility handling.
+4. Define the Autolink profile, managed-entry, note-property, precedence, and preview data models without changing notes or the registry automatically.
+5. Add exact-file and folder scanning, preview, conflict handling, confirmed synchronization, and file-move behavior.
+6. Add the main-workspace Management Center shell, Variables activity, ribbon/command/Settings entry points, row actions, bulk deletion, and mass rename.
+7. Add built-in Card preset selection and ordered Card-property population while keeping the full custom template system in 1.4.
+8. Add captured date and time shortcuts and the shared formatter on top of the centralized token language.
+9. Add contextual help, complete protected-context and compatibility testing, install the build in the test vault, and perform the final smoke test.
+
 ## 1.4.0
 
-> **Planning gate:** Review and iterate on the complete Card type, template, rule, and population behavior before implementation begins. Keep the first version declarative and understandable rather than adding a scripting language.
+> **Planning gate:** Review and iterate on the complete Card type, template, rule, population, and registry-management editing behavior before implementation begins. Build on the Autolink profiles, stable template identifiers, basic Card population, and management view introduced in 1.3 rather than creating parallel systems. Keep the first version declarative and understandable rather than adding a scripting language.
+
+### Management Center expansion and direct registry management
+
+- Extend the 1.3 Variable Link management view with direct editing while preserving its compact single-line collapsed rows.
+- Add focused Autolink, Templates and rules, and Diagnostics activities as tabs in the same Management Center when their workflows are mature enough to move beyond Settings or standalone dialogs.
+- Keep each activity backed by the existing profile, template, rule, registry, and diagnostic systems rather than duplicating storage or validation inside the Management Center.
+- Allow safe, simple values such as Display name and Favorite to be edited inline.
+- Provide an expandable row inspector or adjacent detail editor for variable type, source note, property, fixed value, file link, default text case, appearance, Card, and Autolink ownership information.
+- Reuse the existing Properties-panel validation, type-change confirmation, property suggestions, rename protections, and Card editor instead of implementing different rules in the manager.
+- Show unsaved changes clearly and provide Save and Cancel controls per edited entry.
+- Add previewed multi-edit operations only for fields that can be applied consistently across every selected entry; never silently replace Cards, appearance, or mappings with incompatible values.
+- Keep selection stable by GUID during direct edits and refresh safely when the registry changes externally.
+- Test inline and expanded editing with search filters, sorting, selected rows, renamed variables, deleted entries, narrow windows, keyboard navigation, and plugin unload cleanup.
 
 ### Rule-based Info Card templates
 
 - Add reusable Info Card templates that users can name, describe, preview, and apply to multiple Variable Links.
+- Allow 1.3 Autolink profiles and `variablelink_template` note properties to select custom templates after those templates become available.
 - Let a template define the Card layout, blocks, tables, labels, appearance, and population rules without being tied to one variable.
 - Add user-defined Card types such as Person, Place, Project, Event, or any custom category.
 - Keep Card types separate from the existing Fixed value and Property value variable types.
@@ -191,7 +348,7 @@ This document records planned improvements to Variable Links. Plans may change a
 #### Card type and rule builder
 
 - Add an understandable rule builder with enabled/disabled rules, drag ordering, and explicit priority.
-- Allow rules to match variable type, variable name, source file or folder, linked property name, file link presence, note tags, and selected frontmatter properties or values.
+- Allow rules to match variable type, variable name, the source scope already defined by a 1.3 Autolink profile, linked property name, file link presence, note tags, and selected frontmatter properties or values.
 - Support Match all and Match any condition groups without allowing arbitrary executable code.
 - Let a matching rule assign a Card type, choose a template, and define how the template should be populated.
 - Stop after the first matching rule by default, with a deliberate option to continue to compatible lower-priority rules.
@@ -238,3 +395,4 @@ This document records planned improvements to Variable Links. Plans may change a
 2. Add manual template application, previews, replacement modes, and undo before enabling automation.
 3. Add the declarative rule builder, priorities, manual overrides, and rule explanations.
 4. Add automatic population, explicit re-evaluation, and the optional bulk workflow after single-Card smoke testing succeeds.
+5. Extend the 1.3 registry manager with direct editing and carefully limited multi-edit operations after its read, selection, rename, and deletion workflows are stable.

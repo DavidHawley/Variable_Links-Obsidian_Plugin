@@ -6,8 +6,9 @@ import InfoCard from './card';
 import { filePathFromLink } from './linkSyntax';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 import { getActiveCardBlocks } from './cardBlocks';
-
-const TOKEN_REGEX = /\{\{\s*([^}\s]+)\s*}}/g;
+import { findVariableTokens, getRecognizedTokenSyntaxes } from './tokenSyntax';
+import { isCompleteVariableCreationExpression } from './creationSyntax';
+import { applyVariableTextCase, type VariableTextCase } from './textCase';
 
 interface PreviewMode {
   rerender?: (force: boolean) => void;
@@ -56,7 +57,8 @@ export class Renderer {
 
   async processElement(el: HTMLElement): Promise<void> {
     if (!this.enabled) return;
-    // Walk text nodes and replace {{variable}} occurrences
+    const syntaxes = getRecognizedTokenSyntaxes(this.registry.plugin.settings);
+    // Walk text nodes and replace Variable Link token occurrences.
     const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     const nodes: Text[] = [];
     let n: Node | null;
@@ -67,23 +69,30 @@ export class Renderer {
       // Skipping our own rendered spans makes this processor idempotent without
       // storing a marker on Obsidian's reusable Reading View section elements.
       if (parent.closest('code, pre, .cm-s, .variable-links-token')) continue;
-      if ((n.nodeValue || '').includes('{{')) nodes.push(n as Text);
+      const value = n.nodeValue || '';
+      if (syntaxes.some((syntax) => value.includes(syntax.prefix))) {
+        nodes.push(n as Text);
+      }
     }
 
     const resolutions: Promise<void>[] = [];
     const replacements: Array<{ textNode: Text; fragment: DocumentFragment }> = [];
     for (const textNode of nodes) {
       const text = textNode.nodeValue || '';
-      let match: RegExpExecArray | null;
       let lastIndex = 0;
       const frag = createFragment();
-      TOKEN_REGEX.lastIndex = 0;
       let any = false;
-      while ((match = TOKEN_REGEX.exec(text)) !== null) {
+      for (const match of findVariableTokens(
+        text,
+        syntaxes,
+        (name) => this.registry.getVariable(name) !== null,
+      )) {
+        if (!this.registry.getVariable(match.name)
+          && isCompleteVariableCreationExpression(match.name)) continue;
         any = true;
-        const before = text.slice(lastIndex, match.index);
+        const before = text.slice(lastIndex, match.start);
         if (before) frag.appendChild(document.createTextNode(before));
-        const varName = match[1].trim();
+        const varName = match.name;
         const placeholder = createSpan();
         placeholder.className = 'variable-links-token variable-links-token-reading';
         placeholder.textContent = '…';
@@ -99,9 +108,9 @@ export class Renderer {
 
         // Resolve while the fragment is detached so table cells do not reflow
         // from a placeholder to their final value during scrolling.
-        resolutions.push(this.resolvePlaceholder(varName, placeholder));
+        resolutions.push(this.resolvePlaceholder(varName, placeholder, match.textCase));
 
-        lastIndex = TOKEN_REGEX.lastIndex;
+        lastIndex = match.end;
       }
       if (!any) continue;
       const rest = text.slice(lastIndex);
@@ -264,7 +273,11 @@ export class Renderer {
     state.clientY = event.clientY;
   }
 
-  private async resolvePlaceholder(variableName: string, placeholder: HTMLElement): Promise<void> {
+  private async resolvePlaceholder(
+    variableName: string,
+    placeholder: HTMLElement,
+    tokenTextCase?: VariableTextCase,
+  ): Promise<void> {
     try {
       const result = await this.resolver.resolve(variableName);
       if (!this.enabled) return;
@@ -274,9 +287,13 @@ export class Renderer {
         placeholder.title = result.error ?? 'Unknown error';
         return;
       }
-      placeholder.textContent = Array.isArray(result.value)
+      const value = Array.isArray(result.value)
         ? result.value.map(String).join(', ')
         : String(result.value);
+      placeholder.textContent = applyVariableTextCase(
+        value,
+        tokenTextCase ?? this.registry.getVariable(variableName)?.textCase,
+      );
     } catch {
       if (!this.enabled) return;
       placeholder.textContent = `[Missing: ${variableName}]`;

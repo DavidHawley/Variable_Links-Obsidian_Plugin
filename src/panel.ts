@@ -9,6 +9,7 @@ import {
   WorkspaceLeaf,
 } from 'obsidian';
 import InfoCard, { type CardConfig } from './card';
+import { applyBuiltInCardPreset, isBuiltInCardPreset } from './cardPresets';
 import {
   cloneCardBlocks,
   createCardBlock,
@@ -48,6 +49,12 @@ import {
   type VariableType,
 } from './registry';
 import type { ResolveResult } from './resolver';
+import { formatVariableToken, getTokenSyntax } from './tokenSyntax';
+import {
+  normalizeVariableTextCase,
+  VARIABLE_TEXT_CASE_OPTIONS,
+} from './textCase';
+import { addContextHelpButton } from './contextHelp';
 
 export const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
 
@@ -77,6 +84,16 @@ let cardAppearanceClipboard: CardAppearanceClipboard | null = null;
 
 function emptyDefinition(type: VariableType = 'property'): VariableDefinition {
   return { type, file: '', property: '', value: type === 'fixed' ? '' : undefined };
+}
+
+function renderCardHoverOverrideHelp(parent: HTMLElement): void {
+  parent.createEl('p', {
+    text: 'This disables live preview hover only for this info card. Reading view remains available.',
+  });
+  parent.createEl('p', {
+    text: 'The global info card hover settings can still disable all cards or change the delay used by cards that remain enabled.',
+    cls: 'variable-links-hint-text',
+  });
 }
 
 interface PropertySuggestion {
@@ -310,7 +327,9 @@ class InfoCardLayoutModal extends Modal {
     this.pruneCollapsedItemIds();
     this.contentEl.empty();
     const heading = this.contentEl.createDiv({ cls: 'variable-links-card-layout-editor-heading' });
-    heading.createEl('h2', { text: `Info Card layout for {{${this.variableName}}}` });
+    heading.createEl('h2', {
+      text: `Info Card layout for ${formatVariableToken(this.variableName, getTokenSyntax(this.plugin.settings))}`,
+    });
     const headingActions = heading.createDiv({ cls: 'variable-links-card-layout-heading-actions' });
     this.undoButton = headingActions.createEl('button', { text: 'Undo', attr: { type: 'button' } });
     this.undoButton.disabled = this.history.length === 0;
@@ -377,6 +396,12 @@ class InfoCardLayoutModal extends Modal {
       this.disableLivePreviewHover = livePreviewInput.checked;
     });
     livePreviewLabel.createSpan({ text: 'Disable live preview hover for this card' });
+    addContextHelpButton(
+      livePreviewLabel,
+      this.plugin,
+      'Card hover override',
+      renderCardHoverOverrideHelp,
+    );
 
     const footer = this.contentEl.createDiv({ cls: 'variable-links-card-layout-footer' });
     footer.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
@@ -408,7 +433,10 @@ class InfoCardLayoutModal extends Modal {
     const mode = this.addSelect(controls, 'Layout:', [
       { value: 'stack', label: 'Stack' },
       { value: 'grid', label: 'Grid' },
-    ], this.layoutMode);
+    ], this.layoutMode, {
+      title: 'Card layout modes',
+      render: (parent) => this.renderCardLayoutHelp(parent),
+    });
     mode.addEventListener('change', () => {
       this.mutate(() => { this.layoutMode = mode.value === 'grid' ? 'grid' : 'stack'; });
     });
@@ -444,7 +472,13 @@ class InfoCardLayoutModal extends Modal {
 
   private renderCardStyleControls(): void {
     const details = this.contentEl.createEl('details', { cls: 'variable-links-card-style-editor' });
-    details.createEl('summary', { text: 'Card appearance' });
+    const summary = details.createEl('summary', { text: 'Card appearance' });
+    addContextHelpButton(
+      summary,
+      this.plugin,
+      'Card appearance',
+      (parent) => this.renderCardAppearanceHelp(parent),
+    );
     const controls = details.createDiv({ cls: 'variable-links-card-layout-settings' });
     const background = this.addSelect(controls, 'Background:', [
       { value: 'default', label: 'Theme default' },
@@ -754,7 +788,13 @@ class InfoCardLayoutModal extends Modal {
 
   private renderBlockStyleControls(parent: HTMLElement, block: CardBlock): void {
     const details = parent.createEl('details', { cls: 'variable-links-card-block-style-editor' });
-    details.createEl('summary', { text: 'Block appearance' });
+    const summary = details.createEl('summary', { text: 'Block appearance' });
+    addContextHelpButton(
+      summary,
+      this.plugin,
+      'Block appearance',
+      (helpParent) => this.renderBlockAppearanceHelp(helpParent),
+    );
     const controls = details.createDiv({ cls: 'variable-links-card-table-settings' });
     const tone = this.addSelect(controls, 'Background:', [
       { value: 'none', label: 'None' },
@@ -820,7 +860,10 @@ class InfoCardLayoutModal extends Modal {
     const direction = this.addSelect(parent, 'Arrangement:', [
       { value: 'vertical', label: 'Vertical' },
       { value: 'horizontal', label: 'Horizontal' },
-    ], block.direction ?? 'vertical');
+    ], block.direction ?? 'vertical', {
+      title: 'Stack container',
+      render: (helpParent) => this.renderStackContainerHelp(helpParent),
+    });
     direction.addEventListener('change', () => {
       this.recordHistory();
       block.direction = direction.value === 'horizontal' ? 'horizontal' : undefined;
@@ -881,7 +924,13 @@ class InfoCardLayoutModal extends Modal {
 
   private renderStackStyleControls(parent: HTMLElement, block: CardStackBlock): void {
     const details = parent.createEl('details', { cls: 'variable-links-card-block-style-editor' });
-    details.createEl('summary', { text: 'Stack appearance' });
+    const summary = details.createEl('summary', { text: 'Stack appearance' });
+    addContextHelpButton(
+      summary,
+      this.plugin,
+      'Stack appearance',
+      (helpParent) => this.renderStackAppearanceHelp(helpParent),
+    );
     const controls = details.createDiv({ cls: 'variable-links-card-table-settings' });
     const tone = this.addSelect(controls, 'Background:', [
       { value: 'none', label: 'None' },
@@ -983,7 +1032,10 @@ class InfoCardLayoutModal extends Modal {
     const columns = this.addSelect(tableSettings, 'Columns:', [1, 2, 3, 4].map((value) => ({
       value: String(value),
       label: String(value),
-    })), String(block.columns ?? 1));
+    })), String(block.columns ?? 1), {
+      title: 'Property table layout',
+      render: (helpParent) => this.renderPropertyTableHelp(helpParent),
+    });
     columns.addEventListener('change', () => {
       this.mutate(() => { block.columns = Number(columns.value) as CardGridColumns; });
     });
@@ -1188,7 +1240,13 @@ class InfoCardLayoutModal extends Modal {
     property: CardPropertyEntry,
   ): void {
     const details = parent.createEl('details', { cls: 'variable-links-card-property-style-editor' });
-    details.createEl('summary', { text: 'Property display' });
+    const summary = details.createEl('summary', { text: 'Property display' });
+    addContextHelpButton(
+      summary,
+      this.plugin,
+      'Property display',
+      (helpParent) => this.renderPropertyDisplayHelp(helpParent),
+    );
     const controls = details.createDiv({ cls: 'variable-links-card-table-settings' });
 
     const labelRow = controls.createDiv({ cls: 'variable-links-card-layout-setting' });
@@ -1285,9 +1343,11 @@ class InfoCardLayoutModal extends Modal {
     label: string,
     options: Array<{ value: string; label: string }>,
     value: string,
+    help?: { render: (parent: HTMLElement) => void; title: string },
   ): HTMLSelectElement {
     const row = parent.createDiv({ cls: 'variable-links-card-layout-setting' });
-    row.createEl('label', { text: label });
+    const labelEl = row.createEl('label', { text: label });
+    if (help) addContextHelpButton(labelEl, this.plugin, help.title, help.render);
     const select = row.createEl('select');
     select.setAttribute('aria-label', label.replace(/:$/, ''));
     for (const option of options) {
@@ -1295,6 +1355,98 @@ class InfoCardLayoutModal extends Modal {
     }
     select.value = value;
     return select;
+  }
+
+  private renderCardLayoutHelp(parent: HTMLElement): void {
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Stack places each top-level block on its own row.',
+    });
+    details.createEl('li', {
+      text: 'Grid flows blocks across the selected number of columns. Each block can use automatic, full, half, third, or quarter width.',
+    });
+    details.createEl('li', {
+      text: 'Grid cards collapse to one column when the available card width is narrow.',
+    });
+    parent.createEl('p', {
+      text: 'Applying a starter layout keeps the current content blocks but resets their widths and appearance to that preset. Use undo or restore original if needed.',
+      cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderCardAppearanceHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Card appearance changes the outer card and provides defaults for its content.',
+    });
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Theme default and layout default follow the active Obsidian theme and layout behavior.',
+    });
+    details.createEl('li', {
+      text: 'Block and property alignment settings can override the card-wide text alignment.',
+    });
+    details.createEl('li', {
+      text: 'CSS classes are added to this card only and can be styled from an enabled Obsidian CSS snippet.',
+    });
+  }
+
+  private renderBlockAppearanceHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Block appearance changes only this content block. Default alignment follows the card-wide setting.',
+    });
+    parent.createEl('p', {
+      text: 'Right-click the empty area of a block to copy its appearance, then right-click another compatible block to paste it. Content and position are not copied.',
+      cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderStackContainerHelp(parent: HTMLElement): void {
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'A stack container groups normal card items into one vertical or horizontal section.',
+    });
+    details.createEl('li', {
+      text: 'Drag items into or out of its drop area, or use the add to stack and remove from stack controls.',
+    });
+    details.createEl('li', {
+      text: 'Editor label is only for organizing the editor; Visible heading is shown on the card.',
+    });
+    details.createEl('li', {
+      text: 'Stacks cannot contain other stack containers. Deleting a stack also deletes the items currently inside it.',
+    });
+  }
+
+  private renderStackAppearanceHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Stack appearance styles the container around its items. Item-level block appearance remains independent.',
+    });
+    parent.createEl('p', {
+      text: 'Right-click an empty part of the stack editor to copy or paste compatible stack appearance settings.',
+      cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderPropertyTableHelp(parent: HTMLElement): void {
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Columns control how property cells flow from left to right.',
+    });
+    details.createEl('li', {
+      text: 'Automatic rows use only the rows needed. Fixed minimum reserves at least the selected number of rows but never hides extra properties.',
+    });
+    details.createEl('li', {
+      text: 'Drag properties to reorder them or move them between property tables. Move out converts a property back to a standalone block.',
+    });
+  }
+
+  private renderPropertyDisplayHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Property display changes the label and alignment without changing the referenced note property.',
+    });
+    parent.createEl('p', {
+      text: 'Label width applies when the label is beside the value. Right-click the property item to copy or paste these display settings.',
+      cls: 'variable-links-hint-text',
+    });
   }
 
   private bindTextEdit(
@@ -1596,42 +1748,14 @@ class InfoCardLayoutModal extends Modal {
   }
 
   private applyPreset(preset: string): void {
+    if (!isBuiltInCardPreset(preset)) return;
     this.mutate(() => {
-      this.layoutMode = preset === 'classic' ? 'stack' : 'grid';
-      this.gridColumns = preset === 'profile' ? 2 : preset === 'compact' ? 3 : 2;
-      this.layoutGap = preset === 'classic' ? 0 : preset === 'profile' ? 12 : 8;
-      this.cardStyle = preset === 'classic'
-        ? {}
-        : {
-          background: 'secondary',
-          border: 'subtle',
-          radius: preset === 'profile' ? 12 : 8,
-          shadow: 'small',
-          maxWidth: preset === 'profile' ? 640 : 560,
-          padding: preset === 'profile' ? 12 : 8,
-        };
-      for (const block of this.allCardBlocks()) {
-        block.style = undefined;
-        const topLevel = this.blocks.includes(block);
-        if (!topLevel || preset === 'classic') {
-          block.width = undefined;
-        } else if (block.type === 'title'
-          || block.type === 'source'
-          || block.type === 'divider'
-          || block.type === 'property-table'
-          || block.type === 'stack'
-          || (preset === 'profile' && block.type === 'note')) {
-          block.width = 'full';
-        } else {
-          block.width = undefined;
-        }
-        if (block.type === 'property-table') {
-          block.columns = preset === 'classic' ? undefined : 2;
-          block.rowMode = undefined;
-          block.rows = undefined;
-        }
-        if (block.type === 'stack') block.stackStyle = undefined;
-      }
+      const card = applyBuiltInCardPreset(this.blocks, preset);
+      this.blocks.splice(0, this.blocks.length, ...(card.blocks ?? []));
+      this.layoutMode = card.layoutMode ?? 'stack';
+      this.gridColumns = card.gridColumns ?? 2;
+      this.layoutGap = card.layoutGap ?? 0;
+      this.cardStyle = card.cardStyle ?? {};
     });
   }
 
@@ -1887,6 +2011,8 @@ export class VariablePropertiesView extends ItemView {
   private markdownChild: MarkdownRenderChild | null = null;
   private activeTab: PanelTab = 'link';
   private creatingVariableType: VariableType | null = null;
+  private creatingVariableName = '';
+  private creationCompletion: ((name: string) => Promise<void> | void) | null = null;
   private variableEditorOpen = true;
   private variableAppearanceOpen = true;
   private appearanceSettingsRefresh: (() => void) | null = null;
@@ -1929,6 +2055,7 @@ export class VariablePropertiesView extends ItemView {
     this.active = false;
     this.refreshGeneration++;
     this.appearanceSettingsRefresh = null;
+    this.creationCompletion = null;
     for (const timer of this.timers) window.clearTimeout(timer);
     this.timers.clear();
     for (const cleanup of [...this.metadataWaitCleanups]) cleanup();
@@ -1940,7 +2067,22 @@ export class VariablePropertiesView extends ItemView {
 
   async selectVariable(name: string): Promise<void> {
     this.creatingVariableType = null;
+    this.creatingVariableName = '';
+    this.creationCompletion = null;
     this.selectedVariableName = name.trim() || null;
+    await this.refresh();
+  }
+
+  async beginVariableCreation(
+    type: VariableType,
+    name: string,
+    onSaved?: (savedName: string) => Promise<void> | void,
+  ): Promise<void> {
+    this.creatingVariableType = type;
+    this.creatingVariableName = name.trim();
+    this.creationCompletion = onSaved ?? null;
+    this.selectedVariableName = null;
+    this.activeTab = 'link';
     await this.refresh();
   }
 
@@ -1966,9 +2108,11 @@ export class VariablePropertiesView extends ItemView {
     const last = this.plugin.caretTracker?.lastTouched;
     const names = Array.from(registry.data.keys()).sort((left, right) => left.localeCompare(right));
     const activeName = this.creatingVariableType
-      ? ''
+      ? this.creatingVariableName
       : this.selectedVariableName ?? last?.name ?? '';
-    const storedDefinition = activeName ? registry.getVariable(activeName) : undefined;
+    const storedDefinition = activeName && !this.creatingVariableType
+      ? registry.getVariable(activeName)
+      : undefined;
     const definition = storedDefinition ?? emptyDefinition(this.creatingVariableType ?? 'property');
 
     const header = container.createDiv({ cls: 'variable-links-panel-header' });
@@ -2005,9 +2149,13 @@ export class VariablePropertiesView extends ItemView {
       const value = select.value;
       if (value === CREATE_FIXED_VALUE || value === CREATE_PROPERTY_VALUE) {
         this.creatingVariableType = value === CREATE_FIXED_VALUE ? 'fixed' : 'property';
+        this.creatingVariableName = '';
+        this.creationCompletion = null;
         this.selectedVariableName = null;
       } else {
         this.creatingVariableType = null;
+        this.creatingVariableName = '';
+        this.creationCompletion = null;
         this.selectedVariableName = value.startsWith(VARIABLE_OPTION_PREFIX)
           ? value.slice(VARIABLE_OPTION_PREFIX.length)
           : null;
@@ -2019,13 +2167,13 @@ export class VariablePropertiesView extends ItemView {
     setButton.disabled = !activeName || !storedDefinition || !last;
     setButton.addEventListener('click', () => {
       if (setButton.disabled || !last) return;
-      const token = `{{${activeName}}}`;
+      const token = formatVariableToken(activeName, getTokenSyntax(this.plugin.settings));
       last.editor.replaceRange(token, last.from, last.to);
       last.editor.setCursor({ line: last.from.line, ch: last.from.ch + token.length });
       last.editor.focus();
       last.name = activeName;
       last.def = definition;
-      new Notice(`Variable Links: token set to {{${activeName}}}`);
+      new Notice(`Variable Links: token set to ${token}`);
     });
 
     const deleteButton = toolbar.createEl('button', { text: 'Delete' });
@@ -2080,24 +2228,25 @@ export class VariablePropertiesView extends ItemView {
     });
     showTab(this.activeTab);
 
+    if (this.creatingVariableType) {
+      const label = this.creatingVariableType === 'fixed' ? 'fixed value' : 'property value';
+      this.renderVariableForm(
+        propertiesContent,
+        activeName,
+        definition,
+        `Add ${label}`,
+        undefined,
+        propertiesSaveHost,
+      );
+      cardContent.createEl('p', { text: 'Save the variable before configuring its info card.' });
+      return;
+    }
+
     if (!activeName) {
-      if (this.creatingVariableType) {
-        const label = this.creatingVariableType === 'fixed' ? 'fixed value' : 'property value';
-        this.renderVariableForm(
-          propertiesContent,
-          '',
-          definition,
-          `Add ${label}`,
-          undefined,
-          propertiesSaveHost,
-        );
-        cardContent.createEl('p', { text: 'Save the variable before configuring its info card.' });
-      } else {
-        propertiesContent.createEl('p', {
-          text: 'Select a variable or choose a new variable type from the dropdown.',
-        });
-        cardContent.createEl('p', { text: 'Select or create a variable to configure its info card.' });
-      }
+      propertiesContent.createEl('p', {
+        text: 'Select a variable or choose a new variable type from the dropdown.',
+      });
+      cardContent.createEl('p', { text: 'Select or create a variable to configure its info card.' });
       return;
     }
 
@@ -2113,7 +2262,9 @@ export class VariablePropertiesView extends ItemView {
     const variableHeading = variableCell.createDiv({
       cls: 'variable-links-panel-variable-heading',
     });
-    variableHeading.createEl('h5', { text: `{{${activeName}}}` });
+    variableHeading.createEl('h5', {
+      text: formatVariableToken(activeName, getTokenSyntax(this.plugin.settings)),
+    });
     if (storedDefinition) {
       this.renderFavoriteControl(variableHeading, activeName, storedDefinition);
     }
@@ -2170,7 +2321,7 @@ export class VariablePropertiesView extends ItemView {
         last.value = undefined;
       }
       this.selectedVariableName = null;
-      new Notice(`Variable Links: deleted {{${name}}}`);
+      new Notice(`Variable Links: deleted ${formatVariableToken(name, getTokenSyntax(this.plugin.settings))}`);
       await this.refresh();
     } catch (error) {
       new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
@@ -2190,7 +2341,13 @@ export class VariablePropertiesView extends ItemView {
     let hasFixedValue = definition.value !== undefined;
     let markFormDirty = (): void => {};
     const typeRow = parent.createDiv({ cls: 'variable-links-panel-field variable-links-panel-type-field' });
-    typeRow.createEl('label', { text: 'Variable type:' });
+    const typeLabel = typeRow.createEl('label', { text: 'Variable type:' });
+    addContextHelpButton(
+      typeLabel,
+      this.plugin,
+      'Variable type',
+      (helpParent) => this.renderVariableTypeHelp(helpParent),
+    );
     const typeInput = typeRow.createEl('select');
     typeInput.createEl('option', { text: 'Fixed value', value: 'fixed' });
     typeInput.createEl('option', { text: 'Property value', value: 'property' });
@@ -2215,6 +2372,10 @@ export class VariablePropertiesView extends ItemView {
       'Property link',
       formatPropertyLink(definition.file, definition.property),
       '[[People/John Smith]]#company',
+      {
+        title: 'Property link',
+        render: (helpParent) => this.renderPropertyLinkHelp(helpParent),
+      },
     );
     const propertyLinkRow = propertyLinkInput.parentElement;
     const fixedValueInput = this.addInput(
@@ -2252,6 +2413,21 @@ export class VariablePropertiesView extends ItemView {
       definition.display ?? '',
       'e.g. John Smith',
     );
+    const textCaseRow = editControls.createDiv({ cls: 'variable-links-panel-field' });
+    const textCaseLabel = textCaseRow.createEl('label', { text: 'Default text case:' });
+    addContextHelpButton(
+      textCaseLabel,
+      this.plugin,
+      'Default text case',
+      (helpParent) => this.renderTextCaseHelp(helpParent),
+    );
+    const textCaseInput = textCaseRow.createEl('select', {
+      attr: { 'aria-label': 'Default text case' },
+    });
+    for (const option of VARIABLE_TEXT_CASE_OPTIONS) {
+      textCaseInput.createEl('option', { value: option.value, text: option.label });
+    }
+    textCaseInput.value = definition.textCase ?? '';
     const updateTypeFields = (): void => {
       if (propertyLinkRow) propertyLinkRow.hidden = activeType !== 'property';
       if (fixedValueRow) fixedValueRow.hidden = activeType !== 'fixed';
@@ -2318,6 +2494,13 @@ export class VariablePropertiesView extends ItemView {
       defaultsRow,
       'Use default appearance',
       useDefaults,
+    );
+    const useDefaultsLabel = useDefaultsInput.parentElement;
+    if (useDefaultsLabel) addContextHelpButton(
+      useDefaultsLabel,
+      this.plugin,
+      'Variable appearance inheritance',
+      (helpParent) => this.renderAppearanceInheritanceHelp(helpParent),
     );
     const restoreDefaultsButton = defaultsRow.createEl('button', {
       text: 'Restore defaults',
@@ -2517,6 +2700,7 @@ export class VariablePropertiesView extends ItemView {
           value: hasFixedValue ? fixedValueInput.value : undefined,
           link: fileLinkInput.value.trim() ? toFileLink(fileLinkInput.value) : undefined,
           display: displayInput.value,
+          textCase: normalizeVariableTextCase(textCaseInput.value),
           favorite,
           appearance: useDefaultsInput.checked ? undefined : nextAppearance,
           customAppearance: nextAppearance,
@@ -2526,12 +2710,23 @@ export class VariablePropertiesView extends ItemView {
           touched.name = newName;
           touched.def = registry.getVariable(newName);
         }
+        const creationCompletion = this.creationCompletion;
         this.creatingVariableType = null;
+        this.creatingVariableName = '';
+        this.creationCompletion = null;
         this.selectedVariableName = newName;
-        new Notice(`Variable Links: saved {{${newName}}}`);
+        if (creationCompletion) {
+          try {
+            await creationCompletion(newName);
+          } catch {
+            new Notice('Variable links: the variable was saved, but its creation expression could not be replaced.');
+          }
+        }
+        new Notice(`Variable Links: saved ${formatVariableToken(newName, getTokenSyntax(this.plugin.settings))}`);
         await this.refresh();
       },
     );
+    if (!existingVariable && name.trim()) markFormDirty();
   }
 
   private renderFavoriteControl(
@@ -2560,9 +2755,11 @@ export class VariablePropertiesView extends ItemView {
   private async saveFavorite(name: string, favorite: boolean): Promise<void> {
     const registry = this.plugin.registry;
     const definition = registry?.getVariable(name);
-    if (!registry || !definition) throw new Error(`{{${name}}} is not configured.`);
+    if (!registry || !definition) {
+      throw new Error(`${formatVariableToken(name, getTokenSyntax(this.plugin.settings))} is not configured.`);
+    }
     await registry.saveVariable(name, { ...definition, favorite });
-    new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} {{${name}}}`);
+    new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} ${formatVariableToken(name, getTokenSyntax(this.plugin.settings))}`);
   }
 
   private renderInfoCardForm(
@@ -2598,7 +2795,7 @@ export class VariablePropertiesView extends ItemView {
         ...definition,
         card: hasSimpleContent || hasBlocks || hasOptions ? nextCard : undefined,
       });
-      new Notice(`Variable Links: Info Card saved for {{${name}}}`);
+      new Notice(`Variable Links: Info Card saved for ${formatVariableToken(name, getTokenSyntax(this.plugin.settings))}`);
       await this.refresh();
     };
 
@@ -2686,7 +2883,15 @@ export class VariablePropertiesView extends ItemView {
     const livePreviewRow = form.createDiv({ cls: 'variable-links-panel-checkbox' });
     const livePreviewInput = livePreviewRow.createEl('input', { type: 'checkbox' });
     livePreviewInput.checked = card.disableLivePreviewHover === true;
-    livePreviewRow.createEl('label', { text: 'Disable live preview hover for this card' });
+    const livePreviewLabel = livePreviewRow.createEl('label', {
+      text: 'Disable live preview hover for this card',
+    });
+    addContextHelpButton(
+      livePreviewLabel,
+      this.plugin,
+      'Card hover override',
+      renderCardHoverOverrideHelp,
+    );
 
     const getSimpleCard = (nextUseBlockLayout: boolean): CardConfig => {
       const fields = fieldsInput.value.split(',').map((field) => field.trim()).filter(Boolean);
@@ -2837,7 +3042,7 @@ export class VariablePropertiesView extends ItemView {
           originalValue,
           nextValue,
         );
-        new Notice(`Variable Links: updated linked value for {{${variableName}}}`);
+        new Notice(`Variable Links: updated linked value for ${formatVariableToken(variableName, getTokenSyntax(this.plugin.settings))}`);
         this.plugin.livePreviewRenderer?.refresh();
         await this.refresh();
       } catch (error) {
@@ -2971,13 +3176,84 @@ export class VariablePropertiesView extends ItemView {
     label: string,
     value: string,
     placeholder: string,
+    help?: { render: (parent: HTMLElement) => void; title: string },
   ): HTMLInputElement {
     const row = parent.createDiv({ cls: 'variable-links-panel-field' });
-    row.createEl('label', { text: `${label}:` });
+    const labelEl = row.createEl('label', { text: `${label}:` });
+    if (help) addContextHelpButton(labelEl, this.plugin, help.title, help.render);
     const input = row.createEl('input', { type: 'text', placeholder });
     input.value = value;
     return input;
   }
+
+  private renderVariableTypeHelp(parent: HTMLElement): void {
+    const types = parent.createEl('ul');
+    types.createEl('li', {
+      text: 'Fixed value stores the displayed value directly in the variable links registry. Its optional file link controls where clicking the rendered value opens.',
+    });
+    types.createEl('li', {
+      text: 'Property value reads the displayed value from a note property and updates when that property changes. It requires a property link.',
+    });
+    parent.createEl('p', {
+      text: 'Changing an existing variable type requires confirmation. Inactive fixed-value or property-link settings are preserved in case you switch back later.',
+      cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderPropertyLinkHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'A property link identifies the note and frontmatter property that supply this variable link’s displayed value.',
+    });
+    const example = parent.createDiv({ cls: 'variable-links-context-help-example' });
+    example.createSpan({ text: 'Format:' });
+    example.createEl('code', { text: '[[folder/note]]#property' });
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Choose a suggestion or type a vault-relative note link followed by # and the property name.',
+    });
+    details.createEl('li', {
+      text: 'File link is separate: it controls the click destination and may point to a different note.',
+    });
+    details.createEl('li', {
+      text: 'After saving, double-click the linked value field to edit supported text, number, or true/false properties in the source note.',
+    });
+  }
+
+  private renderAppearanceInheritanceHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'When enabled, this variable uses the current default variable appearance from plugin settings and follows later default changes.',
+    });
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Turning it off restores the variable’s last saved custom appearance.',
+    });
+    details.createEl('li', {
+      text: 'Restore defaults replaces the custom draft with the current defaults and returns the variable to inherited mode.',
+    });
+  }
+
+  private renderTextCaseHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'The default changes only how this variable’s value is displayed. It never changes the saved fixed value or source property.',
+    });
+    parent.createEl('p', {
+      text: 'A case marker on one token overrides this default for that token. The same choices are available from the token context menu.',
+    });
+    const syntax = getTokenSyntax(this.plugin.settings);
+    const examples = parent.createEl('ul');
+    for (const [name, meaning] of [
+      ['.Name.', 'Lowercase first letter'],
+      ['..Name..', 'Lowercase all'],
+      ["'Name'", 'Uppercase first letter'],
+      ["''Name''", 'Capitalize each word'],
+      ["'''Name'''", 'Uppercase all'],
+    ] as const) {
+      const item = examples.createEl('li');
+      item.createEl('code', { text: formatVariableToken(name, syntax) });
+      item.createSpan({ text: ` — ${meaning}` });
+    }
+  }
+
 
   private addTextarea(
     parent: HTMLElement,

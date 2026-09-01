@@ -1,9 +1,15 @@
-import { App, EventRef, Notice, TFile, parseYaml, stringifyYaml } from 'obsidian';
+import { App, EventRef, Modal, Notice, TFile, parseYaml, stringifyYaml } from 'obsidian';
 import {
   normalizeVariableAppearance,
   type VariableAppearance,
 } from './appearance';
 import type { CardConfig } from './card';
+import {
+  normalizeAutolinkProfiles,
+  normalizeManagedAutolinkEntry,
+  type AutolinkProfile,
+  type ManagedAutolinkEntry,
+} from './autolink';
 import {
   deriveLegacyCardFields,
   normalizeCardBlocks,
@@ -14,10 +20,61 @@ import {
 import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
 import { filePathFromLink } from './linkSyntax';
+import { getTokenSyntax } from './tokenSyntax';
+import {
+  normalizeVariableTextCase,
+  parseVariableTextCaseMarker,
+  type VariableTextCase,
+} from './textCase';
 
 export type VariableType = 'property' | 'fixed';
 
 const REGISTRY_POLL_INTERVAL_MS = 1000;
+
+class ReservedTextCaseNameModal extends Modal {
+  private settled = false;
+
+  constructor(
+    private readonly plugin: VariableLinksPlugin,
+    private readonly variableName: string,
+    private readonly settle: (confirmed: boolean) => void,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    this.contentEl.createEl('h3', { text: 'Use a reserved-looking variable name?' });
+    this.contentEl.createEl('p', {
+      text: `“${this.variableName}” begins and ends like token text-case syntax. Exact-name compatibility means it can take priority over a formatted token with the same text.`,
+    });
+    this.contentEl.createEl('p', {
+      text: 'Use a different name unless this punctuation is intentional.',
+    });
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Cancel' })
+      .addEventListener('click', () => this.choose(false));
+    actions.createEl('button', { text: 'Use name anyway', cls: 'mod-warning' })
+      .addEventListener('click', () => this.choose(true));
+  }
+
+  onClose(): void {
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+    if (!this.settled) this.finish(false);
+  }
+
+  private choose(confirmed: boolean): void {
+    this.finish(confirmed);
+    this.close();
+  }
+
+  private finish(confirmed: boolean): void {
+    if (this.settled) return;
+    this.settled = true;
+    this.settle(confirmed);
+  }
+}
 
 export interface VariableDefinition {
   guid?: string;
@@ -27,11 +84,36 @@ export interface VariableDefinition {
   value?: string;
   link?: string;
   display?: string;
+  textCase?: VariableTextCase;
   favorite?: boolean;
   appearance?: VariableAppearance;
   customAppearance?: VariableAppearance;
   card?: CardConfig;
   format?: string;
+  managed?: ManagedAutolinkEntry;
+}
+
+export interface ManagedAutolinkAddition {
+  name: string;
+  definition: VariableDefinition;
+}
+
+export interface ManagedAutolinkApplyResult {
+  added: number;
+  updated: number;
+  overwritten: number;
+}
+
+export interface VariableRename {
+  guid: string;
+  newName: string;
+  oldName: string;
+}
+
+export interface VariableRenameResult {
+  fileCount: number;
+  renamed: number;
+  tokenCount: number;
 }
 
 export function getVariableType(definition: VariableDefinition): VariableType {
@@ -43,6 +125,7 @@ export class Registry {
   plugin: VariableLinksPlugin;
   settings: VariableLinksSettings;
   data: Map<string, VariableDefinition> = new Map();
+  autolinkProfiles: AutolinkProfile[] = [];
   registryFile: TFile | null = null;
   registryPath: string = '';
   private modifyEvent: EventRef | null = null;
@@ -139,6 +222,8 @@ export class Registry {
       return;
     }
 
+    this.autolinkProfiles = normalizeAutolinkProfiles(parsed['autolink-profiles']);
+
     this.data.clear();
     const generatedGuids = new Map<string, string>();
     const usedGuids = new Set<string>();
@@ -158,11 +243,13 @@ export class Registry {
           value: this.toFixedValue(raw.value),
           link: typeof raw.link === 'string' ? raw.link : undefined,
           display: typeof raw.display === 'string' ? raw.display : undefined,
+          textCase: normalizeVariableTextCase(raw.textCase),
           favorite: raw.favorite === true,
           appearance: normalizeVariableAppearance(raw.appearance),
           customAppearance: normalizeVariableAppearance(raw.customAppearance),
           card: this.toCardConfig(raw.card),
           format: typeof raw.format === 'string' ? raw.format : undefined,
+          managed: normalizeManagedAutolinkEntry(raw.managed),
         };
         this.data.set(String(key), def);
       }
@@ -275,15 +362,18 @@ export class Registry {
 
   async updateFileReferences(oldPath: string, newPath: string): Promise<number> {
     if (!this.active) return 0;
-    const updates = new Map<string, { file?: string; link?: string }>();
+    const updates = new Map<string, { file?: string; link?: string; managedSourcePath?: string }>();
     for (const [name, definition] of this.data) {
-      const update: { file?: string; link?: string } = {};
+      const update: { file?: string; link?: string; managedSourcePath?: string } = {};
       if (getVariableType(definition) === 'property') {
         const file = this.movedFileLink(definition.file, oldPath, newPath);
         if (file !== null) update.file = file;
       }
       const link = this.movedFileLink(definition.link ?? '', oldPath, newPath);
       if (link !== null) update.link = link;
+      if (definition.managed && this.sameFilePath(definition.managed.sourcePath, oldPath)) {
+        update.managedSourcePath = newPath.replace(/\\/g, '/');
+      }
       if (Object.keys(update).length) updates.set(name, update);
     }
     if (!updates.size) return 0;
@@ -294,6 +384,9 @@ export class Registry {
         if (!this.isRecord(stored)) continue;
         if (update.file !== undefined) stored.file = update.file;
         if (update.link !== undefined) stored.link = update.link;
+        if (update.managedSourcePath !== undefined && this.isRecord(stored.managed)) {
+          stored.managed.sourcePath = update.managedSourcePath;
+        }
       }
     });
     await this.load();
@@ -328,7 +421,9 @@ export class Registry {
     return /\.md$/i.test(trimmed) ? `${nextPath}.md` : nextPath;
   }
 
-  private async mutateRegistryLinks(mutator: (links: Record<string, unknown>) => void): Promise<void> {
+  private async mutateRegistryDocument(
+    mutator: (registry: Record<string, unknown>) => void,
+  ): Promise<void> {
     const file = this.registryFile;
     const adapter = this.app.vault.adapter;
     const path = this.registryPath;
@@ -336,9 +431,7 @@ export class Registry {
     if ((lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdx'))
       && file) {
       await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
-        const links = this.isRecord(frontmatter['variable-links']) ? frontmatter['variable-links'] : {};
-        frontmatter['variable-links'] = links;
-        mutator(links);
+        mutator(frontmatter);
       });
       return;
     }
@@ -346,9 +439,7 @@ export class Registry {
     const content = file ? await this.app.vault.read(file) : await adapter.read(path);
     const registry = this.parseRegistryFromContent(content, path);
     if (!registry) throw new Error('The registry must contain valid JSON or YAML.');
-    const links = this.isRecord(registry['variable-links']) ? registry['variable-links'] : {};
-    registry['variable-links'] = links;
-    mutator(links);
+    mutator(registry);
     let updatedContent: string;
     if (lowerPath.endsWith('.json')) updatedContent = JSON.stringify(registry, null, 2) + '\n';
     else {
@@ -365,12 +456,143 @@ export class Registry {
     else await adapter.write(path, updatedContent);
   }
 
+  private sameFilePath(left: string, right: string): boolean {
+    return filePathFromLink(left).toLocaleLowerCase() === filePathFromLink(right).toLocaleLowerCase();
+  }
+
+  private async mutateRegistryLinks(mutator: (links: Record<string, unknown>) => void): Promise<void> {
+    await this.mutateRegistryDocument((registry) => {
+      const links = this.isRecord(registry['variable-links']) ? registry['variable-links'] : {};
+      registry['variable-links'] = links;
+      mutator(links);
+    });
+  }
+
+  async saveAutolinkProfiles(profiles: readonly AutolinkProfile[]): Promise<void> {
+    if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
+    const normalized = normalizeAutolinkProfiles(profiles);
+    await this.mutateRegistryDocument((registry) => {
+      registry['autolink-profiles'] = normalized;
+      if (!this.isRecord(registry['variable-links'])) registry['variable-links'] = {};
+    });
+    await this.load();
+    await this.plugin.refreshManagementCenterViews();
+  }
+
+  async applyManagedAutolinkVariables(
+    additions: readonly ManagedAutolinkAddition[],
+    allowOverwrite = false,
+  ): Promise<ManagedAutolinkApplyResult> {
+    if (!additions.length) return { added: 0, updated: 0, overwritten: 0 };
+    if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
+    const tokenSyntax = getTokenSyntax(this.plugin.settings);
+    const normalized = additions.map(({ name, definition }) => {
+      const variableName = name.trim();
+      const managed = normalizeManagedAutolinkEntry(definition.managed);
+      if (!variableName) throw new Error('Every generated Variable Link requires a name.');
+      if (variableName.includes(tokenSyntax.prefix) || variableName.includes(tokenSyntax.suffix)) {
+        throw new Error(`“${variableName}” contains the active token prefix or suffix.`);
+      }
+      if (getVariableType(definition) !== 'property') {
+        throw new Error(`“${variableName}” is not a property-backed Variable Link.`);
+      }
+      if (!definition.file.trim() || !definition.property.trim()) {
+        throw new Error(`“${variableName}” requires a source note and property.`);
+      }
+      if (!managed) throw new Error(`“${variableName}” is missing its Autolink ownership record.`);
+      const generatedDefinition: VariableDefinition = {
+        guid: this.createGuid(),
+        type: 'property',
+        file: definition.file.trim(),
+        property: definition.property.trim(),
+        managed,
+      };
+      if (definition.card) generatedDefinition.card = definition.card;
+      return { name: variableName, definition: generatedDefinition };
+    });
+    const names = new Set<string>();
+    for (const { name } of normalized) {
+      if (names.has(name)) throw new Error(`The generated name “${name}” occurs more than once.`);
+      names.add(name);
+    }
+
+    let added = 0;
+    let updated = 0;
+    let overwritten = 0;
+    await this.mutateRegistryLinks((links) => {
+      for (const { name, definition } of normalized) {
+        const current = links[name];
+        if (!Object.prototype.hasOwnProperty.call(links, name)) continue;
+        const currentManaged = this.isRecord(current)
+          ? normalizeManagedAutolinkEntry(current.managed)
+          : undefined;
+        const desiredManaged = definition.managed;
+        const safelyManaged = currentManaged !== undefined
+          && desiredManaged !== undefined
+          && currentManaged.profileId === desiredManaged.profileId
+          && this.sameFilePath(currentManaged.sourcePath, desiredManaged.sourcePath);
+        if (!safelyManaged && !allowOverwrite) {
+          throw new Error(`“${name}” now belongs to an unrelated Variable Link. No Autolink changes were saved.`);
+        }
+      }
+      for (const { name, definition } of normalized) {
+        const current = links[name];
+        if (Object.prototype.hasOwnProperty.call(links, name)) {
+          const currentManaged = this.isRecord(current)
+            ? normalizeManagedAutolinkEntry(current.managed)
+            : undefined;
+          const desiredManaged = definition.managed;
+          const safelyManaged = currentManaged !== undefined
+            && desiredManaged !== undefined
+            && currentManaged.profileId === desiredManaged.profileId
+            && this.sameFilePath(currentManaged.sourcePath, desiredManaged.sourcePath);
+          if (safelyManaged && this.isRecord(current)) {
+            const next: Record<string, unknown> = { ...current };
+            if (currentManaged.managedFields.includes('file')) next.file = definition.file;
+            if (currentManaged.managedFields.includes('property')) next.property = definition.property;
+            next.managed = {
+              ...desiredManaged,
+              managedFields: currentManaged.managedFields,
+            };
+            links[name] = next;
+            updated++;
+            continue;
+          }
+          const guid = this.isRecord(current) && typeof current.guid === 'string'
+            ? current.guid.trim()
+            : '';
+          links[name] = { ...definition, guid: guid || definition.guid };
+          overwritten++;
+        } else {
+          links[name] = definition;
+          added++;
+        }
+      }
+    });
+    try {
+      await this.load();
+    } catch {
+      new Notice('Autolink changes were saved, but the registry view could not be refreshed. Reload Obsidian.');
+      return { added, updated, overwritten };
+    }
+    try {
+      await this.plugin.refreshAfterRegistryReload();
+    } catch {
+      new Notice('Autolink changes were saved, but some derived views could not be refreshed. Reload Obsidian.');
+    }
+    return { added, updated, overwritten };
+  }
+
   /** Persist a mapping. A rename keeps the GUID and updates verified token references. */
   async saveVariable(name: string, definition: VariableDefinition, previousName?: string) {
     const variableName = name.trim();
     const oldName = previousName?.trim();
     const type = getVariableType(definition);
     if (!variableName) throw new Error('Variable name is required.');
+    const tokenSyntax = getTokenSyntax(this.plugin.settings);
+    if (variableName.includes(tokenSyntax.prefix) || variableName.includes(tokenSyntax.suffix)) {
+      throw new Error('Variable names cannot contain the active token prefix or suffix.');
+    }
     if (type === 'property' && !definition.file?.trim()) throw new Error('A source note is required.');
     if (type === 'property' && !definition.property?.trim()) {
       throw new Error('A property name is required.');
@@ -381,6 +603,12 @@ export class Registry {
     }
 
     const existing = this.data.get(oldName || variableName);
+    if (!this.data.has(variableName)
+      && variableName !== oldName
+      && parseVariableTextCaseMarker(variableName)
+      && !await this.confirmReservedTextCaseName(variableName)) {
+      throw new Error('The variable name change was cancelled.');
+    }
     const guid = existing?.guid || definition.guid || this.createGuid();
     const normalized: Partial<VariableDefinition> = {
       guid,
@@ -395,6 +623,9 @@ export class Registry {
     if (Object.prototype.hasOwnProperty.call(definition, 'link')) {
       normalized.link = definition.link?.trim() || undefined;
     }
+    if (Object.prototype.hasOwnProperty.call(definition, 'textCase')) {
+      normalized.textCase = normalizeVariableTextCase(definition.textCase);
+    }
     if (Object.prototype.hasOwnProperty.call(definition, 'card')) normalized.card = definition.card;
     if (Object.prototype.hasOwnProperty.call(definition, 'appearance')) {
       normalized.appearance = normalizeVariableAppearance(definition.appearance);
@@ -403,6 +634,16 @@ export class Registry {
       normalized.customAppearance = normalizeVariableAppearance(definition.customAppearance);
     }
     if (Object.prototype.hasOwnProperty.call(definition, 'favorite')) normalized.favorite = definition.favorite === true;
+    if (Object.prototype.hasOwnProperty.call(definition, 'managed')) {
+      normalized.managed = normalizeManagedAutolinkEntry(definition.managed);
+    } else if (existing?.managed) {
+      const managedFields = existing.managed.managedFields.filter((field) => {
+        if (field === 'file') return this.sameFilePath(existing.file, definition.file);
+        if (field === 'property') return existing.property.trim() === definition.property.trim();
+        return true;
+      });
+      normalized.managed = { ...existing.managed, managedFields };
+    }
     const rename = !!oldName && oldName !== variableName;
     const tokenCache = this.plugin.tokenCache;
     if (rename && !tokenCache) {
@@ -421,6 +662,9 @@ export class Registry {
         if (Object.prototype.hasOwnProperty.call(definition, 'link') && !definition.link?.trim()) {
           delete updated.link;
         }
+        if (Object.prototype.hasOwnProperty.call(definition, 'textCase') && !normalized.textCase) {
+          delete updated.textCase;
+        }
         if (Object.prototype.hasOwnProperty.call(definition, 'value')
           && definition.value === undefined) delete updated.value;
         if (Object.prototype.hasOwnProperty.call(definition, 'favorite') && !definition.favorite) delete updated.favorite;
@@ -430,6 +674,9 @@ export class Registry {
         }
         if (Object.prototype.hasOwnProperty.call(definition, 'customAppearance')
           && !normalized.customAppearance) delete updated.customAppearance;
+        if (Object.prototype.hasOwnProperty.call(definition, 'managed') && !normalized.managed) {
+          delete updated.managed;
+        }
         links[variableName] = updated;
         if (rename) delete links[oldName];
       });
@@ -476,22 +723,170 @@ export class Registry {
       }
     }
     this.plugin.livePreviewRenderer?.refresh();
+    await this.plugin.refreshManagementCenterViews();
+  }
+
+  async renameVariables(renames: readonly VariableRename[]): Promise<VariableRenameResult> {
+    if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
+    const normalized = renames
+      .map(({ guid, oldName, newName }) => ({
+        guid: guid.trim(),
+        oldName: oldName.trim(),
+        newName: newName.trim(),
+      }))
+      .filter(({ oldName, newName }) => oldName !== newName);
+    if (!normalized.length) return { renamed: 0, fileCount: 0, tokenCount: 0 };
+    const oldNames = new Set<string>();
+    const newNames = new Set<string>();
+    const tokenSyntax = getTokenSyntax(this.plugin.settings);
+    for (const rename of normalized) {
+      if (!rename.guid || !rename.oldName || !rename.newName) {
+        throw new Error('Every mass rename requires a GUID, current name, and new name.');
+      }
+      if (oldNames.has(rename.oldName)) throw new Error(`“${rename.oldName}” is selected more than once.`);
+      if (newNames.has(rename.newName)) throw new Error(`More than one variable would be named “${rename.newName}”.`);
+      oldNames.add(rename.oldName);
+      newNames.add(rename.newName);
+      const definition = this.data.get(rename.oldName);
+      if (!definition || definition.guid !== rename.guid) {
+        throw new Error(`“${rename.oldName}” changed after the preview was prepared.`);
+      }
+      if (rename.newName.includes(tokenSyntax.prefix) || rename.newName.includes(tokenSyntax.suffix)) {
+        throw new Error(`“${rename.newName}” contains the active token prefix or suffix.`);
+      }
+      if (parseVariableTextCaseMarker(rename.newName)) {
+        throw new Error(`“${rename.newName}” resembles reserved token text-case syntax. Rename it individually instead.`);
+      }
+    }
+    for (const { newName } of normalized) {
+      if (this.data.has(newName) && !oldNames.has(newName)) {
+        throw new Error(`A Variable Link named “${newName}” already exists.`);
+      }
+    }
+    const tokenCache = this.plugin.tokenCache;
+    if (!tokenCache) throw new Error('The token cache is unavailable, so the mass rename was cancelled.');
+    const renamePlan = await tokenCache.prepareBulkRename(normalized);
+    await renamePlan.apply();
+    const definitions = new Map(
+      normalized.map(({ oldName }) => [oldName, this.data.get(oldName)]),
+    );
+    try {
+      await this.mutateRegistryLinks((links) => {
+        const stored = new Map<string, unknown>();
+        for (const { guid, oldName } of normalized) {
+          const current = links[oldName];
+          if (!this.isRecord(current) || current.guid !== guid) {
+            throw new Error(`“${oldName}” changed after the preview was prepared.`);
+          }
+          stored.set(oldName, current);
+        }
+        for (const { oldName } of normalized) delete links[oldName];
+        for (const { oldName, newName } of normalized) links[newName] = stored.get(oldName);
+      });
+    } catch (error) {
+      await renamePlan.rollback();
+      throw error;
+    }
+
+    try {
+      await this.plugin.renameInfoCardEditorCollapsedItemsBatch(
+        normalized.map(({ oldName, newName }) => ({ previousName: oldName, nextName: newName })),
+      );
+    } catch {
+      new Notice('The variables were renamed, but some card designer collapse state could not be moved.');
+    }
+    try {
+      await this.load();
+    } catch {
+      for (const { oldName } of normalized) this.data.delete(oldName);
+      for (const { oldName, newName } of normalized) {
+        const definition = definitions.get(oldName);
+        if (definition) this.data.set(newName, definition);
+      }
+      new Notice('The variables were renamed, but the registry view could not be reloaded. Reload Obsidian.');
+    }
+    try {
+      await this.plugin.indexer?.build();
+    } catch {
+      new Notice('The variables were renamed, but the search index could not be refreshed. Reload Obsidian.');
+    }
+    try {
+      await renamePlan.commit();
+    } catch {
+      try {
+        await tokenCache.rebuild();
+      } catch {
+        new Notice('The variables were renamed, but the token cache could not be refreshed. Rebuild it from settings.');
+      }
+    }
+    this.plugin.livePreviewRenderer?.refresh();
+    try {
+      await this.plugin.refreshManagementCenterViews();
+    } catch {
+      // The saved renames remain authoritative; open views can refresh later.
+    }
+    return {
+      renamed: normalized.length,
+      fileCount: renamePlan.fileCount,
+      tokenCount: renamePlan.tokenCount,
+    };
   }
 
   async deleteVariable(name: string) {
-    const variableName = name.trim();
-    if (!variableName) return;
-    const guid = this.data.get(variableName)?.guid;
-    await this.mutateRegistryLinks((links) => delete links[variableName]);
-    await this.load();
-    await this.plugin.indexer?.build();
-    if (guid) await this.plugin.tokenCache?.removeGuid(guid);
+    await this.deleteVariables([name]);
+  }
+
+  async deleteVariables(names: readonly string[]): Promise<number> {
+    const variableNames = [...new Set(names.map((name) => name.trim()))]
+      .filter((name) => name && this.data.has(name));
+    if (!variableNames.length) return 0;
+    const guids = variableNames
+      .map((name) => this.data.get(name)?.guid)
+      .filter((guid): guid is string => Boolean(guid));
+    await this.mutateRegistryLinks((links) => {
+      for (const variableName of variableNames) delete links[variableName];
+    });
     try {
-      await this.plugin.saveInfoCardEditorCollapsedItems(variableName, []);
+      await this.load();
     } catch {
-      new Notice('The variable was deleted, but its saved card designer collapse state could not be removed.');
+      for (const variableName of variableNames) this.data.delete(variableName);
+      new Notice('The variables were deleted, but the registry view could not be reloaded. Reload Obsidian.');
+    }
+    try {
+      await this.plugin.indexer?.build();
+    } catch {
+      new Notice('The variables were deleted, but the search index could not be refreshed. Reload Obsidian.');
+    }
+    try {
+      if (guids.length) await this.plugin.tokenCache?.removeGuids(guids);
+    } catch {
+      new Notice('The variables were deleted, but the token cache could not be refreshed. Rebuild it from settings.');
+    }
+    let collapseStateFailed = false;
+    for (const variableName of variableNames) {
+      try {
+        await this.plugin.saveInfoCardEditorCollapsedItems(variableName, []);
+      } catch {
+        collapseStateFailed = true;
+      }
+    }
+    if (collapseStateFailed) {
+      const subject = variableNames.length === 1 ? 'The variable was' : 'The variables were';
+      new Notice(`${subject} deleted, but some saved card designer collapse state could not be removed.`);
     }
     this.plugin.livePreviewRenderer?.refresh();
+    try {
+      await this.plugin.refreshManagementCenterViews();
+    } catch {
+      // The saved deletion remains authoritative; open views can refresh later.
+    }
+    return variableNames.length;
+  }
+
+  private confirmReservedTextCaseName(variableName: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      new ReservedTextCaseNameModal(this.plugin, variableName, resolve).open();
+    });
   }
 
   extractFrontmatter(content: string): Record<string, unknown> | null {

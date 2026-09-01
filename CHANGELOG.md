@@ -2,6 +2,54 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
+## 1.3.0 - Unreleased
+
+### Added
+
+- Added configurable Variable Link token prefixes and suffixes with a live example, validation, and continued recognition of previous formats.
+- Added a confirmation preview for token-format changes, including safe migration of existing tokens with rollback protection.
+- Added multi-term suggestion searches across variable names, display names, source files, and properties, plus explicit `*` searches of resolved variable values.
+- Added per-token text-case markers, autocomplete and context-menu controls, and a saved default text case for each Variable Link.
+- Added named `FIXED` and `PROPERTY` creation suggestions with inline sources or a prefilled Properties-panel handoff.
+- Added `DATE`, `TIME`, and `DATETIME` shortcuts that capture a formatted fixed value, link it to the current note, and complete through suggestions, normal typing, Tab, or Enter.
+- Added persistent Autolink profile definitions and a Settings editor for exact-file and folder scopes, ready for the upcoming preview and synchronization workflow.
+- Added a read-only Autolink profile preview showing matched notes, note-level overrides, missing properties, misspellings, and naming collisions before any registry changes are allowed.
+- Added per-profile controls to disable note overrides or replace the four standard override property names, with validation, reset controls, and preview explanations.
+- Added a separately confirmed Autolink action that creates only safe, non-conflicting property-backed Variable Links and records their profile ownership for later synchronization.
+- Added a confirmation prompt before deleting an Autolink profile, including notice that its generated Variable Links remain in the registry.
+- Added built-in Card snapshots for newly generated Autolink variables, preserving the configured Card-property order and matching the Card Designer presets.
+- Added an opt-in Apply all action for replacing same-name Variable Links from an Autolink preview while keeping other warning types excluded.
+- Added a main-workspace Management Center foundation opened from the ribbon, command palette, or Settings, ready for registry management activities.
+- Added a searchable, sortable Variable Links registry list with ownership and type filters, persistent selections, and per-variable settings and delete actions.
+- Added confirmed bulk deletion for selected Variable Links, with hidden-selection disclosure and a cached-token impact count before deletion.
+- Added an opt-in deletion choice to replace active tokens with their current text values before removing single or selected Variable Links.
+- Added previewed mass rename actions for applying a prefix, suffix, or find-and-replace operation to selected Variable Links, with all-or-nothing conflict validation and verified token updates.
+- Added shared naming patterns for mass rename and Autolink profiles, including file, path, folder, variable, value, property, profile, escaped literal, and zero-padded counter placeholders.
+- Added per-row inclusion, problem-row skipping, continuous counter recalculation, and first, last, or custom word ordering for mass rename results, with selectable splitting, joining, and whitespace preservation.
+- Added composable word and character selection wrappers to naming-pattern placeholders, including property values.
+- Added reverse word and character indexing plus literal text replacement to naming-pattern wrappers.
+- Added click-open contextual help for captured date and time formats, with validation, a live local-time preview, a complete token reference, and copyable examples.
+- Added contextual help for token-format migration, variable types, and property-link behavior.
+- Added contextual help for variable-appearance inheritance and global or per-card hover behavior.
+- Added contextual help throughout the Card Designer for layouts, card and block styling, Stack containers, property tables, and property display controls.
+- Completed the contextual-help review with guidance for Autolink safety, text-case overrides, and mass-rename word processing.
+- Added naming-pattern syntax help directly beside the Name pattern field in each Autolink profile.
+- Added combined Autolink previews for the current note, selected folders, and all enabled profiles, with deterministic profile precedence and out-of-scope reporting.
+- Added repeatable Autolink synchronization that safely updates profile-managed source and property fields while preserving manual changes, Card snapshots, and other custom settings.
+- Added Management Center sorting by property or Autolink profile, profile-specific filtering and selection, and previewed reapplication of each managed link’s profile naming pattern.
+- Added remembered Management Center page sizes of 20, 50, 100, 250, or all entries with page navigation.
+
+### Changed
+
+- Stacked the Autolink profile description above its full-width editor, aligned the profile fields around a clear center seam, and gave collapsible profile titles H4 styling.
+- Organized plugin settings into General, Syntax, Appearance, Cards, and Autolink tabs without discarding in-progress edits when switching tabs.
+- Expanded the README with practical guidance for the new syntax, Autolink, naming-pattern, and Management Center features.
+
+### Fixed
+
+- Replaced whitespace in filename-generated Autolink names with underscores so their tokens remain recognizable.
+- Kept file and note dragging responsive while the Management Center is open, including with larger registries.
+
 ## 1.2.6 - 2026-08-30
 
 ### Added

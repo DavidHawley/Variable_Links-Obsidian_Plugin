@@ -6,8 +6,11 @@ import {
   Notice,
   Plugin,
   TFile,
+  TFolder,
   WorkspaceLeaf,
 } from 'obsidian';
+import { Prec } from '@codemirror/state';
+import { EditorView, keymap } from '@codemirror/view';
 import CaretTracker, { LastTouched } from './caretTracker';
 import {
   getEffectiveVariableAppearance,
@@ -16,8 +19,9 @@ import {
   normalizeAppearanceOpacity,
 } from './appearance';
 import Indexer from './indexer';
+import { parseCapturedTimeCreationQuery } from './dateTime';
 import { filePathFromLink } from './linkSyntax';
-import LivePreviewRenderer from './livePreviewRenderer';
+import LivePreviewRenderer, { isProtectedMarkdownRange } from './livePreviewRenderer';
 import { Registry } from './registry';
 import Renderer from './renderer';
 import Resolver from './resolver';
@@ -30,13 +34,29 @@ import {
   VariableLinksSettings,
   VariableLinksSettingTab,
 } from './settings';
-import VariableSuggest from './suggest';
+import VariableSuggest, { type VariableCreationHandoff } from './suggest';
 import TokenCache from './tokenCache';
+import {
+  canRepresentVariableTextCase,
+  findVariableTokens,
+  formatVariableToken,
+  getRecognizedTokenSyntaxes,
+  getTokenSyntax,
+  normalizeLegacyTokenSyntaxes,
+  normalizeTokenDelimiter,
+  type TokenSyntax,
+} from './tokenSyntax';
+import {
+  applyVariableTextCase,
+  getVariableTextCaseLabel,
+  parseVariableTextCaseQuery,
+  VARIABLE_TEXT_CASE_OPTIONS,
+  wrapVariableNameWithTextCase,
+  type VariableTextCase,
+} from './textCase';
 
 interface EditorWithCoordinates extends Editor {
-  cm?: {
-    posAtCoords?: (coordinates: { x: number; y: number }) => number | null;
-  };
+  cm?: EditorView;
 }
 
 interface MenuItemWithSubmenu extends MenuItem {
@@ -60,6 +80,8 @@ interface VariableTokenContext {
   name: string;
   from: EditorPosition;
   to: EditorPosition;
+  syntax: TokenSyntax;
+  textCase?: VariableTextCase;
 }
 
 interface CloseableDialog {
@@ -75,6 +97,14 @@ interface MarkdownTokenMatch {
   start: number;
   end: number;
   name: string;
+  textCase?: VariableTextCase;
+}
+
+interface CapturedTimeEditorExpression {
+  from: EditorPosition;
+  to: EditorPosition;
+  originalText: string;
+  expression: string;
 }
 
 export default class VariableLinksPlugin extends Plugin {
@@ -94,6 +124,8 @@ export default class VariableLinksPlugin extends Plugin {
   private lastContextClick: ContextClick | null = null;
   private openDialogs = new Set<CloseableDialog>();
   private openPanels = new Set<PluginPanelResource>();
+  private pendingCapturedTimeExpressions = new Set<string>();
+  private lastCapturedTimeExpressionAttempt = new WeakMap<Editor, string>();
 
   async onload(): Promise<void> {
     this.active = true;
@@ -129,6 +161,7 @@ export default class VariableLinksPlugin extends Plugin {
       this.schedule(() => this.livePreviewRenderer?.refresh(), 0);
 
       const panelModule = await import('./panel');
+      const managementModule = await import('./managementCenter');
       if (!this.active) return;
       this.registerView(
         panelModule.VIEW_TYPE_VARIABLE_PANEL,
@@ -139,6 +172,47 @@ export default class VariableLinksPlugin extends Plugin {
         name: 'Open variable properties',
         callback: () => void this.openVariableProperties(),
       });
+      this.registerView(
+        managementModule.VIEW_TYPE_MANAGEMENT_CENTER,
+        (leaf) => new managementModule.ManagementCenterView(leaf, this),
+      );
+      this.addCommand({
+        id: 'open-management-center',
+        name: 'Open management center',
+        callback: () => void this.openManagementCenter(),
+      });
+      this.addRibbonIcon('database', 'Open variable links management center', () => {
+        void this.openManagementCenter();
+      });
+      this.addCommand({
+        id: 'preview-autolinks-current-file',
+        name: 'Preview autolinks for current file',
+        checkCallback: (checking) => {
+          const file = this.app.workspace.getActiveFile();
+          if (!file || file.extension.toLocaleLowerCase() !== 'md') return false;
+          if (!checking) void this.openCombinedAutolinkPreview({ type: 'file', path: file.path });
+          return true;
+        },
+      });
+      this.addCommand({
+        id: 'preview-all-enabled-autolinks',
+        name: 'Preview all enabled autolink profiles',
+        checkCallback: (checking) => {
+          if (!this.registry?.autolinkProfiles.some(({ enabled }) => enabled)) return false;
+          if (!checking) void this.openCombinedAutolinkPreview({ type: 'all' });
+          return true;
+        },
+      });
+      this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+        if (!(file instanceof TFolder)) return;
+        menu.addItem((item) => item
+          .setTitle('Preview autolinks for folder')
+          .setIcon('scan-search')
+          .onClick(() => void this.openCombinedAutolinkPreview({
+            type: 'folder',
+            path: file.path,
+          })));
+      }));
 
       this.registerVariableContextMenu();
       this.caretTracker = new CaretTracker(this.app, this, this.registry, this.resolver);
@@ -147,9 +221,18 @@ export default class VariableLinksPlugin extends Plugin {
         this.app,
         this.indexer,
         this.registry,
+        this.resolver,
         async () => this.refreshPanelViews(),
+        async (request) => this.openNamedVariableCreation(request),
       );
       this.registerEditorSuggest(this.suggest);
+      this.registerEvent(this.app.workspace.on('editor-change', (editor, info) => {
+        if (info.file) this.handleCompletedCapturedTimeExpression(editor, info.file);
+      }));
+      this.registerEditorExtension(Prec.highest(keymap.of([
+        { key: 'Tab', run: (view) => this.handleCapturedTimeCompletionCommand(view) },
+        { key: 'Enter', run: (view) => this.handleCapturedTimeCompletionCommand(view) },
+      ])));
     } catch (error) {
       new Notice(`Variable Links failed to load: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -166,6 +249,8 @@ export default class VariableLinksPlugin extends Plugin {
     this.clearContextMenuResources();
     this.lastContextClick = null;
     this.suggest?.close();
+    this.pendingCapturedTimeExpressions.clear();
+    this.lastCapturedTimeExpressionAttempt = new WeakMap<Editor, string>();
     this.caretTracker?.stop();
     this.tokenCache?.stop();
     this.registry?.unload();
@@ -222,6 +307,16 @@ export default class VariableLinksPlugin extends Plugin {
     if (!this.active) return;
     this.livePreviewRenderer?.refresh();
     await this.refreshPanelViews();
+    await this.refreshManagementCenterViews();
+  }
+
+  async refreshAfterTokenSyntaxChange(): Promise<void> {
+    if (!this.active) return;
+    await this.tokenCache?.rebuild();
+    if (!this.active) return;
+    this.livePreviewRenderer?.refresh();
+    await this.refreshPanelViews();
+    await this.refreshManagementCenterViews();
   }
 
   private async updateOpenedFileTokenCache(file: TFile): Promise<void> {
@@ -242,6 +337,7 @@ export default class VariableLinksPlugin extends Plugin {
       if (!this.active) return;
       this.livePreviewRenderer?.refresh();
       await this.refreshPanelViews();
+      await this.refreshManagementCenterViews();
     } catch (error) {
       if (this.active) {
         new Notice(`Variable links: could not update moved note references: ${error instanceof Error ? error.message : String(error)}`);
@@ -253,10 +349,29 @@ export default class VariableLinksPlugin extends Plugin {
     const loaded: unknown = await this.loadData();
     const saved = this.isRecord(loaded) ? loaded : {};
     const defaultRegistryPath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/registry.json`;
+    let tokenPrefix = normalizeTokenDelimiter(
+      saved.tokenPrefix,
+      DEFAULT_SETTINGS.tokenPrefix,
+    );
+    let tokenSuffix = normalizeTokenDelimiter(
+      saved.tokenSuffix,
+      DEFAULT_SETTINGS.tokenSuffix,
+    );
+    if (tokenPrefix === tokenSuffix) {
+      tokenPrefix = DEFAULT_SETTINGS.tokenPrefix;
+      tokenSuffix = DEFAULT_SETTINGS.tokenSuffix;
+    }
+    const activeTokenSyntax = { prefix: tokenPrefix, suffix: tokenSuffix };
     this.settings = {
       registryFilePath: typeof saved.registryFilePath === 'string'
         ? saved.registryFilePath
         : defaultRegistryPath,
+      tokenPrefix,
+      tokenSuffix,
+      legacyTokenSyntaxes: normalizeLegacyTokenSyntaxes(
+        saved.legacyTokenSyntaxes,
+        activeTokenSyntax,
+      ),
       enableInfoCards: typeof saved.enableInfoCards === 'boolean'
         ? saved.enableInfoCards
         : DEFAULT_SETTINGS.enableInfoCards,
@@ -297,6 +412,12 @@ export default class VariableLinksPlugin extends Plugin {
       defaultDateFormat: typeof saved.defaultDateFormat === 'string'
         ? saved.defaultDateFormat
         : DEFAULT_SETTINGS.defaultDateFormat,
+      defaultTimeFormat: typeof saved.defaultTimeFormat === 'string'
+        ? saved.defaultTimeFormat
+        : DEFAULT_SETTINGS.defaultTimeFormat,
+      defaultDateTimeFormat: typeof saved.defaultDateTimeFormat === 'string'
+        ? saved.defaultDateTimeFormat
+        : DEFAULT_SETTINGS.defaultDateTimeFormat,
       infoCardEditorWidth: normalizeInfoCardEditorDimension(saved.infoCardEditorWidth),
       infoCardEditorHeight: normalizeInfoCardEditorDimension(saved.infoCardEditorHeight),
       infoCardEditorCollapsedItems: normalizeInfoCardEditorCollapsedItems(
@@ -355,6 +476,28 @@ export default class VariableLinksPlugin extends Plugin {
     await this.saveSettings();
   }
 
+  async renameInfoCardEditorCollapsedItemsBatch(
+    renames: readonly { previousName: string; nextName: string }[],
+  ): Promise<void> {
+    const current = this.settings.infoCardEditorCollapsedItems;
+    const moved = new Map<string, string[]>();
+    for (const { previousName, nextName } of renames) {
+      const itemIds = current[previousName];
+      if (previousName !== nextName && itemIds) moved.set(nextName, itemIds);
+    }
+    if (!moved.size) return;
+    const collapsedItems = Object.assign(
+      Object.create(null) as Record<string, string[]>,
+      current,
+    );
+    for (const { previousName, nextName } of renames) {
+      if (previousName !== nextName) delete collapsedItems[previousName];
+    }
+    for (const [nextName, itemIds] of moved) collapsedItems[nextName] = itemIds;
+    this.settings.infoCardEditorCollapsedItems = collapsedItems;
+    await this.saveSettings();
+  }
+
   async openVariableProperties(variableName?: string): Promise<void> {
     if (!this.active) return;
     const panelModule = await import('./panel');
@@ -370,6 +513,273 @@ export default class VariableLinksPlugin extends Plugin {
       await leaf.view.selectVariable(variableName);
     }
     await this.app.workspace.revealLeaf(leaf);
+  }
+
+  async openManagementCenter(): Promise<void> {
+    if (!this.active) return;
+    const managementModule = await import('./managementCenter');
+    if (!this.active) return;
+    let leaf = this.app.workspace
+      .getLeavesOfType(managementModule.VIEW_TYPE_MANAGEMENT_CENTER)[0] ?? null;
+    if (!leaf) {
+      leaf = this.app.workspace.getLeaf('tab');
+      await leaf.setViewState({
+        type: managementModule.VIEW_TYPE_MANAGEMENT_CENTER,
+        active: true,
+        state: { activity: 'variables' },
+      });
+    }
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  async openCombinedAutolinkPreview(
+    scope: { type: 'all' } | { type: 'file' | 'folder'; path: string },
+  ): Promise<void> {
+    if (!this.active || !this.registry) return;
+    const previewModule = await import('./autolinkPreview');
+    if (!this.active || !this.registry) return;
+    previewModule.openCombinedAutolinkPreview(
+      this.app,
+      this,
+      this.registry,
+      scope,
+    );
+  }
+
+  async refreshManagementCenterViews(): Promise<void> {
+    const managementModule = await import('./managementCenter');
+    if (!this.active) return;
+    for (const leaf of this.app.workspace.getLeavesOfType(
+      managementModule.VIEW_TYPE_MANAGEMENT_CENTER,
+    )) {
+      if (leaf.view instanceof managementModule.ManagementCenterView) leaf.view.refresh();
+    }
+  }
+
+  private async openNamedVariableCreation(request: VariableCreationHandoff): Promise<void> {
+    if (!this.active) return;
+    const panelModule = await import('./panel');
+    if (!this.active) return;
+    let leaf: WorkspaceLeaf | null = this.app.workspace
+      .getLeavesOfType(panelModule.VIEW_TYPE_VARIABLE_PANEL)[0] ?? null;
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false);
+      if (!leaf) throw new Error('A sidebar could not be opened.');
+      await leaf.setViewState({ type: panelModule.VIEW_TYPE_VARIABLE_PANEL });
+    }
+    if (!(leaf.view instanceof panelModule.VariablePropertiesView)) {
+      throw new Error('The Variable Link properties panel is unavailable.');
+    }
+    await leaf.view.beginVariableCreation(request.type, request.name, async (savedName) => {
+      const current = request.editor.getRange(request.from, request.to);
+      if (current !== request.originalText) {
+        throw new Error('The creation expression changed while the properties panel was open.');
+      }
+      const token = formatVariableToken(
+        savedName,
+        getTokenSyntax(this.settings),
+        request.textCase,
+      );
+      request.editor.replaceRange(token, request.from, request.to);
+      request.editor.setCursor({
+        line: request.from.line,
+        ch: request.from.ch + token.length,
+      });
+      request.editor.focus();
+    });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  private handleCompletedCapturedTimeExpression(editor: Editor, file: TFile): void {
+    if (!this.active || !this.suggest || !this.registry) return;
+    const candidate = this.findCompletedCapturedTimeExpression(editor);
+    if (!candidate) {
+      this.lastCapturedTimeExpressionAttempt.delete(editor);
+      return;
+    }
+    this.beginCapturedTimeCompletion(editor, file, candidate, false);
+  }
+
+  private handleCapturedTimeCompletionCommand(view: EditorView): boolean {
+    if (!this.active) return false;
+    const activeEditor = this.app.workspace.activeEditor;
+    const editor = activeEditor?.editor;
+    const file = activeEditor?.file;
+    if (!editor || !file || (editor as EditorWithCoordinates).cm !== view) return false;
+    const candidate = this.findCapturedTimeExpressionAtCaret(editor);
+    if (!candidate) return false;
+    this.suggest?.close();
+    this.beginCapturedTimeCompletion(editor, file, candidate, true);
+    return true;
+  }
+
+  private beginCapturedTimeCompletion(
+    editor: Editor,
+    file: TFile,
+    candidate: CapturedTimeEditorExpression,
+    force: boolean,
+  ): void {
+    if (!this.suggest) return;
+    const signature = `${file.path}\u0000${candidate.from.line}\u0000${candidate.from.ch}\u0000${candidate.originalText}`;
+    if ((!force && this.lastCapturedTimeExpressionAttempt.get(editor) === signature)
+      || this.pendingCapturedTimeExpressions.has(signature)) return;
+    this.lastCapturedTimeExpressionAttempt.set(editor, signature);
+    this.pendingCapturedTimeExpressions.add(signature);
+    void this.suggest.completeTypedCapturedTimeExpression(
+      editor,
+      file,
+      candidate.from,
+      candidate.to,
+      candidate.originalText,
+      candidate.expression,
+    ).finally(() => {
+      this.pendingCapturedTimeExpressions.delete(signature);
+    });
+  }
+
+  private findCompletedCapturedTimeExpression(editor: Editor): CapturedTimeEditorExpression | null {
+    const cursor = editor.getCursor();
+    const line = editor.getLine(cursor.line);
+    const tokenEnds = [cursor.ch];
+    let beforeWhitespace = cursor.ch;
+    while (beforeWhitespace > 0 && /\s/.test(line[beforeWhitespace - 1])) beforeWhitespace--;
+    if (beforeWhitespace !== cursor.ch) tokenEnds.push(beforeWhitespace);
+
+    let best: CapturedTimeEditorExpression | null = null;
+    for (const tokenEnd of tokenEnds) {
+      for (const syntax of getRecognizedTokenSyntaxes(this.settings)) {
+        const closeStart = tokenEnd - syntax.suffix.length;
+        if (closeStart < 0 || !line.startsWith(syntax.suffix, closeStart)) continue;
+        const openStart = line.lastIndexOf(syntax.prefix, closeStart - 1);
+        if (openStart === -1) continue;
+        const closingRange = this.expandRepeatedPunctuationSuffix(
+          line,
+          openStart + syntax.prefix.length,
+          closeStart,
+          tokenEnd,
+          syntax.suffix,
+        );
+        const expression = line.slice(
+          openStart + syntax.prefix.length,
+          closingRange.contentEnd,
+        ).trim();
+        const caseQuery = parseVariableTextCaseQuery(expression);
+        if (this.registry?.getVariable(caseQuery.query)) continue;
+        const creation = parseCapturedTimeCreationQuery(caseQuery.query);
+        if (!creation?.type) continue;
+        const from = { line: cursor.line, ch: openStart };
+        const to = { line: cursor.line, ch: closingRange.tokenEnd };
+        const state = (editor as EditorWithCoordinates).cm?.state;
+        if (state && isProtectedMarkdownRange(
+          state,
+          editor.posToOffset(from),
+          editor.posToOffset(to),
+        )) continue;
+        if (!best || openStart > best.from.ch) {
+          best = {
+            from,
+            to,
+            originalText: line.slice(openStart, closingRange.tokenEnd),
+            expression,
+          };
+        }
+      }
+    }
+    return best;
+  }
+
+  private findCapturedTimeExpressionAtCaret(editor: Editor): CapturedTimeEditorExpression | null {
+    const cursor = editor.getCursor();
+    const line = editor.getLine(cursor.line);
+    let best: CapturedTimeEditorExpression | null = null;
+    for (const syntax of getRecognizedTokenSyntaxes(this.settings)) {
+      const openStart = line.lastIndexOf(syntax.prefix, cursor.ch);
+      if (openStart === -1) continue;
+      const contentStart = openStart + syntax.prefix.length;
+      if (cursor.ch < contentStart) continue;
+      const closeStart = line.indexOf(syntax.suffix, contentStart);
+      const hasCloser = closeStart !== -1 && cursor.ch <= closeStart + syntax.suffix.length;
+      let contentEnd = hasCloser ? closeStart : cursor.ch;
+      let tokenEnd = hasCloser ? closeStart + syntax.suffix.length : cursor.ch;
+      if (hasCloser) {
+        const closingRange = this.expandRepeatedPunctuationSuffix(
+          line,
+          contentStart,
+          contentEnd,
+          tokenEnd,
+          syntax.suffix,
+        );
+        contentEnd = closingRange.contentEnd;
+        tokenEnd = closingRange.tokenEnd;
+      }
+      if (!hasCloser) {
+        const partialBefore = this.partialSuffixBeforeCursor(line, cursor.ch, syntax.suffix);
+        if (partialBefore > 0) {
+          contentEnd -= partialBefore;
+        } else {
+          tokenEnd += this.partialSuffixAfterCursor(line, cursor.ch, syntax.suffix);
+        }
+      }
+      const expression = line.slice(contentStart, contentEnd).trim();
+      const caseQuery = parseVariableTextCaseQuery(expression);
+      if (this.registry?.getVariable(caseQuery.query)) continue;
+      const creation = parseCapturedTimeCreationQuery(caseQuery.query);
+      if (!creation?.type) continue;
+      const from = { line: cursor.line, ch: openStart };
+      const to = { line: cursor.line, ch: tokenEnd };
+      const state = (editor as EditorWithCoordinates).cm?.state;
+      if (state && isProtectedMarkdownRange(
+        state,
+        editor.posToOffset(from),
+        editor.posToOffset(to),
+      )) continue;
+      if (!best || openStart > best.from.ch) {
+        best = {
+          from,
+          to,
+          originalText: line.slice(openStart, tokenEnd),
+          expression,
+        };
+      }
+    }
+    return best;
+  }
+
+  private partialSuffixBeforeCursor(line: string, cursor: number, suffix: string): number {
+    for (let length = suffix.length - 1; length > 0; length--) {
+      const partial = suffix.slice(0, length);
+      if (/[\p{L}\p{N}]/u.test(partial)) continue;
+      if (cursor >= length
+        && line.slice(cursor - length, cursor) === partial) return length;
+    }
+    return 0;
+  }
+
+  private expandRepeatedPunctuationSuffix(
+    line: string,
+    contentStart: number,
+    contentEnd: number,
+    tokenEnd: number,
+    suffix: string,
+  ): { contentEnd: number; tokenEnd: number } {
+    const delimiter = suffix[0];
+    if (!delimiter
+      || /[\p{L}\p{N}]/u.test(delimiter)
+      || Array.from(suffix).some((character) => character !== delimiter)) {
+      return { contentEnd, tokenEnd };
+    }
+    while (contentEnd > contentStart && line[contentEnd - 1] === delimiter) contentEnd--;
+    while (tokenEnd < line.length && line[tokenEnd] === delimiter) tokenEnd++;
+    return { contentEnd, tokenEnd };
+  }
+
+  private partialSuffixAfterCursor(line: string, cursor: number, suffix: string): number {
+    for (let length = suffix.length - 1; length > 0; length--) {
+      const partial = suffix.slice(0, length);
+      if (/[\p{L}\p{N}]/u.test(partial)) continue;
+      if (line.startsWith(partial, cursor)) return length;
+    }
+    return 0;
   }
 
   private schedule(callback: () => void, delay: number): number | null {
@@ -439,6 +849,7 @@ export default class VariableLinksPlugin extends Plugin {
             item.onClick(() => void this.copyResolvedMarkdown(copySource));
           }
         });
+        this.addTextCaseMenu(submenu, tokenContext, editor);
         this.addSwitchTokenMenu(
           submenu,
           tokenContext,
@@ -534,6 +945,45 @@ export default class VariableLinksPlugin extends Plugin {
     });
   }
 
+  private addTextCaseMenu(
+    menu: Menu,
+    tokenContext: VariableTokenContext | null,
+    editor: Editor,
+  ): void {
+    menu.addItem((item) => {
+      const enabled = tokenContext !== null && this.hasSubmenu(item);
+      item.setTitle('Text case').setIcon('case-sensitive').setDisabled(!enabled);
+      if (!enabled || !tokenContext || !this.hasSubmenu(item)) return;
+      const submenu = item.setSubmenu();
+      this.enableNestedSubmenuSwitch(menu, item, submenu);
+      submenu.addItem((caseItem) => {
+        caseItem
+          .setTitle('Use variable default')
+          .setIcon(tokenContext.textCase === undefined ? 'check' : 'rotate-ccw')
+          .onClick(() => this.switchVariableTokenTextCase(editor, tokenContext, undefined));
+      });
+      submenu.addSeparator();
+      for (const option of VARIABLE_TEXT_CASE_OPTIONS) {
+        if (!option.value) continue;
+        const textCase = option.value;
+        const hasNameConflict = !canRepresentVariableTextCase(
+          tokenContext.name,
+          textCase,
+          (name) => Boolean(this.registry?.getVariable(name)),
+        );
+        submenu.addItem((caseItem) => {
+          caseItem
+            .setTitle(hasNameConflict
+              ? `${getVariableTextCaseLabel(textCase)} (name conflict)`
+              : getVariableTextCaseLabel(textCase))
+            .setIcon(tokenContext.textCase === textCase ? 'check' : 'case-sensitive')
+            .setDisabled(hasNameConflict)
+            .onClick(() => this.switchVariableTokenTextCase(editor, tokenContext, textCase));
+        });
+      }
+    });
+  }
+
   private getContextVariableToken(
     editor: Editor,
     position: EditorPosition | null,
@@ -551,20 +1001,22 @@ export default class VariableLinksPlugin extends Plugin {
   ): VariableTokenContext | null {
     if (!position) return null;
     const line = editor.getLine(position.line);
-    const pattern = /\{\{\s*([^}\s]+)\s*}}/g;
-    let match: RegExpExecArray | null;
+    const syntaxes = getRecognizedTokenSyntaxes(this.settings);
     const matchingTokens: VariableTokenContext[] = [];
-    while ((match = pattern.exec(line)) !== null) {
-      const name = match[1];
-      if (!name) continue;
-      const trimmedName = name.trim();
-      if (expectedName && trimmedName !== expectedName) continue;
+    for (const match of findVariableTokens(
+      line,
+      syntaxes,
+      (name) => Boolean(this.registry?.getVariable(name)),
+    )) {
+      if (expectedName && match.name !== expectedName) continue;
       const token = {
-        name: trimmedName,
-        from: { line: position.line, ch: match.index },
-        to: { line: position.line, ch: pattern.lastIndex },
+        name: match.name,
+        from: { line: position.line, ch: match.start },
+        to: { line: position.line, ch: match.end },
+        syntax: match.syntax,
+        textCase: match.textCase,
       };
-      if (position.ch >= match.index && position.ch <= pattern.lastIndex) return token;
+      if (position.ch >= match.start && position.ch <= match.end) return token;
       if (expectedName) matchingTokens.push(token);
     }
     if (!expectedName || matchingTokens.length === 0) return null;
@@ -595,7 +1047,7 @@ export default class VariableLinksPlugin extends Plugin {
       new Notice('Insertion position unavailable.');
       return;
     }
-    const token = `{{${variableName}}}`;
+    const token = formatVariableToken(variableName, getTokenSyntax(this.settings));
     editor.replaceRange(token, position);
     editor.setCursor({ line: position.line, ch: position.ch + token.length });
     editor.focus();
@@ -606,7 +1058,35 @@ export default class VariableLinksPlugin extends Plugin {
     tokenContext: VariableTokenContext,
     variableName: string,
   ): void {
-    const token = `{{${variableName}}}`;
+    const token = formatVariableToken(
+      variableName,
+      getTokenSyntax(this.settings),
+      tokenContext.textCase,
+    );
+    editor.replaceRange(token, tokenContext.from, tokenContext.to);
+    editor.setCursor({
+      line: tokenContext.from.line,
+      ch: tokenContext.from.ch + token.length,
+    });
+    editor.focus();
+  }
+
+  private switchVariableTokenTextCase(
+    editor: Editor,
+    tokenContext: VariableTokenContext,
+    textCase: VariableTextCase | undefined,
+  ): void {
+    const representable = !textCase || canRepresentVariableTextCase(
+      tokenContext.name,
+      textCase,
+      (name) => Boolean(this.registry?.getVariable(name)),
+    );
+    if (!representable) {
+      const conflictingName = wrapVariableNameWithTextCase(tokenContext.name, textCase);
+      new Notice(`Variable links: cannot apply this text case because ${conflictingName} conflicts with an existing variable name.`);
+      return;
+    }
+    const token = formatVariableToken(tokenContext.name, tokenContext.syntax, textCase);
     editor.replaceRange(token, tokenContext.from, tokenContext.to);
     editor.setCursor({
       line: tokenContext.from.line,
@@ -626,10 +1106,11 @@ export default class VariableLinksPlugin extends Plugin {
     const matches = this.findMarkdownTokenMatches(source);
     const cache = new Map<string, Promise<string>>();
     const replacements = await Promise.all(matches.map((match) => {
-      let replacement = cache.get(match.name);
+      const cacheKey = `${match.name}\u0000${match.textCase ?? ''}`;
+      let replacement = cache.get(cacheKey);
       if (!replacement) {
-        replacement = this.renderCopiedVariableMarkdown(match.name);
-        cache.set(match.name, replacement);
+        replacement = this.renderCopiedVariableMarkdown(match.name, match.textCase);
+        cache.set(cacheKey, replacement);
       }
       return replacement;
     }));
@@ -650,13 +1131,14 @@ export default class VariableLinksPlugin extends Plugin {
   }
 
   private findMarkdownTokenMatches(source: string): MarkdownTokenMatch[] {
-    const pattern = /\{\{\s*([^}\s]+)\s*}}/g;
     const matches: MarkdownTokenMatch[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(source)) !== null) {
-      const name = match[1]?.trim();
-      if (!name || this.isMarkdownCodePosition(source, match.index)) continue;
-      matches.push({ start: match.index, end: pattern.lastIndex, name });
+    for (const match of findVariableTokens(
+      source,
+      getRecognizedTokenSyntaxes(this.settings),
+      (name) => Boolean(this.registry?.getVariable(name)),
+    )) {
+      if (this.isMarkdownCodePosition(source, match.start)) continue;
+      matches.push(match);
     }
     return matches;
   }
@@ -692,12 +1174,18 @@ export default class VariableLinksPlugin extends Plugin {
     return inlineFenceLength > 0;
   }
 
-  private async renderCopiedVariableMarkdown(variableName: string): Promise<string> {
+  private async renderCopiedVariableMarkdown(
+    variableName: string,
+    tokenTextCase?: VariableTextCase,
+  ): Promise<string> {
     const definition = this.registry?.getVariable(variableName);
     const result = await this.resolver?.resolve(variableName).catch(() => null);
-    const value = result?.ok
+    const rawValue = result?.ok
       ? this.formatCopiedValue(result.value)
       : `[Missing: ${variableName}]`;
+    const value = result?.ok
+      ? applyVariableTextCase(rawValue, tokenTextCase ?? definition?.textCase)
+      : rawValue;
     const explicitLink = filePathFromLink(definition?.link ?? '');
     const resolvedLink = result?.sourceFile?.path.replace(/\.md$/i, '') ?? '';
     const link = explicitLink || resolvedLink;
@@ -798,13 +1286,13 @@ export default class VariableLinksPlugin extends Plugin {
   private async setVariableFavorite(variableName: string, favorite: boolean): Promise<void> {
     const definition = this.registry?.getVariable(variableName);
     if (!definition || !this.registry) {
-      new Notice(`Variable Links: {{${variableName}}} is not configured.`);
+      new Notice(`Variable Links: ${formatVariableToken(variableName, getTokenSyntax(this.settings))} is not configured.`);
       return;
     }
     try {
       await this.registry.saveVariable(variableName, { ...definition, favorite });
       await this.refreshPanelViews();
-      new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} {{${variableName}}}`);
+      new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} ${formatVariableToken(variableName, getTokenSyntax(this.settings))}`);
     } catch (error) {
       new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
     }
