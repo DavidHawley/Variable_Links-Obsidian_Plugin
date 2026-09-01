@@ -20,22 +20,31 @@ import { filePathFromLink } from './linkSyntax';
 import { renderNamePattern, type NamePatternContext } from './namePattern';
 import { addContextHelpButton } from './contextHelp';
 import { renderNamePatternHelp } from './namePatternHelp';
+import {
+  DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES,
+  normalizeVaultPath,
+  profileMatchesPath,
+} from './autolink';
 
 export const VIEW_TYPE_MANAGEMENT_CENTER = 'variable-links-management-center';
 
 type ManagementActivity = 'variables';
-type MassRenameMode = 'prefix' | 'suffix' | 'replace' | 'pattern';
+type MassRenameMode = 'prefix' | 'suffix' | 'replace' | 'pattern' | 'profile-pattern';
 type RenameWordSelection = 'whole' | 'first' | 'last' | 'custom';
 type OwnershipFilter = 'all' | 'manual' | 'managed';
 type VariableTypeFilter = 'all' | 'property' | 'fixed';
-type VariableSort = 'name-ascending' | 'name-descending' | 'type' | 'source';
+type VariableSort = 'name-ascending' | 'name-descending' | 'type' | 'source' | 'property' | 'profile';
+type ManagementPageSize = 20 | 50 | 100 | 250 | 'all';
 
 interface ManagementCenterState {
   activity: ManagementActivity;
   query: string;
   ownership: OwnershipFilter;
+  profileId: string;
   variableType: VariableTypeFilter;
   sort: VariableSort;
+  page: number;
+  pageSize: ManagementPageSize;
   selected: string[];
 }
 
@@ -52,12 +61,23 @@ interface DeletionPreview {
   unresolvedNames: string[];
 }
 
+interface ProfilePatternRenameData {
+  context: NamePatternContext;
+  counter: number;
+  error: string;
+  fixedName: string;
+  pattern: string;
+}
+
 const DEFAULT_STATE: ManagementCenterState = {
   activity: 'variables',
   query: '',
   ownership: 'all',
+  profileId: 'all',
   variableType: 'all',
   sort: 'name-ascending',
+  page: 1,
+  pageSize: 50,
   selected: [],
 };
 
@@ -159,6 +179,20 @@ export class ManagementCenterView extends ItemView {
       [['all', 'All ownership'], ['manual', 'Manual'], ['managed', 'Managed']],
       this.state.ownership,
     );
+    const profileOptions = this.getProfileFilterOptions(entries);
+    if (!profileOptions.some(([value]) => value === this.state.profileId)) {
+      this.state.profileId = 'all';
+    }
+    if (this.state.profileId !== 'all') {
+      this.state.ownership = 'managed';
+      ownership.value = 'managed';
+    }
+    const profile = this.addSelect(
+      controls,
+      'Autolink profile',
+      profileOptions,
+      this.state.profileId,
+    );
     const variableType = this.addSelect(
       controls,
       'Variable type',
@@ -173,6 +207,8 @@ export class ManagementCenterView extends ItemView {
         ['name-descending', 'Name: Z–A'],
         ['type', 'Type'],
         ['source', 'Source'],
+        ['property', 'Property'],
+        ['profile', 'Autolink profile'],
       ],
       this.state.sort,
     );
@@ -184,6 +220,10 @@ export class ManagementCenterView extends ItemView {
     });
     const bulkActions = listToolbar.createDiv({
       cls: 'variable-links-management-center-bulk-actions',
+    });
+    const selectProfile = bulkActions.createEl('button', {
+      text: 'Select profile',
+      attr: { type: 'button' },
     });
     const renameSelected = bulkActions.createEl('button', {
       text: 'Rename selected',
@@ -202,6 +242,28 @@ export class ManagementCenterView extends ItemView {
     deleteSelected.addEventListener('click', () => {
       void this.confirmBulkDelete(entries);
     });
+    const pagination = content.createDiv({ cls: 'variable-links-management-center-pagination' });
+    pagination.createSpan({ text: 'Rows per page:', cls: 'variable-links-hint-text' });
+    const pageSize = this.addSelect(
+      pagination,
+      'Rows per page',
+      [['20', '20'], ['50', '50'], ['100', '100'], ['250', '250'], ['all', 'All']],
+      String(this.state.pageSize),
+    );
+    const previousPage = pagination.createEl('button', {
+      cls: 'clickable-icon',
+      attr: { type: 'button', 'aria-label': 'Previous page', title: 'Previous page' },
+    });
+    setIcon(previousPage, 'chevron-left');
+    const pageStatus = pagination.createSpan({
+      cls: 'variable-links-management-center-page-status variable-links-hint-text',
+      attr: { 'aria-live': 'polite' },
+    });
+    const nextPage = pagination.createEl('button', {
+      cls: 'clickable-icon',
+      attr: { type: 'button', 'aria-label': 'Next page', title: 'Next page' },
+    });
+    setIcon(nextPage, 'chevron-right');
     const list = content.createDiv({ cls: 'variable-links-management-center-list' });
     const renderList = (): void => this.renderList(
       entries,
@@ -209,27 +271,89 @@ export class ManagementCenterView extends ItemView {
       status,
       renameSelected,
       deleteSelected,
+      previousPage,
+      pageStatus,
+      nextPage,
     );
+    const updateSelectProfile = (): void => {
+      const profileId = this.state.profileId;
+      const count = profileId === 'all'
+        ? 0
+        : entries.filter(({ definition }) => definition.managed?.profileId === profileId).length;
+      selectProfile.disabled = profileId === 'all' || count === 0;
+      selectProfile.setText(count ? `Select profile (${count})` : 'Select profile');
+    };
+    selectProfile.addEventListener('click', () => {
+      if (this.state.profileId === 'all') return;
+      const selected = new Set(this.state.selected);
+      for (const { definition, key } of entries) {
+        if (definition.managed?.profileId === this.state.profileId) selected.add(key);
+      }
+      this.state.selected = [...selected];
+      this.selectionAnchorKey = null;
+      this.saveViewState();
+      renderList();
+    });
     search.addEventListener('input', () => {
       this.state.query = search.value;
+      this.resetPage();
       this.saveViewState();
       renderList();
     });
     ownership.addEventListener('change', () => {
       this.state.ownership = readOwnershipFilter(ownership.value);
+      if (this.state.ownership !== 'managed') {
+        this.state.profileId = 'all';
+        profile.value = 'all';
+      }
+      this.resetPage();
       this.saveViewState();
+      updateSelectProfile();
+      renderList();
+    });
+    profile.addEventListener('change', () => {
+      this.state.profileId = profile.value;
+      if (this.state.profileId !== 'all') {
+        this.state.ownership = 'managed';
+        ownership.value = 'managed';
+      }
+      this.resetPage();
+      this.saveViewState();
+      updateSelectProfile();
       renderList();
     });
     variableType.addEventListener('change', () => {
       this.state.variableType = readVariableTypeFilter(variableType.value);
+      this.resetPage();
       this.saveViewState();
       renderList();
     });
     sort.addEventListener('change', () => {
       this.state.sort = readVariableSort(sort.value);
+      this.resetPage();
       this.saveViewState();
       renderList();
     });
+    pageSize.addEventListener('change', () => {
+      this.state.pageSize = readManagementPageSize(pageSize.value);
+      this.resetPage();
+      this.saveViewState();
+      renderList();
+    });
+    previousPage.addEventListener('click', () => {
+      if (this.state.page <= 1) return;
+      this.state.page--;
+      this.selectionAnchorKey = null;
+      this.saveViewState();
+      renderList();
+    });
+    nextPage.addEventListener('click', () => {
+      this.state.page++;
+      this.selectionAnchorKey = null;
+      this.saveViewState();
+      renderList();
+    });
+    updateSelectProfile();
     renderList();
   }
 
@@ -243,22 +367,54 @@ export class ManagementCenterView extends ItemView {
       : [];
   }
 
+  private getProfileFilterOptions(
+    entries: readonly VariableEntry[],
+  ): Array<readonly [string, string]> {
+    const options: Array<readonly [string, string]> = [['all', 'All profiles']];
+    const knownIds = new Set<string>();
+    for (const profile of this.plugin.registry?.autolinkProfiles ?? []) {
+      knownIds.add(profile.id);
+      options.push([profile.id, profile.name]);
+    }
+    const missingIds = new Set(entries
+      .map(({ definition }) => definition.managed?.profileId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0 && !knownIds.has(id)));
+    for (const id of [...missingIds].sort(compareText)) {
+      options.push([id, `Missing profile: ${id}`]);
+    }
+    return options;
+  }
+
   private renderList(
     entries: readonly VariableEntry[],
     list: HTMLElement,
     status: HTMLElement,
     renameSelected: HTMLButtonElement,
     deleteSelected: HTMLButtonElement,
+    previousPage: HTMLButtonElement,
+    pageStatus: HTMLElement,
+    nextPage: HTMLButtonElement,
   ): void {
     list.empty();
     const visible = this.filterAndSort(entries);
+    const pageSize = this.state.pageSize === 'all' ? Math.max(visible.length, 1) : this.state.pageSize;
+    const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
+    this.state.page = Math.min(Math.max(1, this.state.page), pageCount);
+    const firstIndex = (this.state.page - 1) * pageSize;
+    const pageEntries = visible.slice(firstIndex, firstIndex + pageSize);
     const selected = new Set(this.state.selected);
     const updateStatus = (): void => {
-      status.setText(`Showing ${visible.length} of ${entries.length} · ${selected.size} selected`);
+      const range = visible.length
+        ? `${firstIndex + 1}–${firstIndex + pageEntries.length}`
+        : '0';
+      status.setText(`Showing ${range} of ${visible.length} matching · ${selected.size} selected`);
       renameSelected.disabled = selected.size === 0;
       renameSelected.setText(selected.size ? `Rename selected (${selected.size})` : 'Rename selected');
       deleteSelected.disabled = selected.size === 0;
       deleteSelected.setText(selected.size ? `Delete selected (${selected.size})` : 'Delete selected');
+      previousPage.disabled = this.state.page <= 1;
+      nextPage.disabled = this.state.page >= pageCount;
+      pageStatus.setText(`Page ${this.state.page} of ${pageCount}`);
     };
     updateStatus();
 
@@ -272,18 +428,18 @@ export class ManagementCenterView extends ItemView {
 
     const header = list.createDiv({ cls: 'variable-links-management-center-list-header' });
     const selectAll = header.createEl('input', {
-      attr: { type: 'checkbox', 'aria-label': 'Select all visible variables' },
+      attr: { type: 'checkbox', 'aria-label': 'Select all variables on this page' },
     });
-    const selectedVisible = visible.filter(({ key }) => selected.has(key)).length;
-    selectAll.checked = selectedVisible === visible.length;
-    selectAll.indeterminate = selectedVisible > 0 && selectedVisible < visible.length;
+    const selectedVisible = pageEntries.filter(({ key }) => selected.has(key)).length;
+    selectAll.checked = selectedVisible === pageEntries.length;
+    selectAll.indeterminate = selectedVisible > 0 && selectedVisible < pageEntries.length;
     const itemCheckboxes: HTMLInputElement[] = [];
     header.createSpan({ text: 'Name' });
     header.createSpan({ text: 'Source or value' });
     header.createSpan({ text: 'Type' });
     header.createSpan({ text: 'Actions', cls: 'variable-links-management-center-actions-label' });
     selectAll.addEventListener('change', () => {
-      for (const { key } of visible) {
+      for (const { key } of pageEntries) {
         if (selectAll.checked) selected.add(key);
         else selected.delete(key);
       }
@@ -295,7 +451,7 @@ export class ManagementCenterView extends ItemView {
       updateStatus();
     });
 
-    for (const entry of visible) {
+    for (const entry of pageEntries) {
       const row = list.createDiv({ cls: 'variable-links-management-center-row' });
       const checkbox = row.createEl('input', {
         attr: { type: 'checkbox', 'aria-label': `Select ${entry.name}` },
@@ -305,13 +461,13 @@ export class ManagementCenterView extends ItemView {
       checkbox.addEventListener('click', (event) => {
         const anchorIndex = this.selectionAnchorKey === null
           ? -1
-          : visible.findIndex(({ key }) => key === this.selectionAnchorKey);
-        const clickedIndex = visible.findIndex(({ key }) => key === entry.key);
+          : pageEntries.findIndex(({ key }) => key === this.selectionAnchorKey);
+        const clickedIndex = pageEntries.findIndex(({ key }) => key === entry.key);
         if (event.shiftKey && anchorIndex >= 0 && clickedIndex >= 0) {
           const first = Math.min(anchorIndex, clickedIndex);
           const last = Math.max(anchorIndex, clickedIndex);
           for (let index = first; index <= last; index++) {
-            const rangeEntry = visible[index];
+            const rangeEntry = pageEntries[index];
             const rangeCheckbox = itemCheckboxes[index];
             if (!rangeEntry || !rangeCheckbox) continue;
             rangeCheckbox.checked = checkbox.checked;
@@ -343,6 +499,12 @@ export class ManagementCenterView extends ItemView {
       });
       if (entry.definition.managed) {
         badges.createSpan({ text: 'Managed', cls: 'variable-links-management-center-badge' });
+        const profileName = this.getProfileName(entry.definition.managed.profileId);
+        badges.createSpan({
+          text: profileName,
+          cls: 'variable-links-management-center-badge variable-links-management-center-profile-badge',
+          attr: { title: profileName },
+        });
       }
 
       const actions = row.createDiv({ cls: 'variable-links-management-center-actions' });
@@ -365,11 +527,18 @@ export class ManagementCenterView extends ItemView {
     }
   }
 
+  private resetPage(): void {
+    this.state.page = 1;
+    this.selectionAnchorKey = null;
+  }
+
   private filterAndSort(entries: readonly VariableEntry[]): VariableEntry[] {
     const terms = this.state.query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
     const visible = entries.filter(({ name, definition }) => {
       if (this.state.ownership === 'managed' && !definition.managed) return false;
       if (this.state.ownership === 'manual' && definition.managed) return false;
+      if (this.state.profileId !== 'all'
+        && definition.managed?.profileId !== this.state.profileId) return false;
       if (this.state.variableType !== 'all' && getVariableType(definition) !== this.state.variableType) {
         return false;
       }
@@ -380,6 +549,7 @@ export class ManagementCenterView extends ItemView {
         definition.value ?? '',
         definition.link ?? '',
         definition.managed?.profileId ?? '',
+        this.getProfileName(definition.managed?.profileId),
       ].join(' ').toLocaleLowerCase();
       return terms.every((term) => searchable.includes(term));
     });
@@ -397,8 +567,24 @@ export class ManagementCenterView extends ItemView {
         return compareText(this.getSourceText(left.definition), this.getSourceText(right.definition))
           || compareText(left.name, right.name);
       }
+      if (this.state.sort === 'property') {
+        return compareText(left.definition.property, right.definition.property)
+          || compareText(left.name, right.name);
+      }
+      if (this.state.sort === 'profile') {
+        return compareText(
+          this.getProfileName(left.definition.managed?.profileId),
+          this.getProfileName(right.definition.managed?.profileId),
+        ) || compareText(left.name, right.name);
+      }
       return compareText(left.name, right.name);
     });
+  }
+
+  private getProfileName(profileId: string | undefined): string {
+    if (!profileId) return 'Manual';
+    return this.plugin.registry?.autolinkProfiles.find(({ id }) => id === profileId)?.name
+      ?? `Missing profile: ${profileId}`;
   }
 
   private getSourceText(definition: VariableDefinition): string {
@@ -446,21 +632,25 @@ export class ManagementCenterView extends ItemView {
     const selectedEntries = this.sortEntries(entries.filter(({ key }) => selectedKeys.has(key)));
     if (!selectedEntries.length) return;
     const contexts = new Map<string, NamePatternContext>();
+    const profilePatterns = new Map<string, ProfilePatternRenameData>();
     for (const entry of selectedEntries) {
-      contexts.set(entry.key, await this.buildNamePatternContext(entry));
+      const context = await this.buildNamePatternContext(entry);
+      contexts.set(entry.key, context);
+      profilePatterns.set(entry.key, this.buildProfilePatternRenameData(entry, context));
     }
     new MassRenameVariablesModal(
       this.plugin,
       selectedEntries,
       new Set(entries.map(({ name }) => name)),
       contexts,
+      profilePatterns,
       (renames) => void this.renameVariables(renames),
     ).open();
   }
 
   private async buildNamePatternContext(entry: VariableEntry): Promise<NamePatternContext> {
     const definition = entry.definition;
-    const sourcePath = filePathFromLink(definition.file);
+    const sourcePath = definition.managed?.sourcePath || filePathFromLink(definition.file);
     const markdownPath = sourcePath && !/\.md$/i.test(sourcePath) ? `${sourcePath}.md` : sourcePath;
     const sourceFile = markdownPath ? this.app.vault.getFileByPath(markdownPath) : null;
     let properties: Readonly<Record<string, unknown>> | undefined;
@@ -486,6 +676,77 @@ export class ManagementCenterView extends ItemView {
       property: definition.property || undefined,
       value: resolved?.ok ? resolved.value : undefined,
       variable: entry.name,
+    };
+  }
+
+  private buildProfilePatternRenameData(
+    entry: VariableEntry,
+    context: NamePatternContext,
+  ): ProfilePatternRenameData {
+    const managed = entry.definition.managed;
+    const empty = (error: string): ProfilePatternRenameData => ({
+      pattern: '',
+      fixedName: '',
+      context: {},
+      counter: 0,
+      error,
+    });
+    if (!managed) return empty('Not managed by an Autolink profile');
+    const profile = this.plugin.registry?.autolinkProfiles.find(({ id }) => id === managed.profileId);
+    if (!profile) return empty('Managing Autolink profile is missing');
+    const sourcePath = normalizeVaultPath(managed.sourcePath);
+    const sourceFile = this.app.vault.getFileByPath(sourcePath);
+    if (!(sourceFile instanceof TFile)) return empty('Managed source note is missing');
+    if (!profileMatchesPath(profile, sourceFile.path)) {
+      return empty('Managed source note is outside the profile scope');
+    }
+    const matchedFiles = this.app.vault.getMarkdownFiles()
+      .filter((file) => profileMatchesPath(profile, file.path))
+      .sort((left, right) => left.path.localeCompare(right.path));
+    const sourceIndex = matchedFiles.findIndex((file) =>
+      normalizeVaultPath(file.path).toLocaleLowerCase() === sourcePath.toLocaleLowerCase()
+    );
+    if (sourceIndex === -1) {
+      return empty('Managed source note is not in the profile scan order');
+    }
+    let fixedName = '';
+    let valueProperty = profile.valueProperty;
+    if (profile.allowOverrides) {
+      const overrideProperties = profile.customOverridePropertyNames
+        ? profile.overrideProperties
+        : DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES;
+      const override = context.properties?.[overrideProperties.name];
+      if (override !== undefined && override !== null && override !== '') {
+        if (typeof override !== 'string') return empty(`${overrideProperties.name} must contain text`);
+        fixedName = override.trim();
+        if (!fixedName) return empty(`${overrideProperties.name} cannot be blank`);
+        if (/\s/u.test(fixedName)) return empty(`${overrideProperties.name} contains whitespace`);
+      }
+      const valuePropertyOverride = context.properties?.[overrideProperties.valueProperty];
+      if (valuePropertyOverride !== undefined
+        && valuePropertyOverride !== null
+        && valuePropertyOverride !== '') {
+        if (typeof valuePropertyOverride !== 'string') {
+          return empty(`${overrideProperties.valueProperty} must contain text`);
+        }
+        valueProperty = valuePropertyOverride.trim();
+        if (!valueProperty) return empty(`${overrideProperties.valueProperty} cannot be blank`);
+      }
+    }
+    return {
+      pattern: profile.namePattern || '{filename}',
+      fixedName,
+      context: {
+        filename: context.filename,
+        folder: context.folder,
+        path: context.path,
+        profile: profile.name,
+        properties: context.properties,
+        property: valueProperty || undefined,
+        value: valueProperty ? context.properties?.[valueProperty] : undefined,
+      },
+      counter: sourceIndex + 1,
+      error: '',
     };
   }
 
@@ -640,6 +901,7 @@ class MassRenameVariablesModal extends Modal {
     private readonly entries: readonly VariableEntry[],
     private readonly existingNames: ReadonlySet<string>,
     private readonly patternContexts: ReadonlyMap<string, NamePatternContext>,
+    private readonly profilePatterns: ReadonlyMap<string, ProfilePatternRenameData>,
     private readonly onConfirm: (renames: readonly VariableRename[]) => void,
   ) {
     super(plugin.app);
@@ -663,6 +925,7 @@ class MassRenameVariablesModal extends Modal {
     mode.createEl('option', { text: 'Add suffix', value: 'suffix' });
     mode.createEl('option', { text: 'Find and replace', value: 'replace' });
     mode.createEl('option', { text: 'Pattern', value: 'pattern' });
+    mode.createEl('option', { text: 'Reapply autolink profile pattern', value: 'profile-pattern' });
     const wordSetting = controls.createDiv({ cls: 'setting-item' });
     const wordName = wordSetting.createDiv({ text: 'Word selection', cls: 'setting-item-name' });
     addContextHelpButton(
@@ -751,7 +1014,7 @@ class MassRenameVariablesModal extends Modal {
       } else if (this.mode === 'replace') {
         addTextField('Find', this.find, (value) => { this.find = value; }, 'Text to replace');
         addTextField('Replace with', this.replacement, (value) => { this.replacement = value; }, 'Replacement text');
-      } else {
+      } else if (this.mode === 'pattern') {
         const patternSetting = fields.createDiv({ cls: 'setting-item' });
         const patternInfo = patternSetting.createDiv({ cls: 'setting-item-info' });
         const patternName = patternInfo.createDiv({
@@ -790,11 +1053,22 @@ class MassRenameVariablesModal extends Modal {
           this.startNumber = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 1;
           renderPreview();
         });
+      } else {
+        fields.createEl('p', {
+          text: 'Each managed variable link uses its own saved autolink profile pattern and its source note’s position in that profile’s complete scan order.',
+          cls: 'variable-links-hint-text',
+        });
       }
       renderPreview();
     };
+    const updateModeVisibility = (): void => {
+      const usesProfilePattern = this.mode === 'profile-pattern';
+      wordSetting.hidden = usesProfilePattern;
+      wordOptions.hidden = usesProfilePattern;
+    };
     mode.addEventListener('change', () => {
       this.mode = readMassRenameMode(mode.value);
+      updateModeVisibility();
       renderFields();
     });
     const renderWordOptions = (): void => {
@@ -879,6 +1153,7 @@ class MassRenameVariablesModal extends Modal {
       renderPreview();
     });
     renderWordOptions();
+    updateModeVisibility();
     renderFields();
   }
 
@@ -903,7 +1178,9 @@ class MassRenameVariablesModal extends Modal {
         ? this.getNewName(entry, includedIndex++)
         : { value: '', errors: [] };
       const processed = included
-        ? this.processResultWords(result.value)
+        ? this.mode === 'profile-pattern'
+          ? { value: result.value.trim().replace(/\s+/gu, '_'), errors: [] }
+          : this.processResultWords(result.value)
         : { value: '', errors: [] };
       return {
         entry,
@@ -1083,6 +1360,17 @@ class MassRenameVariablesModal extends Modal {
         errors: [],
       };
     }
+    if (this.mode === 'profile-pattern') {
+      const profilePattern = this.profilePatterns.get(entry.key);
+      if (!profilePattern) return { value: '', errors: ['Autolink profile pattern data is unavailable'] };
+      if (profilePattern.error) return { value: '', errors: [profilePattern.error] };
+      if (profilePattern.fixedName) return { value: profilePattern.fixedName, errors: [] };
+      return renderNamePattern(
+        profilePattern.pattern,
+        profilePattern.context,
+        profilePattern.counter,
+      );
+    }
     if (!this.pattern.trim()) return { value: '', errors: ['Enter a pattern'] };
     return renderNamePattern(
       this.pattern,
@@ -1227,8 +1515,13 @@ function readState(state: unknown): ManagementCenterState {
     activity: 'variables',
     query: typeof record.query === 'string' ? record.query : '',
     ownership: readOwnershipFilter(record.ownership),
+    profileId: typeof record.profileId === 'string' && record.profileId ? record.profileId : 'all',
     variableType: readVariableTypeFilter(record.variableType),
     sort: readVariableSort(record.sort),
+    page: typeof record.page === 'number' && Number.isInteger(record.page) && record.page > 0
+      ? record.page
+      : 1,
+    pageSize: readManagementPageSize(record.pageSize),
     selected: Array.isArray(record.selected)
       ? record.selected.filter((value): value is string => typeof value === 'string')
       : [],
@@ -1240,7 +1533,8 @@ function readOwnershipFilter(value: unknown): OwnershipFilter {
 }
 
 function readMassRenameMode(value: unknown): MassRenameMode {
-  return value === 'suffix' || value === 'replace' || value === 'pattern' ? value : 'prefix';
+  return value === 'suffix' || value === 'replace' || value === 'pattern'
+    || value === 'profile-pattern' ? value : 'prefix';
 }
 
 function readRenameWordSelection(value: unknown): RenameWordSelection {
@@ -1253,8 +1547,18 @@ function readVariableTypeFilter(value: unknown): VariableTypeFilter {
 
 function readVariableSort(value: unknown): VariableSort {
   return value === 'name-descending' || value === 'type' || value === 'source'
+    || value === 'property' || value === 'profile'
     ? value
     : 'name-ascending';
+}
+
+function readManagementPageSize(value: unknown): ManagementPageSize {
+  if (value === 'all') return 'all';
+  if (value === 20 || value === '20') return 20;
+  if (value === 50 || value === '50') return 50;
+  if (value === 100 || value === '100') return 100;
+  if (value === 250 || value === '250') return 250;
+  return 50;
 }
 
 function compareText(left: string, right: string): number {

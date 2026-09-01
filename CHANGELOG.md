@@ -36,6 +36,8 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added naming-pattern syntax help directly beside the Name pattern field in each Autolink profile.
 - Added combined Autolink previews for the current note, selected folders, and all enabled profiles, with deterministic profile precedence and out-of-scope reporting.
 - Added repeatable Autolink synchronization that safely updates profile-managed source and property fields while preserving manual changes, Card snapshots, and other custom settings.
+- Added Management Center sorting by property or Autolink profile, profile-specific filtering and selection, and previewed reapplication of each managed link’s profile naming pattern.
+- Added remembered Management Center page sizes of 20, 50, 100, 250, or all entries with page navigation.
 
 ### Changed
 
@@ -44,6 +46,7 @@ All notable user-visible changes to Variable Links are recorded here.
 ### Fixed
 
 - Replaced whitespace in filename-generated Autolink names with underscores so their tokens remain recognizable.
+- Kept file and note dragging responsive while the Management Center is open, including with larger registries.
 
 ## 1.2.6 - 2026-08-30
 

@@ -1487,7 +1487,26 @@
   justify-content: flex-end;
 }
 
+.variable-links-management-center-pagination {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: var(--input-height);
+  margin: 6px 0;
+}
+
+.variable-links-management-center-pagination select {
+  min-width: 68px;
+}
+
+.variable-links-management-center-page-status {
+  min-width: 78px;
+  text-align: center;
+}
+
 .variable-links-management-center-list {
+  contain: layout paint;
   overflow-x: auto;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
@@ -1502,6 +1521,11 @@
   min-width: 720px;
   min-height: 42px;
   padding: 6px 10px;
+}
+
+.variable-links-management-center-row {
+  content-visibility: auto;
+  contain-intrinsic-block-size: 42px;
 }
 
 .variable-links-management-center-list-header {
@@ -1549,6 +1573,12 @@
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   white-space: nowrap;
+}
+
+.variable-links-management-center-profile-badge {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .variable-links-management-center-actions,
