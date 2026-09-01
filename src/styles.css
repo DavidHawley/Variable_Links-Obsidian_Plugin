@@ -1636,6 +1636,17 @@
   width: min(720px, calc(100vw - 32px));
 }
 
+.variable-links-context-help-example {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
 .variable-links-setting-validation {
   display: none;
   width: 100%;

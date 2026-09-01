@@ -280,7 +280,19 @@ export class VariableLinksSettingTab extends PluginSettingTab {
           {
             name: 'Token prefix and suffix',
             desc: 'Choose the literal characters around Variable Link names, then keep the current format recognized or migrate existing tokens.',
-            render: (setting) => this.renderTokenSyntaxEditor(setting.controlEl),
+            render: (setting) => {
+              const disposeHelp = addContextHelpButton(
+                setting.nameEl,
+                this.variableLinksPlugin,
+                'Variable link token format',
+                (parent) => this.renderTokenSyntaxHelp(parent),
+              );
+              const disposeEditor = this.renderTokenSyntaxEditor(setting.controlEl);
+              return () => {
+                disposeHelp();
+                disposeEditor();
+              };
+            },
           },
         ],
       },
@@ -629,6 +641,27 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       format.removeEventListener('input', renderPreview);
       if (timer !== undefined) hostWindow?.clearInterval(timer);
     };
+  }
+
+  private renderTokenSyntaxHelp(parent: HTMLElement): void {
+    const active = getTokenSyntax(this.variableLinksPlugin.settings);
+    parent.createEl('p', {
+      text: 'The prefix and suffix are literal characters placed around every permanent variable link name.',
+    });
+    const example = parent.createDiv({ cls: 'variable-links-context-help-example' });
+    example.createSpan({ text: 'Current example:' });
+    example.createEl('code', { text: formatVariableToken('Variable', active) });
+    const choices = parent.createEl('ul');
+    for (const choice of [
+      'Use for new tokens only changes future tokens and keeps the previous format recognized in existing notes.',
+      'Migrate existing tokens updates verified cached tokens, then stops recognizing the old format.',
+      'Cancel leaves the active format and every note unchanged.',
+      'Stop recognizing removes an old format only after you have migrated or manually cleaned up its remaining tokens.',
+    ]) choices.createEl('li', { text: choice });
+    parent.createEl('p', {
+      text: 'Formats that overlap Markdown or Obsidian syntax may not render reliably. Review warnings and test a new format before migrating existing notes.',
+      cls: 'variable-links-hint-text',
+    });
   }
 
   private renderAutolinkProfiles(controlEl: HTMLElement): () => void {

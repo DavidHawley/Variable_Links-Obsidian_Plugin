@@ -54,6 +54,7 @@ import {
   normalizeVariableTextCase,
   VARIABLE_TEXT_CASE_OPTIONS,
 } from './textCase';
+import { addContextHelpButton } from './contextHelp';
 
 export const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
 
@@ -2197,7 +2198,13 @@ export class VariablePropertiesView extends ItemView {
     let hasFixedValue = definition.value !== undefined;
     let markFormDirty = (): void => {};
     const typeRow = parent.createDiv({ cls: 'variable-links-panel-field variable-links-panel-type-field' });
-    typeRow.createEl('label', { text: 'Variable type:' });
+    const typeLabel = typeRow.createEl('label', { text: 'Variable type:' });
+    addContextHelpButton(
+      typeLabel,
+      this.plugin,
+      'Variable type',
+      (helpParent) => this.renderVariableTypeHelp(helpParent),
+    );
     const typeInput = typeRow.createEl('select');
     typeInput.createEl('option', { text: 'Fixed value', value: 'fixed' });
     typeInput.createEl('option', { text: 'Property value', value: 'property' });
@@ -2222,6 +2229,10 @@ export class VariablePropertiesView extends ItemView {
       'Property link',
       formatPropertyLink(definition.file, definition.property),
       '[[People/John Smith]]#company',
+      {
+        title: 'Property link',
+        render: (helpParent) => this.renderPropertyLinkHelp(helpParent),
+      },
     );
     const propertyLinkRow = propertyLinkInput.parentElement;
     const fixedValueInput = this.addInput(
@@ -3001,12 +3012,47 @@ export class VariablePropertiesView extends ItemView {
     label: string,
     value: string,
     placeholder: string,
+    help?: { render: (parent: HTMLElement) => void; title: string },
   ): HTMLInputElement {
     const row = parent.createDiv({ cls: 'variable-links-panel-field' });
-    row.createEl('label', { text: `${label}:` });
+    const labelEl = row.createEl('label', { text: `${label}:` });
+    if (help) addContextHelpButton(labelEl, this.plugin, help.title, help.render);
     const input = row.createEl('input', { type: 'text', placeholder });
     input.value = value;
     return input;
+  }
+
+  private renderVariableTypeHelp(parent: HTMLElement): void {
+    const types = parent.createEl('ul');
+    types.createEl('li', {
+      text: 'Fixed value stores the displayed value directly in the variable links registry. Its optional file link controls where clicking the rendered value opens.',
+    });
+    types.createEl('li', {
+      text: 'Property value reads the displayed value from a note property and updates when that property changes. It requires a property link.',
+    });
+    parent.createEl('p', {
+      text: 'Changing an existing variable type requires confirmation. Inactive fixed-value or property-link settings are preserved in case you switch back later.',
+      cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderPropertyLinkHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'A property link identifies the note and frontmatter property that supply this variable link’s displayed value.',
+    });
+    const example = parent.createDiv({ cls: 'variable-links-context-help-example' });
+    example.createSpan({ text: 'Format:' });
+    example.createEl('code', { text: '[[folder/note]]#property' });
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Choose a suggestion or type a vault-relative note link followed by # and the property name.',
+    });
+    details.createEl('li', {
+      text: 'File link is separate: it controls the click destination and may point to a different note.',
+    });
+    details.createEl('li', {
+      text: 'After saving, double-click the linked value field to edit supported text, number, or true/false properties in the source note.',
+    });
   }
 
   private addTextarea(
