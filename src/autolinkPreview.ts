@@ -12,6 +12,7 @@ import { toFileLink } from './linkSyntax';
 import { createAutolinkCardSnapshot } from './cardPresets';
 import { getTokenSyntax } from './tokenSyntax';
 import { parseVariableTextCaseMarker } from './textCase';
+import { renderNamePattern } from './namePattern';
 
 interface AutolinkPreviewItem {
   file: TFile;
@@ -163,7 +164,8 @@ class AutolinkPreviewModal extends Modal {
   private buildItems(): AutolinkPreviewItem[] {
     const items = this.app.vault.getMarkdownFiles()
       .filter((file) => profileMatchesPath(this.profile, file.path))
-      .map((file) => this.buildItem(file));
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((file, index) => this.buildItem(file, index + 1));
     const names = new Map<string, number>();
     for (const item of items) names.set(item.name, (names.get(item.name) ?? 0) + 1);
     const tokenSyntax = getTokenSyntax(this.plugin.settings);
@@ -190,7 +192,7 @@ class AutolinkPreviewModal extends Modal {
     return items.sort((left, right) => left.file.path.localeCompare(right.file.path));
   }
 
-  private buildItem(file: TFile): AutolinkPreviewItem {
+  private buildItem(file: TFile, counter: number): AutolinkPreviewItem {
     const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
     const metadata = isRecord(frontmatter) ? frontmatter : {};
     const warnings: string[] = [];
@@ -231,8 +233,25 @@ class AutolinkPreviewModal extends Modal {
       this.profile.cardProperties,
       warnings,
     );
-    const name = explicitName || applyNamePattern(this.profile.namePattern, file);
     const valueProperty = explicitValueProperty || this.profile.valueProperty;
+    let name = explicitName;
+    if (!name) {
+      const rendered = renderNamePattern(
+        this.profile.namePattern || '{filename}',
+        {
+          filename: file.basename,
+          folder: file.parent?.name || undefined,
+          path: file.path.replace(/\.md$/i, ''),
+          profile: this.profile.name,
+          properties: metadata,
+          property: valueProperty || undefined,
+          value: valueProperty ? metadata[valueProperty] : undefined,
+        },
+        counter,
+      );
+      warnings.push(...rendered.errors);
+      name = rendered.value.trim().replace(/\s+/g, '_');
+    }
     if (!valueProperty) warnings.push('No value property is configured.');
     else if (!Object.prototype.hasOwnProperty.call(metadata, valueProperty)) {
       warnings.push(`Missing value property “${valueProperty}”.`);
@@ -395,16 +414,6 @@ function isSafeAddition(item: AutolinkPreviewItem): boolean {
 
 function isApplicableWithOverwrite(item: AutolinkPreviewItem): boolean {
   return item.warnings.length === (item.existingNameCollision ? 1 : 0);
-}
-
-function applyNamePattern(pattern: string, file: TFile): string {
-  const generatedName = !pattern.trim()
-    ? file.basename
-    : pattern
-    .replace(/\{file}/gi, file.basename)
-    .replace(/\{path}/gi, file.path.replace(/\.md$/i, ''))
-    .trim();
-  return generatedName.replace(/\s+/g, '_');
 }
 
 function normalizePreset(
