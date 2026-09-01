@@ -54,13 +54,32 @@ export function renderNamePattern(
       value += pattern.slice(index);
       break;
     }
-    const placeholder = unescapePlaceholder(pattern.slice(index + 1, closing).trim());
-    const resolved = resolvePlaceholder(placeholder, context);
+    const placeholder = pattern.slice(index + 1, closing).trim();
+    const resolved = resolvePlaceholderExpression(placeholder, context);
     if (resolved.error) errors.push(resolved.error);
     else value += resolved.value;
     index = closing + 1;
   }
   return { value, errors: [...new Set(errors)] };
+}
+
+function resolvePlaceholderExpression(
+  expression: string,
+  context: NamePatternContext,
+): { error?: string; value: string } {
+  const [rawPlaceholder, ...rawWrappers] = splitPipeline(expression);
+  if (!rawPlaceholder) return { value: '', error: 'A pattern placeholder cannot be empty.' };
+  const resolved = resolvePlaceholder(unescapePlaceholder(rawPlaceholder), context);
+  if (resolved.error) return resolved;
+  let value = resolved.value;
+  for (const rawWrapper of rawWrappers) {
+    const wrapper = unescapePlaceholder(rawWrapper).trim();
+    if (!wrapper) return { value: '', error: 'A pattern wrapper cannot be empty.' };
+    const transformed = applyPatternWrapper(value, wrapper);
+    if (transformed.error) return transformed;
+    value = transformed.value;
+  }
+  return { value };
 }
 
 function resolvePlaceholder(
@@ -97,6 +116,63 @@ function resolvePlaceholder(
   return { value: formatPatternValue(resolved) };
 }
 
+function applyPatternWrapper(value: string, wrapper: string): { error?: string; value: string } {
+  const match = /^(word|char)\((.*)\)$/iu.exec(wrapper);
+  if (!match) return { value: '', error: `Unknown pattern wrapper “${wrapper}”.` };
+  const name = match[1]?.toLocaleLowerCase() ?? '';
+  const indexes = parseWrapperIndexes(match[2] ?? '', name);
+  if (indexes.error) return { value: '', error: indexes.error };
+  const items = name === 'word'
+    ? value.split(/[\s,_]+/u).filter(Boolean)
+    : Array.from(value);
+  const unavailable = indexes.value.find((index) => index > items.length);
+  if (unavailable !== undefined) {
+    return {
+      value: '',
+      error: `${capitalize(name)} position ${unavailable} is unavailable; this result has ${items.length} ${name}${items.length === 1 ? '' : 's'}.`,
+    };
+  }
+  const selected = indexes.value.map((index) => items[index - 1] ?? '');
+  return { value: selected.join(name === 'word' ? '_' : '') };
+}
+
+function parseWrapperIndexes(
+  value: string,
+  name: string,
+): { error?: string; value: number[] } {
+  const positions = value.split(',').map((position) => position.trim());
+  if (!positions.length || positions.some((position) => !/^\d+$/u.test(position))) {
+    return {
+      value: [],
+      error: `${capitalize(name)} wrappers require 1-based positions separated by commas.`,
+    };
+  }
+  const indexes = positions.map(Number);
+  if (indexes.some((index) => index < 1)) {
+    return { value: [], error: `${capitalize(name)} positions must start at 1.` };
+  }
+  return { value: indexes };
+}
+
+function splitPipeline(value: string): string[] {
+  const parts: string[] = [];
+  let part = '';
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index] ?? '';
+    if (character === '\\' && index + 1 < value.length) {
+      part += character + (value[index + 1] ?? '');
+      index++;
+    } else if (character === '|') {
+      parts.push(part.trim());
+      part = '';
+    } else {
+      part += character;
+    }
+  }
+  parts.push(part.trim());
+  return parts;
+}
+
 function findClosingBrace(pattern: string, start: number): number {
   for (let index = start; index < pattern.length; index++) {
     if (pattern[index] === '\\') {
@@ -109,7 +185,11 @@ function findClosingBrace(pattern: string, start: number): number {
 }
 
 function unescapePlaceholder(value: string): string {
-  return value.replace(/\\([\\#{}])/g, '$1');
+  return value.replace(/\\([\\#{}|])/g, '$1');
+}
+
+function capitalize(value: string): string {
+  return value ? `${value[0]?.toLocaleUpperCase() ?? ''}${value.slice(1)}` : value;
 }
 
 function formatPatternValue(value: unknown): string {

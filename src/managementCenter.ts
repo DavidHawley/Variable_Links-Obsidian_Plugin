@@ -1086,8 +1086,11 @@ class NamePatternHelpModal extends Modal {
       '{value} → current resolved value',
       '{property} → linked property name',
       '{property:Status} → Status value from the source note',
+      '{property:FullName|word(2,1)} → selected words joined with underscores',
+      '{property:FullName|char(1)} → selected characters',
+      '{property:FullName|word(2)|char(1)} → wrappers run from left to right',
       '{profile} → managing Autolink profile name',
-      '\\#, \\{, and \\} → literal characters',
+      '\\#, \\{, \\}, and \\| → literal characters',
     ]) examples.createEl('li', { text: example });
     this.contentEl.createEl('p', {
       text: 'Example: {filename}_##_text',
