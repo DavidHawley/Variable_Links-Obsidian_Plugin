@@ -4,6 +4,7 @@ import {
   type VariableAppearance,
 } from './appearance';
 import type { CardConfig } from './card';
+import { updateCardPropertyReferences } from './cardPresets';
 import {
   normalizeAutolinkProfiles,
   normalizeManagedAutolinkEntry,
@@ -102,6 +103,13 @@ export interface ManagedAutolinkApplyResult {
   added: number;
   updated: number;
   overwritten: number;
+}
+
+export interface ManagedAutolinkCardPropertyUpdate {
+  name: string;
+  profileId: string;
+  sourcePath: string;
+  propertyReferences: string[];
 }
 
 export interface VariableRename {
@@ -581,6 +589,72 @@ export class Registry {
       new Notice('Autolink changes were saved, but some derived views could not be refreshed. Reload Obsidian.');
     }
     return { added, updated, overwritten };
+  }
+
+  async updateManagedAutolinkCardProperties(
+    updates: readonly ManagedAutolinkCardPropertyUpdate[],
+  ): Promise<number> {
+    if (!updates.length) return 0;
+    if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
+    const normalized = updates.map((update) => ({
+      name: update.name.trim(),
+      profileId: update.profileId.trim(),
+      sourcePath: update.sourcePath.trim(),
+      propertyReferences: [...new Set(
+        update.propertyReferences.map((value) => value.trim()).filter(Boolean),
+      )],
+    }));
+    const names = new Set<string>();
+    for (const update of normalized) {
+      if (!update.name) throw new Error('Every Card update requires a Variable Link name.');
+      if (!update.profileId || !update.sourcePath) {
+        throw new Error(`“${update.name}” is missing its Autolink ownership information.`);
+      }
+      if (names.has(update.name)) throw new Error(`“${update.name}” occurs more than once.`);
+      names.add(update.name);
+    }
+
+    let updated = 0;
+    await this.mutateRegistryLinks((links) => {
+      for (const update of normalized) {
+        const current = links[update.name];
+        if (!this.isRecord(current)) {
+          throw new Error(`“${update.name}” no longer exists. No Card properties were updated.`);
+        }
+        const managed = normalizeManagedAutolinkEntry(current.managed);
+        if (!managed
+          || managed.profileId !== update.profileId
+          || !this.sameFilePath(managed.sourcePath, update.sourcePath)) {
+          throw new Error(`“${update.name}” is no longer managed by the previewed Autolink profile.`);
+        }
+        if (!this.toCardConfig(current.card)) {
+          throw new Error(`“${update.name}” no longer has an Info Card.`);
+        }
+      }
+      for (const update of normalized) {
+        const current = links[update.name];
+        if (!this.isRecord(current)) continue;
+        const card = this.toCardConfig(current.card);
+        if (!card) continue;
+        links[update.name] = {
+          ...current,
+          card: updateCardPropertyReferences(card, update.propertyReferences),
+        };
+        updated++;
+      }
+    });
+    try {
+      await this.load();
+    } catch {
+      new Notice('Card properties were saved, but the registry view could not be refreshed. Reload Obsidian.');
+      return updated;
+    }
+    try {
+      await this.plugin.refreshAfterRegistryReload();
+    } catch {
+      new Notice('Card properties were saved, but some derived views could not be refreshed. Reload Obsidian.');
+    }
+    return updated;
   }
 
   /** Persist a mapping. A rename keeps the GUID and updates verified token references. */

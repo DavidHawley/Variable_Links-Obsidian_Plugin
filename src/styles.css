@@ -3,6 +3,20 @@
   cursor: pointer;
 }
 
+:where([class^="variable-links-"], [class*=" variable-links-"])
+  input[type="checkbox"]:disabled,
+input[type="checkbox"]:disabled:where([class^="variable-links-"], [class*=" variable-links-"]),
+:where([class^="variable-links-"], [class*=" variable-links-"])
+  label:hover input[type="checkbox"]:disabled {
+  opacity: 0.42;
+  filter: grayscale(1) brightness(0.7);
+  cursor: not-allowed;
+  pointer-events: none;
+  transform: none;
+  box-shadow: none;
+  transition: none;
+}
+
 .variable-links-token.is-underlined {
   border-bottom: 1px dashed color-mix(
     in srgb,
@@ -2001,6 +2015,23 @@ summary.variable-links-context-help-label .variable-links-context-help-button {
   vertical-align: top;
 }
 
+.variable-links-autolink-preview-card-column,
+.variable-links-autolink-preview-status-column {
+  min-width: 300px;
+}
+
+.variable-links-autolink-preview-card-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.variable-links-autolink-preview-card-preset,
+.variable-links-autolink-preview-card-summary .variable-links-panel-appearance-pill {
+  white-space: nowrap;
+}
+
 @media (max-width: 520px) {
   .variable-links-autolink-profile-field {
     grid-template-columns: 1fr;
@@ -2016,36 +2047,32 @@ summary.variable-links-context-help-label .variable-links-context-help-button {
   }
 }
 
-.variable-links-autolink-preview-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.variable-links-autolink-preview-option-table {
+  width: 100%;
   margin-top: 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-collapse: collapse;
+  table-layout: fixed;
 }
 
-.variable-links-autolink-overwrite-control,
-.variable-links-autolink-preview-buttons {
+.variable-links-autolink-preview-option-table td {
+  width: 50%;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  vertical-align: top;
+}
+
+.variable-links-autolink-overwrite-control {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.variable-links-autolink-overwrite-control {
-  flex: 1 1 auto;
-}
-
 .variable-links-autolink-preview-buttons {
-  flex: 0 0 auto;
-}
-
-@media (max-width: 700px) {
-  .variable-links-autolink-preview-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .variable-links-autolink-preview-buttons {
-    flex-wrap: wrap;
-  }
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  overflow-x: auto;
 }

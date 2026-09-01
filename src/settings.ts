@@ -69,6 +69,8 @@ const VARIABLE_LINKS_SETTINGS_SECTIONS: ReadonlyArray<{
   { id: 'autolink', label: 'Autolink' },
 ];
 
+const DATE_TIME_HELP_PREVIEW_FORMAT = "[It's] WW [the date is:] YYYY-MM-DD [the time is:] hh:mm:ss";
+
 export const DEFAULT_SETTINGS: VariableLinksSettings = {
   registryFilePath: '',
   tokenPrefix: DEFAULT_TOKEN_SYNTAX.prefix,
@@ -667,9 +669,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       cls: 'variable-links-setting-validation variable-links-hint-text',
       attr: { 'aria-live': 'polite' },
     });
-    let input: HTMLInputElement;
     setting.addText((component) => {
-      input = component.inputEl;
       component
         .setValue(this.variableLinksPlugin.settings[key])
         .setPlaceholder(placeholder)
@@ -692,12 +692,12 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       setting.nameEl,
       this.variableLinksPlugin,
       'Date and time format',
-      (parent) => this.renderDateTimeFormatHelp(parent, input.value),
+      (parent) => this.renderDateTimeFormatHelp(parent),
     );
     return disposeHelp;
   }
 
-  private renderDateTimeFormatHelp(parent: HTMLElement, initialFormat: string): () => void {
+  private renderDateTimeFormatHelp(parent: HTMLElement): () => void {
     parent.createEl('p', {
       text: 'Date, time, and datetime use the same case-sensitive format language. Their settings only provide different defaults.',
     });
@@ -707,7 +707,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     const format = previewLabel.createEl('input', {
       attr: {
         type: 'text',
-        value: initialFormat,
+        value: DATE_TIME_HELP_PREVIEW_FORMAT,
         spellcheck: 'false',
       },
     });

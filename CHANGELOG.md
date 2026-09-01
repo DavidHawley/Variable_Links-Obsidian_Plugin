@@ -2,6 +2,16 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
+## 1.3.1 - Unreleased
+
+### Changed
+
+- Added an opt-in Autolink action that updates property references in existing Info Cards without renaming Variable Links or replacing their Card layouts and other settings.
+- Reorganized Autolink preview actions into clearer update choices, with checkbox options above a single button row.
+- Improved Autolink preview readability with inline property pills and wider Card and Status columns.
+- Made disabled Variable Links checkboxes visibly muted and non-interactive throughout the plugin.
+- Added a more complete default example to the date and time format help preview.
+
 ## 1.3.0 - 2026-09-01
 
 ### Added

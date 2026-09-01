@@ -1,6 +1,7 @@
 import { App, Modal, Notice, TFile } from 'obsidian';
 import type VariableLinksPlugin from './main';
 import type Registry from './registry';
+import type { ManagedAutolinkCardPropertyUpdate } from './registry';
 import {
   DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES,
   normalizeVaultPath,
@@ -10,7 +11,10 @@ import {
   type AutolinkProfile,
 } from './autolink';
 import { filePathFromLink, toFileLink } from './linkSyntax';
-import { createAutolinkCardSnapshot } from './cardPresets';
+import {
+  createAutolinkCardSnapshot,
+  getCardPropertyReferences,
+} from './cardPresets';
 import { getTokenSyntax } from './tokenSyntax';
 import { parseVariableTextCaseMarker } from './textCase';
 import { renderNamePattern } from './namePattern';
@@ -121,7 +125,9 @@ class CombinedAutolinkPreviewModal extends Modal {
     const table = this.contentEl.createEl('table', { cls: 'variable-links-autolink-preview-table' });
     const header = table.createEl('thead').createEl('tr');
     for (const label of ['Note', 'Profile', 'Variable name', 'Value property', 'Card', 'Overrides', 'Status']) {
-      header.createEl('th', { text: label });
+      const cell = header.createEl('th', { text: label });
+      if (label === 'Card') cell.addClass('variable-links-autolink-preview-card-column');
+      if (label === 'Status') cell.addClass('variable-links-autolink-preview-status-column');
     }
     const body = table.createEl('tbody');
     for (const item of items) {
@@ -130,11 +136,13 @@ class CombinedAutolinkPreviewModal extends Modal {
       row.createEl('td', { text: item.profile.name });
       row.createEl('td', { text: item.name });
       row.createEl('td', { text: item.valueProperty || 'Missing' });
-      row.createEl('td', { text: formatCardSummary(item) });
+      renderCardSummary(row.createEl('td', {
+        cls: 'variable-links-autolink-preview-card-column',
+      }), item);
       row.createEl('td', { text: item.overrideSummary });
       row.createEl('td', {
         text: formatPreviewStatus(item),
-        cls: item.warnings.length ? 'mod-warning' : '',
+        cls: `variable-links-autolink-preview-status-column${item.warnings.length ? ' mod-warning' : ''}`,
       });
     }
   }
@@ -163,9 +171,13 @@ class AutolinkPreviewModal extends Modal {
     ).length;
     const allApplicableItems = items.filter(isApplicableWithOverwrite);
     const overwriteCount = allApplicableItems.filter((item) => item.existingNameCollision).length;
+    const cardPropertyUpdates = buildCardPropertyUpdates(this.registry, items);
     const savedProfile = this.registry.autolinkProfiles.find(({ id }) => id === this.profile.id);
     const profileIsSaved = savedProfile !== undefined && profilesEqual(savedProfile, this.profile);
     const canApply = this.profile.enabled && profileIsSaved && safeItems.length > 0;
+    const canUpdateCardProperties = this.profile.enabled
+      && profileIsSaved
+      && cardPropertyUpdates.length > 0;
     this.contentEl.createEl('p', {
       text: items.length
         ? `${items.length} matching note${items.length === 1 ? '' : 's'}; ${additionCount} safe addition${additionCount === 1 ? '' : 's'}, ${updateCount} safe update${updateCount === 1 ? '' : 's'}, ${unchangedCount} up to date, and ${overwriteCount} overwrite candidate${overwriteCount === 1 ? '' : 's'}. Nothing changes until you confirm an action.`
@@ -183,7 +195,7 @@ class AutolinkPreviewModal extends Modal {
       });
     } else if (safeItems.length) {
       this.contentEl.createEl('p', {
-        text: 'New additions receive the previewed card snapshot. Safe updates change only fields that remain profile-managed; customized cards and other settings are preserved.',
+        text: 'New additions receive the previewed card snapshot. Safe updates change only fields that remain profile-managed; customized cards and other settings are preserved unless you separately choose to update existing card property lists.',
         cls: 'variable-links-hint-text',
       });
     }
@@ -191,7 +203,9 @@ class AutolinkPreviewModal extends Modal {
       const table = this.contentEl.createEl('table', { cls: 'variable-links-autolink-preview-table' });
       const header = table.createEl('thead').createEl('tr');
       for (const label of ['Note', 'Variable name', 'Value property', 'Card', 'Overrides', 'Status']) {
-        header.createEl('th', { text: label });
+        const cell = header.createEl('th', { text: label });
+        if (label === 'Card') cell.addClass('variable-links-autolink-preview-card-column');
+        if (label === 'Status') cell.addClass('variable-links-autolink-preview-status-column');
       }
       const body = table.createEl('tbody');
       for (const item of items) {
@@ -199,11 +213,13 @@ class AutolinkPreviewModal extends Modal {
         row.createEl('td', { text: item.file.path });
         row.createEl('td', { text: item.name });
         row.createEl('td', { text: item.valueProperty || 'Missing' });
-        row.createEl('td', { text: formatCardSummary(item) });
+        renderCardSummary(row.createEl('td', {
+          cls: 'variable-links-autolink-preview-card-column',
+        }), item);
         row.createEl('td', { text: item.overrideSummary });
         row.createEl('td', {
           text: formatPreviewStatus(item),
-          cls: item.warnings.length ? 'mod-warning' : '',
+          cls: `variable-links-autolink-preview-status-column${item.warnings.length ? ' mod-warning' : ''}`,
         });
       }
     }
@@ -213,8 +229,14 @@ class AutolinkPreviewModal extends Modal {
       'Managed links outside this profile scope',
       outOfScope.map(({ name, path }) => `${name} — ${path}`),
     );
-    const actions = this.contentEl.createDiv({ cls: 'variable-links-autolink-preview-actions' });
-    const overwriteLabel = actions.createEl('label', {
+    const actionTable = this.contentEl.createEl('table', {
+      cls: 'variable-links-autolink-preview-option-table',
+      attr: { 'aria-label': 'Autolink update options' },
+    });
+    const actionBody = actionTable.createEl('tbody');
+    const optionRow = actionBody.createEl('tr');
+    const overwriteOption = optionRow.createEl('td');
+    const overwriteLabel = overwriteOption.createEl('label', {
       cls: 'variable-links-autolink-overwrite-control',
     });
     const allowOverwrite = overwriteLabel.createEl('input', { type: 'checkbox' });
@@ -222,10 +244,26 @@ class AutolinkPreviewModal extends Modal {
       text: 'Allow to overwrite existing Variable Links with the same name.',
       cls: 'variable-links-hint-text',
     });
-    const buttons = actions.createDiv({ cls: 'variable-links-autolink-preview-buttons' });
+    const cardPropertiesOption = optionRow.createEl('td');
+    const cardPropertiesLabel = cardPropertiesOption.createEl('label', {
+      cls: 'variable-links-autolink-overwrite-control',
+    });
+    const updateCardProperties = cardPropertiesLabel.createEl('input', { type: 'checkbox' });
+    updateCardProperties.disabled = !cardPropertyUpdates.length;
+    cardPropertiesLabel.createSpan({
+      text: cardPropertyUpdates.length
+        ? `Update existing card property lists without renaming (${cardPropertyUpdates.length}).`
+        : 'No existing card property lists need updating.',
+      cls: 'variable-links-hint-text',
+    });
+    const buttons = this.contentEl.createDiv({ cls: 'variable-links-autolink-preview-buttons' });
     const applyAll = buttons.createEl('button', {
       text: 'Apply all',
       cls: 'mod-warning',
+      attr: { type: 'button' },
+    });
+    const updateCards = buttons.createEl('button', {
+      text: 'Update card properties',
       attr: { type: 'button' },
     });
     const applySafe = buttons.createEl('button', {
@@ -235,11 +273,15 @@ class AutolinkPreviewModal extends Modal {
     });
     applyAll.disabled = true;
     applySafe.disabled = !canApply;
+    updateCards.disabled = true;
     allowOverwrite.addEventListener('change', () => {
       applyAll.disabled = !allowOverwrite.checked
         || !this.profile.enabled
         || !profileIsSaved
         || allApplicableItems.length === 0;
+    });
+    updateCardProperties.addEventListener('change', () => {
+      updateCards.disabled = !updateCardProperties.checked || !canUpdateCardProperties;
     });
     applyAll.addEventListener('click', () => {
       if (!allowOverwrite.checked) return;
@@ -263,6 +305,18 @@ class AutolinkPreviewModal extends Modal {
         safeItems,
         () => this.buildItems().filter(isSafeChange),
         false,
+        () => this.close(),
+      ).open();
+    });
+    updateCards.addEventListener('click', () => {
+      if (!updateCardProperties.checked || !canUpdateCardProperties) return;
+      new ConfirmAutolinkCardPropertiesModal(
+        this.app,
+        this.plugin,
+        this.registry,
+        this.profile,
+        cardPropertyUpdates,
+        () => buildCardPropertyUpdates(this.registry, this.buildItems()),
         () => this.close(),
       ).open();
     });
@@ -387,6 +441,76 @@ class ConfirmAutolinkChangesModal extends Modal {
   }
 }
 
+class ConfirmAutolinkCardPropertiesModal extends Modal {
+  private applying = false;
+
+  constructor(
+    app: App,
+    private readonly plugin: VariableLinksPlugin,
+    private readonly registry: Registry,
+    private readonly profile: AutolinkProfile,
+    private readonly updates: readonly ManagedAutolinkCardPropertyUpdate[],
+    private readonly rebuildUpdates: () => ManagedAutolinkCardPropertyUpdate[],
+    private readonly onApplied: () => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    this.contentEl.createEl('h3', { text: 'Update existing card property lists?' });
+    this.contentEl.createEl('p', {
+      text: `Update ${this.updates.length} existing Info Card${this.updates.length === 1 ? '' : 's'} from “${this.profile.name}”?`,
+    });
+    this.contentEl.createEl('p', {
+      text: 'Variable names, value mappings, file links, non-property card content, layout settings, appearance, and other settings stay unchanged. Only property items in cards that already exist are synchronized.',
+      cls: 'variable-links-hint-text',
+    });
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    const cancel = actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } });
+    const apply = actions.createEl('button', {
+      text: 'Update card properties',
+      cls: 'mod-cta',
+      attr: { type: 'button' },
+    });
+    cancel.addEventListener('click', () => this.close());
+    apply.addEventListener('click', () => {
+      if (this.applying) return;
+      this.applying = true;
+      cancel.disabled = true;
+      apply.disabled = true;
+      apply.textContent = 'Updating…';
+      void this.apply().catch((error: unknown) => {
+        this.applying = false;
+        cancel.disabled = false;
+        apply.disabled = false;
+        apply.textContent = 'Update card properties';
+        new Notice(`Variable Links: could not update Card properties: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    });
+  }
+
+  onClose(): void {
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+  }
+
+  private async apply(): Promise<void> {
+    const currentProfile = this.registry.autolinkProfiles.find(({ id }) => id === this.profile.id);
+    if (!currentProfile || !currentProfile.enabled || !profilesEqual(currentProfile, this.profile)) {
+      throw new Error('the saved profile changed after the preview. Preview it again.');
+    }
+    const currentUpdates = this.rebuildUpdates();
+    if (!cardPropertyUpdatesEqual(this.updates, currentUpdates)) {
+      throw new Error('the matching Cards changed after the preview. Preview them again.');
+    }
+    const updated = await this.registry.updateManagedAutolinkCardProperties(currentUpdates);
+    new Notice(`Variable Links: updated the property list for ${updated} existing Info Card${updated === 1 ? '' : 's'} without renaming Variable Links.`);
+    this.close();
+    this.onApplied();
+  }
+}
+
 function profilesEqual(left: AutolinkProfile, right: AutolinkProfile): boolean {
   const normalizedLeft = normalizeAutolinkProfiles([left])[0];
   const normalizedRight = normalizeAutolinkProfiles([right])[0];
@@ -414,6 +538,42 @@ function previewItemsEqual(
   });
   return left.length === right.length
     && left.every((item, index) => summarize(item) === summarize(right[index]));
+}
+
+function buildCardPropertyUpdates(
+  registry: Registry,
+  items: readonly AutolinkPreviewItem[],
+): ManagedAutolinkCardPropertyUpdate[] {
+  const updates: ManagedAutolinkCardPropertyUpdate[] = [];
+  const names = new Set<string>();
+  for (const item of items) {
+    const name = item.existingManagedName;
+    if (!name || names.has(name)) continue;
+    const definition = registry.getVariable(name);
+    const managed = definition?.managed;
+    if (!definition?.card
+      || !managed
+      || managed.profileId !== item.profile.id
+      || !sameVaultPath(managed.sourcePath, item.file.path)) continue;
+    const currentReferences = getCardPropertyReferences(definition.card);
+    const desiredReferences = [...new Set(item.cardProperties.map((value) => value.trim()).filter(Boolean))];
+    if (JSON.stringify(currentReferences) === JSON.stringify(desiredReferences)) continue;
+    names.add(name);
+    updates.push({
+      name,
+      profileId: item.profile.id,
+      sourcePath: item.file.path,
+      propertyReferences: desiredReferences,
+    });
+  }
+  return updates;
+}
+
+function cardPropertyUpdatesEqual(
+  left: readonly ManagedAutolinkCardPropertyUpdate[],
+  right: readonly ManagedAutolinkCardPropertyUpdate[],
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function isSafeChange(item: AutolinkPreviewItem): boolean {
@@ -696,10 +856,27 @@ function sameVaultPath(left: string, right: string): boolean {
   return normalizeVaultPath(left).toLocaleLowerCase() === normalizeVaultPath(right).toLocaleLowerCase();
 }
 
-function formatCardSummary(item: AutolinkPreviewItem): string {
-  return item.cardPreset === 'none'
-    ? 'None'
-    : `${item.cardPreset} · ${item.cardProperties.length ? item.cardProperties.join(', ') : 'No properties'}`;
+function renderCardSummary(parent: HTMLElement, item: AutolinkPreviewItem): void {
+  if (item.cardPreset === 'none') {
+    parent.setText('None');
+    return;
+  }
+  const summary = parent.createDiv({ cls: 'variable-links-autolink-preview-card-summary' });
+  summary.createSpan({
+    text: `${item.cardPreset} ·`,
+    cls: 'variable-links-autolink-preview-card-preset',
+  });
+  if (!item.cardProperties.length) {
+    summary.createSpan({ text: 'No properties', cls: 'variable-links-hint-text' });
+    return;
+  }
+  for (const property of item.cardProperties) {
+    summary.createSpan({
+      text: property,
+      cls: 'variable-links-panel-appearance-pill',
+      attr: { title: property },
+    });
+  }
 }
 
 function formatPreviewStatus(item: AutolinkPreviewItem): string {
