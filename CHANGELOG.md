@@ -33,6 +33,8 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added contextual help for variable-appearance inheritance and global or per-card hover behavior.
 - Added contextual help throughout the Card Designer for layouts, card and block styling, Stack containers, property tables, and property display controls.
 - Completed the contextual-help review with guidance for Autolink safety, text-case overrides, and mass-rename word processing.
+- Added naming-pattern syntax help directly beside the Name pattern field in each Autolink profile.
+- Added combined Autolink previews for the current note, selected folders, and all enabled profiles, with deterministic profile precedence and out-of-scope reporting.
 
 ### Changed
 

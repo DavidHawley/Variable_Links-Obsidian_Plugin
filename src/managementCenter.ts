@@ -19,6 +19,7 @@ import { parseVariableTextCaseMarker } from './textCase';
 import { filePathFromLink } from './linkSyntax';
 import { renderNamePattern, type NamePatternContext } from './namePattern';
 import { addContextHelpButton } from './contextHelp';
+import { renderNamePatternHelp } from './namePatternHelp';
 
 export const VIEW_TYPE_MANAGEMENT_CENTER = 'variable-links-management-center';
 
@@ -757,13 +758,12 @@ class MassRenameVariablesModal extends Modal {
           cls: 'setting-item-name variable-links-management-center-pattern-name',
         });
         patternName.createSpan({ text: 'Pattern' });
-        const help = patternName.createEl('button', {
-          cls: 'clickable-icon',
-          attr: { type: 'button', 'aria-label': 'Pattern syntax help' },
-        });
-        help.setAttribute('title', 'Pattern syntax help');
-        setIcon(help, 'circle-help');
-        help.addEventListener('click', () => new NamePatternHelpModal(this.plugin).open());
+        addContextHelpButton(
+          patternName,
+          this.plugin,
+          'Naming pattern syntax',
+          renderNamePatternHelp,
+        );
         patternInfo.createDiv({
           text: 'Numbering follows the current list sort order, including selected rows hidden by filters.',
           cls: 'setting-item-description',
@@ -1089,52 +1089,6 @@ class MassRenameVariablesModal extends Modal {
       this.patternContexts.get(entry.key) ?? { variable: entry.name },
       this.startNumber + index,
     );
-  }
-}
-
-class NamePatternHelpModal extends Modal {
-  constructor(private readonly plugin: VariableLinksPlugin) {
-    super(plugin.app);
-  }
-
-  onOpen(): void {
-    this.plugin.trackDialog(this);
-    this.contentEl.createEl('h3', { text: 'Rename pattern syntax' });
-    this.contentEl.createEl('p', {
-      text: 'A run of number signs inserts the row counter. Its length controls zero padding.',
-    });
-    const examples = this.contentEl.createEl('ul');
-    for (const example of [
-      '# → 1, 2, 3',
-      '## → 01, 02, 03',
-      '### → 001, 002, 003',
-      '{filename} or {file} → source filename',
-      '{path} → source path without .md',
-      '{folder} → source folder',
-      '{variable} → current Variable Link name',
-      '{value} → current resolved value',
-      '{property} → linked property name',
-      '{property:Status} → Status value from the source note',
-      '{property:FullName|word(2,1)} → selected words joined with underscores',
-      '{property:FullName|char(1)} → selected characters',
-      '{property:FullName|word(2)|char(1)} → wrappers run from left to right',
-      '{property:FullName|word(-1)} → negative positions count from the end',
-      '{property:Status|replace(Draft,Final)} → replace every literal match',
-      '{profile} → managing Autolink profile name',
-      '\\#, \\{, \\}, \\|, and \\, → literal characters',
-    ]) examples.createEl('li', { text: example });
-    this.contentEl.createEl('p', {
-      text: 'Example: {filename}_##_text',
-      cls: 'variable-links-hint-text',
-    });
-    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
-    actions.createEl('button', { text: 'Close', attr: { type: 'button' } })
-      .addEventListener('click', () => this.close());
-  }
-
-  onClose(): void {
-    this.plugin.releaseDialog(this);
-    this.contentEl.empty();
   }
 }
 

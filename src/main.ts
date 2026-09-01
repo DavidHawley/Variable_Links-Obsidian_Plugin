@@ -6,6 +6,7 @@ import {
   Notice,
   Plugin,
   TFile,
+  TFolder,
   WorkspaceLeaf,
 } from 'obsidian';
 import { Prec } from '@codemirror/state';
@@ -183,6 +184,35 @@ export default class VariableLinksPlugin extends Plugin {
       this.addRibbonIcon('database', 'Open variable links management center', () => {
         void this.openManagementCenter();
       });
+      this.addCommand({
+        id: 'preview-autolinks-current-file',
+        name: 'Preview autolinks for current file',
+        checkCallback: (checking) => {
+          const file = this.app.workspace.getActiveFile();
+          if (!file || file.extension.toLocaleLowerCase() !== 'md') return false;
+          if (!checking) void this.openCombinedAutolinkPreview({ type: 'file', path: file.path });
+          return true;
+        },
+      });
+      this.addCommand({
+        id: 'preview-all-enabled-autolinks',
+        name: 'Preview all enabled autolink profiles',
+        checkCallback: (checking) => {
+          if (!this.registry?.autolinkProfiles.some(({ enabled }) => enabled)) return false;
+          if (!checking) void this.openCombinedAutolinkPreview({ type: 'all' });
+          return true;
+        },
+      });
+      this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+        if (!(file instanceof TFolder)) return;
+        menu.addItem((item) => item
+          .setTitle('Preview autolinks for folder')
+          .setIcon('scan-search')
+          .onClick(() => void this.openCombinedAutolinkPreview({
+            type: 'folder',
+            path: file.path,
+          })));
+      }));
 
       this.registerVariableContextMenu();
       this.caretTracker = new CaretTracker(this.app, this, this.registry, this.resolver);
@@ -500,6 +530,20 @@ export default class VariableLinksPlugin extends Plugin {
       });
     }
     await this.app.workspace.revealLeaf(leaf);
+  }
+
+  async openCombinedAutolinkPreview(
+    scope: { type: 'all' } | { type: 'file' | 'folder'; path: string },
+  ): Promise<void> {
+    if (!this.active || !this.registry) return;
+    const previewModule = await import('./autolinkPreview');
+    if (!this.active || !this.registry) return;
+    previewModule.openCombinedAutolinkPreview(
+      this.app,
+      this,
+      this.registry,
+      scope,
+    );
   }
 
   async refreshManagementCenterViews(): Promise<void> {

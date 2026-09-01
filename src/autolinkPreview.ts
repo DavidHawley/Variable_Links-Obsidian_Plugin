@@ -3,6 +3,7 @@ import type VariableLinksPlugin from './main';
 import type Registry from './registry';
 import {
   DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES,
+  normalizeVaultPath,
   normalizeAutolinkProfiles,
   profileMatchesPath,
   type AutolinkCardPreset,
@@ -16,6 +17,7 @@ import { renderNamePattern } from './namePattern';
 
 interface AutolinkPreviewItem {
   file: TFile;
+  profile: AutolinkProfile;
   name: string;
   valueProperty: string;
   cardPreset: AutolinkCardPreset;
@@ -23,7 +25,14 @@ interface AutolinkPreviewItem {
   overrideSummary: string;
   warnings: string[];
   existingNameCollision: boolean;
+  managedUpdateCandidate: boolean;
+  precedenceNote: string;
 }
+
+export type AutolinkPreviewScope =
+  | { type: 'all' }
+  | { type: 'file'; path: string }
+  | { type: 'folder'; path: string };
 
 export function openAutolinkProfilePreview(
   app: App,
@@ -32,6 +41,107 @@ export function openAutolinkProfilePreview(
   profile: AutolinkProfile,
 ): void {
   new AutolinkPreviewModal(app, plugin, registry, profile).open();
+}
+
+export function openCombinedAutolinkPreview(
+  app: App,
+  plugin: VariableLinksPlugin,
+  registry: Registry,
+  scope: AutolinkPreviewScope,
+): void {
+  new CombinedAutolinkPreviewModal(app, plugin, registry, scope).open();
+}
+
+class CombinedAutolinkPreviewModal extends Modal {
+  constructor(
+    app: App,
+    private readonly plugin: VariableLinksPlugin,
+    private readonly registry: Registry,
+    private readonly previewScope: AutolinkPreviewScope,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    this.modalEl.addClass('variable-links-autolink-combined-preview-modal');
+    this.contentEl.createEl('h3', { text: getCombinedPreviewTitle(this.previewScope) });
+    const profiles = this.registry.autolinkProfiles.filter(({ enabled }) => enabled);
+    const scopedFiles = getScopedFiles(this.app, this.previewScope);
+    const scopedPaths = new Set(scopedFiles.map(({ path }) => normalizeVaultPath(path).toLocaleLowerCase()));
+    const items = profiles.flatMap((profile) => buildAutolinkItems(
+      this.app,
+      this.plugin,
+      this.registry,
+      profile,
+      scopedPaths,
+    ));
+    applyCrossProfilePrecedence(items, profiles);
+    const unmatched = scopedFiles.filter((file) => !profiles.some((profile) =>
+      profileMatchesPath(profile, file.path)
+    ));
+    const outOfScope = getOutOfScopeManagedEntries(this.app, this.registry, profiles);
+
+    this.contentEl.createEl('p', {
+      text: profiles.length
+        ? `${items.length} generated candidate${items.length === 1 ? '' : 's'} from ${profiles.length} enabled profile${profiles.length === 1 ? '' : 's'}. This combined preview is read-only.`
+        : 'There are no enabled Autolink profiles. This combined preview is read-only.',
+    });
+    this.contentEl.createEl('p', {
+      text: 'When profiles overlap, exact-file profiles are listed first, followed by the closest folder and then broader folders. Different generated names remain separate candidates.',
+      cls: 'variable-links-hint-text',
+    });
+    if (items.length) this.renderItems(items);
+    else this.contentEl.createEl('p', {
+      text: scopedFiles.length ? 'No enabled profile matches the selected scope.' : 'The selected scope contains no Markdown files.',
+      cls: 'mod-muted',
+    });
+    this.renderPathDetails('Notes without a matching enabled profile', unmatched.map(({ path }) => path));
+    this.renderPathDetails(
+      'Managed links outside their profile scope',
+      outOfScope.map(({ name, path }) => `${name} — ${path}`),
+    );
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Close', attr: { type: 'button' } })
+      .addEventListener('click', () => this.close());
+  }
+
+  onClose(): void {
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+  }
+
+  private renderItems(items: readonly AutolinkPreviewItem[]): void {
+    const table = this.contentEl.createEl('table', { cls: 'variable-links-autolink-preview-table' });
+    const header = table.createEl('thead').createEl('tr');
+    for (const label of ['Note', 'Profile', 'Variable name', 'Value property', 'Card', 'Overrides', 'Status']) {
+      header.createEl('th', { text: label });
+    }
+    const body = table.createEl('tbody');
+    for (const item of items) {
+      const row = body.createEl('tr');
+      row.createEl('td', { text: item.file.path });
+      row.createEl('td', { text: item.profile.name });
+      row.createEl('td', { text: item.name });
+      row.createEl('td', { text: item.valueProperty || 'Missing' });
+      row.createEl('td', { text: formatCardSummary(item) });
+      row.createEl('td', { text: item.overrideSummary });
+      const status = [...item.warnings];
+      if (item.precedenceNote) status.push(item.precedenceNote);
+      row.createEl('td', {
+        text: status.length ? status.join(' ') : 'Ready',
+        cls: item.warnings.length ? 'mod-warning' : '',
+      });
+    }
+  }
+
+  private renderPathDetails(title: string, paths: readonly string[]): void {
+    if (!paths.length) return;
+    const details = this.contentEl.createEl('details', { cls: 'variable-links-autolink-preview-details' });
+    details.createEl('summary', { text: `${title} (${paths.length})` });
+    const list = details.createEl('ul');
+    for (const path of paths) list.createEl('li', { text: path });
+  }
 }
 
 class AutolinkPreviewModal extends Modal {
@@ -87,11 +197,7 @@ class AutolinkPreviewModal extends Modal {
         row.createEl('td', { text: item.file.path });
         row.createEl('td', { text: item.name });
         row.createEl('td', { text: item.valueProperty || 'Missing' });
-        row.createEl('td', {
-          text: item.cardPreset === 'none'
-            ? 'None'
-            : `${item.cardPreset} · ${item.cardProperties.length ? item.cardProperties.join(', ') : 'No properties'}`,
-        });
+        row.createEl('td', { text: formatCardSummary(item) });
         row.createEl('td', { text: item.overrideSummary });
         row.createEl('td', {
           text: item.warnings.length ? item.warnings.join(' ') : 'Ready',
@@ -162,122 +268,7 @@ class AutolinkPreviewModal extends Modal {
   }
 
   private buildItems(): AutolinkPreviewItem[] {
-    const items = this.app.vault.getMarkdownFiles()
-      .filter((file) => profileMatchesPath(this.profile, file.path))
-      .sort((left, right) => left.path.localeCompare(right.path))
-      .map((file, index) => this.buildItem(file, index + 1));
-    const names = new Map<string, number>();
-    for (const item of items) names.set(item.name, (names.get(item.name) ?? 0) + 1);
-    const tokenSyntax = getTokenSyntax(this.plugin.settings);
-    for (const item of items) {
-      if (!item.name) item.warnings.push('A Variable Link name could not be determined.');
-      else {
-        if ((names.get(item.name) ?? 0) > 1) item.warnings.push('Name collides with another matched note.');
-        if (item.name.includes(tokenSyntax.prefix) || item.name.includes(tokenSyntax.suffix)) {
-          item.warnings.push('Name contains the active token prefix or suffix.');
-        }
-        if (/\s/.test(item.name)) {
-          item.warnings.push('Name contains whitespace. Use underscores so its token can be recognized.');
-        }
-        if (parseVariableTextCaseMarker(item.name)) {
-          item.warnings.push('Name resembles token text-case syntax and must be created manually.');
-        }
-      }
-      const existing = item.name ? this.registry.getVariable(item.name) : null;
-      if (existing) {
-        item.existingNameCollision = true;
-        item.warnings.push('Name already belongs to an existing Variable Link.');
-      }
-    }
-    return items.sort((left, right) => left.file.path.localeCompare(right.file.path));
-  }
-
-  private buildItem(file: TFile, counter: number): AutolinkPreviewItem {
-    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
-    const metadata = isRecord(frontmatter) ? frontmatter : {};
-    const warnings: string[] = [];
-    const overrideProperties = this.profile.customOverridePropertyNames
-      ? this.profile.overrideProperties
-      : DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES;
-    const overrideEntries: Array<{ label: string; property: string }> = [
-      { label: 'name', property: overrideProperties.name },
-      { label: 'value property', property: overrideProperties.valueProperty },
-      { label: 'template', property: overrideProperties.template },
-      { label: 'Card properties', property: overrideProperties.cardProperties },
-    ];
-    const presentOverrides = overrideEntries.filter(({ property }) =>
-      Object.prototype.hasOwnProperty.call(metadata, property)
-    );
-    const allowOverrides = this.profile.allowOverrides;
-    const explicitName = allowOverrides
-      ? readString(metadata[overrideProperties.name], overrideProperties.name, warnings)
-      : '';
-    const explicitValueProperty = readString(
-      allowOverrides ? metadata[overrideProperties.valueProperty] : undefined,
-      overrideProperties.valueProperty,
-      warnings,
-    );
-    const template = readString(
-      allowOverrides ? metadata[overrideProperties.template] : undefined,
-      overrideProperties.template,
-      warnings,
-    );
-    if (allowOverrides
-      && overrideProperties.template === DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.template
-      && Object.prototype.hasOwnProperty.call(metadata, 'variablelink_templete')) {
-      warnings.push('Use variablelink_template instead of variablelink_templete.');
-    }
-    const cardPreset = normalizePreset(template, this.profile.cardPreset, warnings);
-    const cardProperties = readStringList(
-      allowOverrides ? metadata[overrideProperties.cardProperties] : undefined,
-      this.profile.cardProperties,
-      warnings,
-    );
-    const valueProperty = explicitValueProperty || this.profile.valueProperty;
-    let name = explicitName;
-    if (!name) {
-      const rendered = renderNamePattern(
-        this.profile.namePattern || '{filename}',
-        {
-          filename: file.basename,
-          folder: file.parent?.name || undefined,
-          path: file.path.replace(/\.md$/i, ''),
-          profile: this.profile.name,
-          properties: metadata,
-          property: valueProperty || undefined,
-          value: valueProperty ? metadata[valueProperty] : undefined,
-        },
-        counter,
-      );
-      warnings.push(...rendered.errors);
-      name = rendered.value.trim().replace(/\s+/g, '_');
-    }
-    if (!valueProperty) warnings.push('No value property is configured.');
-    else if (!Object.prototype.hasOwnProperty.call(metadata, valueProperty)) {
-      warnings.push(`Missing value property “${valueProperty}”.`);
-    }
-    for (const property of cardProperties) {
-      if (!Object.prototype.hasOwnProperty.call(metadata, property)) {
-        warnings.push(`Missing Card property “${property}”.`);
-      }
-    }
-    const overrideSummary = allowOverrides
-      ? presentOverrides.length
-        ? `Applied: ${presentOverrides.map(({ label }) => label).join(', ')}`
-        : 'Allowed; none present'
-      : presentOverrides.length
-        ? `Ignored: ${presentOverrides.map(({ label }) => label).join(', ')}`
-        : 'Disabled';
-    return {
-      file,
-      name,
-      valueProperty,
-      cardPreset,
-      cardProperties,
-      overrideSummary,
-      warnings,
-      existingNameCollision: false,
-    };
+    return buildAutolinkItems(this.app, this.plugin, this.registry, this.profile);
   }
 }
 
@@ -414,6 +405,248 @@ function isSafeAddition(item: AutolinkPreviewItem): boolean {
 
 function isApplicableWithOverwrite(item: AutolinkPreviewItem): boolean {
   return item.warnings.length === (item.existingNameCollision ? 1 : 0);
+}
+
+function buildAutolinkItems(
+  app: App,
+  plugin: VariableLinksPlugin,
+  registry: Registry,
+  profile: AutolinkProfile,
+  includedPaths?: ReadonlySet<string>,
+): AutolinkPreviewItem[] {
+  const allItems = app.vault.getMarkdownFiles()
+    .filter((file) => profileMatchesPath(profile, file.path))
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .map((file, index) => buildAutolinkItem(app, profile, file, index + 1));
+  const names = new Map<string, number>();
+  for (const item of allItems) names.set(item.name, (names.get(item.name) ?? 0) + 1);
+  const tokenSyntax = getTokenSyntax(plugin.settings);
+  for (const item of allItems) {
+    if (!item.name) item.warnings.push('A Variable Link name could not be determined.');
+    else {
+      if ((names.get(item.name) ?? 0) > 1) item.warnings.push('Name collides with another matched note.');
+      if (item.name.includes(tokenSyntax.prefix) || item.name.includes(tokenSyntax.suffix)) {
+        item.warnings.push('Name contains the active token prefix or suffix.');
+      }
+      if (/\s/.test(item.name)) {
+        item.warnings.push('Name contains whitespace. Use underscores so its token can be recognized.');
+      }
+      if (parseVariableTextCaseMarker(item.name)) {
+        item.warnings.push('Name resembles token text-case syntax and must be created manually.');
+      }
+    }
+    const existing = item.name ? registry.getVariable(item.name) : null;
+    if (existing) {
+      item.existingNameCollision = true;
+      item.managedUpdateCandidate = existing.managed?.profileId === profile.id
+        && sameVaultPath(existing.managed.sourcePath, item.file.path);
+      item.warnings.push(item.managedUpdateCandidate
+        ? 'Existing managed Variable Link is an update candidate.'
+        : 'Name already belongs to an existing Variable Link.');
+    }
+  }
+  const scopedItems = includedPaths
+    ? allItems.filter(({ file }) => includedPaths.has(normalizeVaultPath(file.path).toLocaleLowerCase()))
+    : allItems;
+  return scopedItems.sort((left, right) => left.file.path.localeCompare(right.file.path));
+}
+
+function buildAutolinkItem(
+  app: App,
+  profile: AutolinkProfile,
+  file: TFile,
+  counter: number,
+): AutolinkPreviewItem {
+  const frontmatter = app.metadataCache.getFileCache(file)?.frontmatter;
+  const metadata = isRecord(frontmatter) ? frontmatter : {};
+  const warnings: string[] = [];
+  const overrideProperties = profile.customOverridePropertyNames
+    ? profile.overrideProperties
+    : DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES;
+  const overrideEntries: Array<{ label: string; property: string }> = [
+    { label: 'name', property: overrideProperties.name },
+    { label: 'value property', property: overrideProperties.valueProperty },
+    { label: 'template', property: overrideProperties.template },
+    { label: 'Card properties', property: overrideProperties.cardProperties },
+  ];
+  const presentOverrides = overrideEntries.filter(({ property }) =>
+    Object.prototype.hasOwnProperty.call(metadata, property)
+  );
+  const allowOverrides = profile.allowOverrides;
+  const explicitName = allowOverrides
+    ? readString(metadata[overrideProperties.name], overrideProperties.name, warnings)
+    : '';
+  const explicitValueProperty = readString(
+    allowOverrides ? metadata[overrideProperties.valueProperty] : undefined,
+    overrideProperties.valueProperty,
+    warnings,
+  );
+  const template = readString(
+    allowOverrides ? metadata[overrideProperties.template] : undefined,
+    overrideProperties.template,
+    warnings,
+  );
+  if (allowOverrides
+    && overrideProperties.template === DEFAULT_AUTOLINK_OVERRIDE_PROPERTIES.template
+    && Object.prototype.hasOwnProperty.call(metadata, 'variablelink_templete')) {
+    warnings.push('Use variablelink_template instead of variablelink_templete.');
+  }
+  const cardPreset = normalizePreset(template, profile.cardPreset, warnings);
+  const cardProperties = readStringList(
+    allowOverrides ? metadata[overrideProperties.cardProperties] : undefined,
+    profile.cardProperties,
+    warnings,
+  );
+  const valueProperty = explicitValueProperty || profile.valueProperty;
+  let name = explicitName;
+  if (!name) {
+    const rendered = renderNamePattern(
+      profile.namePattern || '{filename}',
+      {
+        filename: file.basename,
+        folder: file.parent?.name || undefined,
+        path: file.path.replace(/\.md$/i, ''),
+        profile: profile.name,
+        properties: metadata,
+        property: valueProperty || undefined,
+        value: valueProperty ? metadata[valueProperty] : undefined,
+      },
+      counter,
+    );
+    warnings.push(...rendered.errors);
+    name = rendered.value.trim().replace(/\s+/g, '_');
+  }
+  if (!valueProperty) warnings.push('No value property is configured.');
+  else if (!Object.prototype.hasOwnProperty.call(metadata, valueProperty)) {
+    warnings.push(`Missing value property “${valueProperty}”.`);
+  }
+  for (const property of cardProperties) {
+    if (!Object.prototype.hasOwnProperty.call(metadata, property)) {
+      warnings.push(`Missing Card property “${property}”.`);
+    }
+  }
+  const overrideSummary = allowOverrides
+    ? presentOverrides.length
+      ? `Applied: ${presentOverrides.map(({ label }) => label).join(', ')}`
+      : 'Allowed; none present'
+    : presentOverrides.length
+      ? `Ignored: ${presentOverrides.map(({ label }) => label).join(', ')}`
+      : 'Disabled';
+  return {
+    file,
+    profile,
+    name,
+    valueProperty,
+    cardPreset,
+    cardProperties,
+    overrideSummary,
+    warnings,
+    existingNameCollision: false,
+    managedUpdateCandidate: false,
+    precedenceNote: '',
+  };
+}
+
+function applyCrossProfilePrecedence(
+  items: AutolinkPreviewItem[],
+  profiles: readonly AutolinkProfile[],
+): void {
+  const profileOrder = new Map(profiles.map((profile, index) => [profile.id, index]));
+  items.sort((left, right) => left.file.path.localeCompare(right.file.path)
+    || compareProfilePrecedence(left.profile, right.profile, profileOrder));
+  const byName = new Map<string, AutolinkPreviewItem[]>();
+  for (const item of items) {
+    if (!item.name) continue;
+    const matches = byName.get(item.name) ?? [];
+    matches.push(item);
+    byName.set(item.name, matches);
+  }
+  for (const matches of byName.values()) {
+    if (matches.length < 2) continue;
+    matches.sort((left, right) => compareProfilePrecedence(
+      left.profile,
+      right.profile,
+      profileOrder,
+    ) || left.file.path.localeCompare(right.file.path));
+    const winner = matches[0];
+    if (!winner) continue;
+    const lowerProfileMatches = matches.filter(({ profile }) => profile.id !== winner.profile.id);
+    if (!lowerProfileMatches.length) continue;
+    winner.precedenceNote = `Higher priority than ${lowerProfileMatches.length} other profile candidate${lowerProfileMatches.length === 1 ? '' : 's'} with this name.`;
+    for (const item of matches.slice(1)) {
+      if (item.profile.id === winner.profile.id) continue;
+      item.warnings.push(`Name is claimed first by the higher-priority profile “${winner.profile.name}”.`);
+    }
+  }
+}
+
+function compareProfilePrecedence(
+  left: AutolinkProfile,
+  right: AutolinkProfile,
+  profileOrder: ReadonlyMap<string, number>,
+): number {
+  if (left.scopeType !== right.scopeType) return left.scopeType === 'file' ? -1 : 1;
+  if (left.scopeType === 'folder' && right.scopeType === 'folder') {
+    const depthDifference = getPathDepth(right.path) - getPathDepth(left.path);
+    if (depthDifference) return depthDifference;
+  }
+  return (profileOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER)
+    - (profileOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER);
+}
+
+function getPathDepth(path: string): number {
+  const normalized = normalizeVaultPath(path);
+  return normalized ? normalized.split('/').length : 0;
+}
+
+function getScopedFiles(app: App, scope: AutolinkPreviewScope): TFile[] {
+  const files = app.vault.getMarkdownFiles();
+  if (scope.type === 'all') return files.sort((left, right) => left.path.localeCompare(right.path));
+  const target = normalizeVaultPath(scope.path).toLocaleLowerCase();
+  if (scope.type === 'folder' && !target) {
+    return files.sort((left, right) => left.path.localeCompare(right.path));
+  }
+  return files.filter((file) => {
+    const path = normalizeVaultPath(file.path).toLocaleLowerCase();
+    if (scope.type === 'file') return path === target;
+    return path.startsWith(`${target}/`);
+  }).sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function getCombinedPreviewTitle(scope: AutolinkPreviewScope): string {
+  if (scope.type === 'file') return `Autolink preview for ${scope.path}`;
+  if (scope.type === 'folder') return `Autolink preview for ${scope.path}`;
+  return 'Autolink preview for all enabled profiles';
+}
+
+function getOutOfScopeManagedEntries(
+  app: App,
+  registry: Registry,
+  profiles: readonly AutolinkProfile[],
+): Array<{ name: string; path: string }> {
+  const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const outOfScope: Array<{ name: string; path: string }> = [];
+  for (const [name, definition] of registry.data) {
+    const managed = definition.managed;
+    if (!managed) continue;
+    const profile = profilesById.get(managed.profileId);
+    if (!profile) continue;
+    const file = app.vault.getFileByPath(normalizeVaultPath(managed.sourcePath));
+    if (!(file instanceof TFile) || !profileMatchesPath(profile, file.path)) {
+      outOfScope.push({ name, path: managed.sourcePath });
+    }
+  }
+  return outOfScope.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function sameVaultPath(left: string, right: string): boolean {
+  return normalizeVaultPath(left).toLocaleLowerCase() === normalizeVaultPath(right).toLocaleLowerCase();
+}
+
+function formatCardSummary(item: AutolinkPreviewItem): string {
+  return item.cardPreset === 'none'
+    ? 'None'
+    : `${item.cardPreset} · ${item.cardProperties.length ? item.cardProperties.join(', ') : 'No properties'}`;
 }
 
 function normalizePreset(

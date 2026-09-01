@@ -1847,6 +1847,20 @@ summary.variable-links-context-help-label .variable-links-context-help-button {
   padding-top: 10px;
 }
 
+.variable-links-autolink-profile-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.variable-links-autolink-combined-preview-modal {
+  width: min(1100px, calc(100vw - 32px));
+}
+
+.variable-links-autolink-preview-details {
+  margin-top: 10px;
+}
+
 .variable-links-autolink-profile-field {
   display: grid;
   grid-template-columns: minmax(120px, 0.35fr) minmax(160px, 1fr);

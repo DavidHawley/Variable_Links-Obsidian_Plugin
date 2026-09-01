@@ -12,10 +12,11 @@ import {
   type AutolinkProfile,
   type AutolinkScopeType,
 } from './autolink';
-import { openAutolinkProfilePreview } from './autolinkPreview';
+import { openAutolinkProfilePreview, openCombinedAutolinkPreview } from './autolinkPreview';
 import { addContextHelpButton, openContextHelp } from './contextHelp';
 import { formatCapturedDateTime } from './dateTime';
 import VariableLinksPlugin from './main';
+import { renderNamePatternHelp } from './namePatternHelp';
 import type { TokenSyntaxMigrationPlan } from './tokenCache';
 import {
   DEFAULT_TOKEN_SYNTAX,
@@ -789,6 +790,18 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         return;
       }
       const profiles = registry.autolinkProfiles;
+      const toolbar = host.createDiv({ cls: 'variable-links-autolink-profile-toolbar' });
+      const previewAll = toolbar.createEl('button', {
+        text: 'Preview all enabled',
+        attr: { type: 'button' },
+      });
+      previewAll.disabled = !profiles.some(({ enabled }) => enabled);
+      listen(previewAll, 'click', () => openCombinedAutolinkPreview(
+        this.app,
+        this.variableLinksPlugin,
+        registry,
+        { type: 'all' },
+      ));
       for (const profile of profiles) this.renderAutolinkProfile(host, profile, profiles, render, listen);
       if (!profiles.length) {
         host.createEl('p', { text: 'No autolink profiles configured.', cls: 'mod-muted' });
@@ -828,9 +841,18 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     const summary = details.createEl('summary');
     summary.createSpan({ text: profile.name, cls: 'variable-links-autolink-profile-title' });
     const body = details.createDiv({ cls: 'variable-links-autolink-profile-fields' });
-    const field = (labelText: string): HTMLLabelElement => {
+    const field = (
+      labelText: string,
+      help?: { title: string; render: (parent: HTMLElement) => void },
+    ): HTMLLabelElement => {
       const label = body.createEl('label', { cls: 'variable-links-autolink-profile-field' });
-      label.createSpan({ text: labelText });
+      const title = label.createSpan({ text: labelText });
+      if (help) addContextHelpButton(
+        title,
+        this.variableLinksPlugin,
+        help.title,
+        help.render,
+      );
       return label;
     };
     const checkboxField = (
@@ -862,7 +884,10 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     const valueProperty = field('Value property').createEl('input', { type: 'text' });
     valueProperty.value = profile.valueProperty;
     valueProperty.placeholder = 'Status';
-    const namePattern = field('Name pattern').createEl('input', { type: 'text' });
+    const namePattern = field('Name pattern', {
+      title: 'Naming pattern syntax',
+      render: renderNamePatternHelp,
+    }).createEl('input', { type: 'text' });
     namePattern.value = profile.namePattern;
     namePattern.placeholder = 'Blank uses the note filename';
     const cardPreset = field('Card preset').createEl('select');
