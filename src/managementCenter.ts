@@ -23,7 +23,7 @@ export const VIEW_TYPE_MANAGEMENT_CENTER = 'variable-links-management-center';
 
 type ManagementActivity = 'variables';
 type MassRenameMode = 'prefix' | 'suffix' | 'replace' | 'pattern';
-type RenameSpaceHandling = 'underscores' | 'remove';
+type RenameWordSelection = 'whole' | 'first' | 'last' | 'custom';
 type OwnershipFilter = 'all' | 'manual' | 'managed';
 type VariableTypeFilter = 'all' | 'property' | 'fixed';
 type VariableSort = 'name-ascending' | 'name-descending' | 'type' | 'source';
@@ -620,12 +620,18 @@ class MassRenameVariablesModal extends Modal {
   private excludedKeys = new Set<string>();
   private find = '';
   private mode: MassRenameMode = 'prefix';
+  private outputSeparator = '_';
   private pattern = '{filename}_##_text';
   private prefix = '';
+  private preserveWhitespace = false;
   private replacement = '';
-  private spaceHandling: RenameSpaceHandling = 'underscores';
+  private splitOnComma = false;
+  private splitOnSpace = true;
+  private splitOnUnderscore = false;
   private startNumber = 1;
   private suffix = '';
+  private wordOrder = '2, 1';
+  private wordSelection: RenameWordSelection = 'whole';
 
   constructor(
     private readonly plugin: VariableLinksPlugin,
@@ -655,12 +661,15 @@ class MassRenameVariablesModal extends Modal {
     mode.createEl('option', { text: 'Add suffix', value: 'suffix' });
     mode.createEl('option', { text: 'Find and replace', value: 'replace' });
     mode.createEl('option', { text: 'Pattern', value: 'pattern' });
-    const spacesSetting = controls.createDiv({ cls: 'setting-item' });
-    spacesSetting.createDiv({ text: 'Spaces in results', cls: 'setting-item-name' });
-    const spacesControl = spacesSetting.createDiv({ cls: 'setting-item-control' });
-    const spaces = spacesControl.createEl('select', { attr: { 'aria-label': 'Spaces in results' } });
-    spaces.createEl('option', { text: 'Replace with underscores', value: 'underscores' });
-    spaces.createEl('option', { text: 'Remove spaces', value: 'remove' });
+    const wordSetting = controls.createDiv({ cls: 'setting-item' });
+    wordSetting.createDiv({ text: 'Word selection', cls: 'setting-item-name' });
+    const wordControl = wordSetting.createDiv({ cls: 'setting-item-control' });
+    const wordSelection = wordControl.createEl('select', { attr: { 'aria-label': 'Word selection' } });
+    wordSelection.createEl('option', { text: 'Whole result', value: 'whole' });
+    wordSelection.createEl('option', { text: 'First word', value: 'first' });
+    wordSelection.createEl('option', { text: 'Last word', value: 'last' });
+    wordSelection.createEl('option', { text: 'Custom order', value: 'custom' });
+    const wordOptions = controls.createDiv({ cls: 'variable-links-management-center-word-options' });
     const fields = controls.createDiv();
     const previewStatus = this.contentEl.createDiv({
       cls: 'variable-links-hint-text',
@@ -781,10 +790,88 @@ class MassRenameVariablesModal extends Modal {
       this.mode = readMassRenameMode(mode.value);
       renderFields();
     });
-    spaces.addEventListener('change', () => {
-      this.spaceHandling = readRenameSpaceHandling(spaces.value);
+    const renderWordOptions = (): void => {
+      wordOptions.empty();
+      const separatorSetting = wordOptions.createDiv({ cls: 'setting-item' });
+      separatorSetting.createDiv({
+        text: 'Split words on',
+        cls: 'setting-item-name',
+      });
+      const separatorControl = separatorSetting.createDiv({
+        cls: 'setting-item-control variable-links-management-center-word-separators',
+      });
+      const addSeparator = (
+        label: string,
+        checked: boolean,
+        update: (next: boolean) => void,
+      ): void => {
+        const option = separatorControl.createEl('label');
+        const checkbox = option.createEl('input', { attr: { type: 'checkbox' } });
+        checkbox.checked = checked;
+        option.createSpan({ text: label });
+        checkbox.addEventListener('change', () => {
+          update(checkbox.checked);
+          renderPreview();
+        });
+      };
+      addSeparator('Spaces', this.splitOnSpace, (value) => { this.splitOnSpace = value; });
+      addSeparator('Commas', this.splitOnComma, (value) => { this.splitOnComma = value; });
+      addSeparator('Underscores', this.splitOnUnderscore, (value) => { this.splitOnUnderscore = value; });
+
+      if (this.wordSelection === 'custom') {
+        const orderSetting = wordOptions.createDiv({ cls: 'setting-item' });
+        const orderInfo = orderSetting.createDiv({ cls: 'setting-item-info' });
+        orderInfo.createDiv({ text: 'Word order', cls: 'setting-item-name' });
+        orderInfo.createDiv({
+          text: 'Use 1-based comma-separated positions, such as 2, 1.',
+          cls: 'setting-item-description',
+        });
+        const orderControl = orderSetting.createDiv({ cls: 'setting-item-control' });
+        const order = orderControl.createEl('input', {
+          attr: { type: 'text', placeholder: '2, 1', 'aria-label': 'Word order' },
+        });
+        order.value = this.wordOrder;
+        order.addEventListener('input', () => {
+          this.wordOrder = order.value;
+          renderPreview();
+        });
+      }
+
+      const outputSetting = wordOptions.createDiv({ cls: 'setting-item' });
+      const outputInfo = outputSetting.createDiv({ cls: 'setting-item-info' });
+      outputInfo.createDiv({ text: 'Output separator', cls: 'setting-item-name' });
+      outputInfo.createDiv({
+        text: 'An underscore is used by default. Leave blank to join or remove without a separator.',
+        cls: 'setting-item-description',
+      });
+      const outputControl = outputSetting.createDiv({ cls: 'setting-item-control' });
+      const output = outputControl.createEl('input', {
+        attr: { type: 'text', 'aria-label': 'Output separator' },
+      });
+      output.value = this.outputSeparator;
+      output.addEventListener('input', () => {
+        this.outputSeparator = output.value;
+        renderPreview();
+      });
+
+      const preserveSetting = wordOptions.createDiv({ cls: 'setting-item' });
+      const preserveLabel = preserveSetting.createEl('label', {
+        cls: 'variable-links-management-center-preserve-whitespace',
+      });
+      const preserve = preserveLabel.createEl('input', { attr: { type: 'checkbox' } });
+      preserve.checked = this.preserveWhitespace;
+      preserveLabel.createSpan({ text: 'Leave whitespace unchanged' });
+      preserve.addEventListener('change', () => {
+        this.preserveWhitespace = preserve.checked;
+        renderPreview();
+      });
+    };
+    wordSelection.addEventListener('change', () => {
+      this.wordSelection = readRenameWordSelection(wordSelection.value);
+      renderWordOptions();
       renderPreview();
     });
+    renderWordOptions();
     renderFields();
   }
 
@@ -808,11 +895,14 @@ class MassRenameVariablesModal extends Modal {
       const result = included
         ? this.getNewName(entry, includedIndex++)
         : { value: '', errors: [] };
+      const processed = included
+        ? this.processResultWords(result.value)
+        : { value: '', errors: [] };
       return {
         entry,
         included,
-        newName: included ? this.normalizeResultName(result.value) : '',
-        issue: result.errors.join(' '),
+        newName: processed.value,
+        issue: [...result.errors, ...processed.errors].join(' '),
       };
     });
     const findMissing = this.mode === 'replace' && !this.find;
@@ -916,11 +1006,43 @@ class MassRenameVariablesModal extends Modal {
     parent.scrollTop = scrollTop;
   }
 
-  private normalizeResultName(value: string): string {
+  private processResultWords(value: string): { errors: string[]; value: string } {
     const trimmed = value.trim();
-    return this.spaceHandling === 'remove'
-      ? trimmed.replace(/\s+/g, '')
-      : trimmed.replace(/\s+/g, '_');
+    const separators: string[] = [];
+    if (this.splitOnSpace && !this.preserveWhitespace) separators.push('\\s');
+    if (this.splitOnComma) separators.push(',');
+    if (this.splitOnUnderscore) separators.push('_');
+    const words = separators.length
+      ? trimmed.split(new RegExp(`[${separators.join('')}]+`, 'u')).filter(Boolean)
+      : trimmed ? [trimmed] : [];
+    let selectedWords = words;
+    if (this.wordSelection === 'first') selectedWords = words.slice(0, 1);
+    else if (this.wordSelection === 'last') selectedWords = words.slice(-1);
+    else if (this.wordSelection === 'custom') {
+      const positions = this.wordOrder.split(',').map((position) => position.trim());
+      if (!positions.length || positions.some((position) => !/^\d+$/u.test(position))) {
+        return {
+          value: '',
+          errors: ['Enter valid 1-based word positions separated by commas.'],
+        };
+      }
+      const indexes = positions.map(Number);
+      if (indexes.some((index) => index < 1)) {
+        return {
+          value: '',
+          errors: ['Word positions must start at 1.'],
+        };
+      }
+      const unavailable = indexes.find((index) => index > words.length);
+      if (unavailable !== undefined) {
+        return {
+          value: '',
+          errors: [`Word position ${unavailable} is unavailable; this result has ${words.length} word${words.length === 1 ? '' : 's'}.`],
+        };
+      }
+      selectedWords = indexes.map((index) => words[index - 1] ?? '');
+    }
+    return { value: selectedWords.join(this.outputSeparator).trim(), errors: [] };
   }
 
   private getNewName(entry: VariableEntry, index: number): { errors: string[]; value: string } {
@@ -1133,8 +1255,8 @@ function readMassRenameMode(value: unknown): MassRenameMode {
   return value === 'suffix' || value === 'replace' || value === 'pattern' ? value : 'prefix';
 }
 
-function readRenameSpaceHandling(value: unknown): RenameSpaceHandling {
-  return value === 'remove' ? value : 'underscores';
+function readRenameWordSelection(value: unknown): RenameWordSelection {
+  return value === 'first' || value === 'last' || value === 'custom' ? value : 'whole';
 }
 
 function readVariableTypeFilter(value: unknown): VariableTypeFilter {

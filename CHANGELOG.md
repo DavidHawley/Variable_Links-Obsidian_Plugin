@@ -25,7 +25,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added an opt-in deletion choice to replace active tokens with their current text values before removing single or selected Variable Links.
 - Added previewed mass rename actions for applying a prefix, suffix, or find-and-replace operation to selected Variable Links, with all-or-nothing conflict validation and verified token updates.
 - Added shared naming patterns for mass rename and Autolink profiles, including file, path, folder, variable, value, property, profile, escaped literal, and zero-padded counter placeholders.
-- Added per-row inclusion, problem-row skipping, continuous counter recalculation, and configurable underscore-or-removal handling for spaces in mass rename results.
+- Added per-row inclusion, problem-row skipping, continuous counter recalculation, and first, last, or custom word ordering for mass rename results, with selectable splitting, joining, and whitespace preservation.
 
 ### Changed
 

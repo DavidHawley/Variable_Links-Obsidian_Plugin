@@ -1589,6 +1589,28 @@
   margin-bottom: 10px;
 }
 
+.variable-links-management-center-word-options {
+  display: flex;
+  flex-direction: column;
+}
+
+.variable-links-management-center-word-separators {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.variable-links-management-center-word-separators label,
+.variable-links-management-center-preserve-whitespace {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.variable-links-management-center-preserve-whitespace {
+  width: 100%;
+}
+
 .variable-links-management-center-pattern-name {
   display: flex;
   gap: 6px;
