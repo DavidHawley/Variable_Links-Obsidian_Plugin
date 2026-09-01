@@ -1632,6 +1632,16 @@
   flex: 0 0 auto;
 }
 
+summary.variable-links-context-help-label {
+  display: list-item;
+}
+
+summary.variable-links-context-help-label .variable-links-context-help-button {
+  display: inline-flex;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 .variable-links-context-help-modal {
   width: min(720px, calc(100vw - 32px));
 }

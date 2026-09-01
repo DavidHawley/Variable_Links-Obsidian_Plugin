@@ -433,7 +433,10 @@ class InfoCardLayoutModal extends Modal {
     const mode = this.addSelect(controls, 'Layout:', [
       { value: 'stack', label: 'Stack' },
       { value: 'grid', label: 'Grid' },
-    ], this.layoutMode);
+    ], this.layoutMode, {
+      title: 'Card layout modes',
+      render: (parent) => this.renderCardLayoutHelp(parent),
+    });
     mode.addEventListener('change', () => {
       this.mutate(() => { this.layoutMode = mode.value === 'grid' ? 'grid' : 'stack'; });
     });
@@ -469,7 +472,13 @@ class InfoCardLayoutModal extends Modal {
 
   private renderCardStyleControls(): void {
     const details = this.contentEl.createEl('details', { cls: 'variable-links-card-style-editor' });
-    details.createEl('summary', { text: 'Card appearance' });
+    const summary = details.createEl('summary', { text: 'Card appearance' });
+    addContextHelpButton(
+      summary,
+      this.plugin,
+      'Card appearance',
+      (parent) => this.renderCardAppearanceHelp(parent),
+    );
     const controls = details.createDiv({ cls: 'variable-links-card-layout-settings' });
     const background = this.addSelect(controls, 'Background:', [
       { value: 'default', label: 'Theme default' },
@@ -779,7 +788,13 @@ class InfoCardLayoutModal extends Modal {
 
   private renderBlockStyleControls(parent: HTMLElement, block: CardBlock): void {
     const details = parent.createEl('details', { cls: 'variable-links-card-block-style-editor' });
-    details.createEl('summary', { text: 'Block appearance' });
+    const summary = details.createEl('summary', { text: 'Block appearance' });
+    addContextHelpButton(
+      summary,
+      this.plugin,
+      'Block appearance',
+      (helpParent) => this.renderBlockAppearanceHelp(helpParent),
+    );
     const controls = details.createDiv({ cls: 'variable-links-card-table-settings' });
     const tone = this.addSelect(controls, 'Background:', [
       { value: 'none', label: 'None' },
@@ -845,7 +860,10 @@ class InfoCardLayoutModal extends Modal {
     const direction = this.addSelect(parent, 'Arrangement:', [
       { value: 'vertical', label: 'Vertical' },
       { value: 'horizontal', label: 'Horizontal' },
-    ], block.direction ?? 'vertical');
+    ], block.direction ?? 'vertical', {
+      title: 'Stack container',
+      render: (helpParent) => this.renderStackContainerHelp(helpParent),
+    });
     direction.addEventListener('change', () => {
       this.recordHistory();
       block.direction = direction.value === 'horizontal' ? 'horizontal' : undefined;
@@ -906,7 +924,13 @@ class InfoCardLayoutModal extends Modal {
 
   private renderStackStyleControls(parent: HTMLElement, block: CardStackBlock): void {
     const details = parent.createEl('details', { cls: 'variable-links-card-block-style-editor' });
-    details.createEl('summary', { text: 'Stack appearance' });
+    const summary = details.createEl('summary', { text: 'Stack appearance' });
+    addContextHelpButton(
+      summary,
+      this.plugin,
+      'Stack appearance',
+      (helpParent) => this.renderStackAppearanceHelp(helpParent),
+    );
     const controls = details.createDiv({ cls: 'variable-links-card-table-settings' });
     const tone = this.addSelect(controls, 'Background:', [
       { value: 'none', label: 'None' },
@@ -1008,7 +1032,10 @@ class InfoCardLayoutModal extends Modal {
     const columns = this.addSelect(tableSettings, 'Columns:', [1, 2, 3, 4].map((value) => ({
       value: String(value),
       label: String(value),
-    })), String(block.columns ?? 1));
+    })), String(block.columns ?? 1), {
+      title: 'Property table layout',
+      render: (helpParent) => this.renderPropertyTableHelp(helpParent),
+    });
     columns.addEventListener('change', () => {
       this.mutate(() => { block.columns = Number(columns.value) as CardGridColumns; });
     });
@@ -1213,7 +1240,13 @@ class InfoCardLayoutModal extends Modal {
     property: CardPropertyEntry,
   ): void {
     const details = parent.createEl('details', { cls: 'variable-links-card-property-style-editor' });
-    details.createEl('summary', { text: 'Property display' });
+    const summary = details.createEl('summary', { text: 'Property display' });
+    addContextHelpButton(
+      summary,
+      this.plugin,
+      'Property display',
+      (helpParent) => this.renderPropertyDisplayHelp(helpParent),
+    );
     const controls = details.createDiv({ cls: 'variable-links-card-table-settings' });
 
     const labelRow = controls.createDiv({ cls: 'variable-links-card-layout-setting' });
@@ -1310,9 +1343,11 @@ class InfoCardLayoutModal extends Modal {
     label: string,
     options: Array<{ value: string; label: string }>,
     value: string,
+    help?: { render: (parent: HTMLElement) => void; title: string },
   ): HTMLSelectElement {
     const row = parent.createDiv({ cls: 'variable-links-card-layout-setting' });
-    row.createEl('label', { text: label });
+    const labelEl = row.createEl('label', { text: label });
+    if (help) addContextHelpButton(labelEl, this.plugin, help.title, help.render);
     const select = row.createEl('select');
     select.setAttribute('aria-label', label.replace(/:$/, ''));
     for (const option of options) {
@@ -1320,6 +1355,98 @@ class InfoCardLayoutModal extends Modal {
     }
     select.value = value;
     return select;
+  }
+
+  private renderCardLayoutHelp(parent: HTMLElement): void {
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Stack places each top-level block on its own row.',
+    });
+    details.createEl('li', {
+      text: 'Grid flows blocks across the selected number of columns. Each block can use automatic, full, half, third, or quarter width.',
+    });
+    details.createEl('li', {
+      text: 'Grid cards collapse to one column when the available card width is narrow.',
+    });
+    parent.createEl('p', {
+      text: 'Applying a starter layout keeps the current content blocks but resets their widths and appearance to that preset. Use undo or restore original if needed.',
+      cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderCardAppearanceHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Card appearance changes the outer card and provides defaults for its content.',
+    });
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Theme default and layout default follow the active Obsidian theme and layout behavior.',
+    });
+    details.createEl('li', {
+      text: 'Block and property alignment settings can override the card-wide text alignment.',
+    });
+    details.createEl('li', {
+      text: 'CSS classes are added to this card only and can be styled from an enabled Obsidian CSS snippet.',
+    });
+  }
+
+  private renderBlockAppearanceHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Block appearance changes only this content block. Default alignment follows the card-wide setting.',
+    });
+    parent.createEl('p', {
+      text: 'Right-click the empty area of a block to copy its appearance, then right-click another compatible block to paste it. Content and position are not copied.',
+      cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderStackContainerHelp(parent: HTMLElement): void {
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'A stack container groups normal card items into one vertical or horizontal section.',
+    });
+    details.createEl('li', {
+      text: 'Drag items into or out of its drop area, or use the add to stack and remove from stack controls.',
+    });
+    details.createEl('li', {
+      text: 'Editor label is only for organizing the editor; Visible heading is shown on the card.',
+    });
+    details.createEl('li', {
+      text: 'Stacks cannot contain other stack containers. Deleting a stack also deletes the items currently inside it.',
+    });
+  }
+
+  private renderStackAppearanceHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Stack appearance styles the container around its items. Item-level block appearance remains independent.',
+    });
+    parent.createEl('p', {
+      text: 'Right-click an empty part of the stack editor to copy or paste compatible stack appearance settings.',
+      cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderPropertyTableHelp(parent: HTMLElement): void {
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Columns control how property cells flow from left to right.',
+    });
+    details.createEl('li', {
+      text: 'Automatic rows use only the rows needed. Fixed minimum reserves at least the selected number of rows but never hides extra properties.',
+    });
+    details.createEl('li', {
+      text: 'Drag properties to reorder them or move them between property tables. Move out converts a property back to a standalone block.',
+    });
+  }
+
+  private renderPropertyDisplayHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Property display changes the label and alignment without changing the referenced note property.',
+    });
+    parent.createEl('p', {
+      text: 'Label width applies when the label is beside the value. Right-click the property item to copy or paste these display settings.',
+      cls: 'variable-links-hint-text',
+    });
   }
 
   private bindTextEdit(

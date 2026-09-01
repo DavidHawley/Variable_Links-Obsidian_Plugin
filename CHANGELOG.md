@@ -31,6 +31,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added click-open contextual help for captured date and time formats, with validation, a live local-time preview, a complete token reference, and copyable examples.
 - Added contextual help for token-format migration, variable types, and property-link behavior.
 - Added contextual help for variable-appearance inheritance and global or per-card hover behavior.
+- Added contextual help throughout the Card Designer for layouts, card and block styling, Stack containers, property tables, and property display controls.
 
 ### Changed
 
