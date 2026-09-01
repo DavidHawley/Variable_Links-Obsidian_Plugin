@@ -73,7 +73,7 @@ function resolvePlaceholderExpression(
   if (resolved.error) return resolved;
   let value = resolved.value;
   for (const rawWrapper of rawWrappers) {
-    const wrapper = unescapePlaceholder(rawWrapper).trim();
+    const wrapper = rawWrapper.trim();
     if (!wrapper) return { value: '', error: 'A pattern wrapper cannot be empty.' };
     const transformed = applyPatternWrapper(value, wrapper);
     if (transformed.error) return transformed;
@@ -117,23 +117,43 @@ function resolvePlaceholder(
 }
 
 function applyPatternWrapper(value: string, wrapper: string): { error?: string; value: string } {
-  const match = /^(word|char)\((.*)\)$/iu.exec(wrapper);
-  if (!match) return { value: '', error: `Unknown pattern wrapper “${wrapper}”.` };
+  const match = /^(word|char|replace)\((.*)\)$/iu.exec(wrapper);
+  if (!match) {
+    return { value: '', error: `Unknown pattern wrapper “${unescapePlaceholder(wrapper)}”.` };
+  }
   const name = match[1]?.toLocaleLowerCase() ?? '';
+  if (name === 'replace') return applyReplaceWrapper(value, match[2] ?? '');
   const indexes = parseWrapperIndexes(match[2] ?? '', name);
   if (indexes.error) return { value: '', error: indexes.error };
   const items = name === 'word'
     ? value.split(/[\s,_]+/u).filter(Boolean)
     : Array.from(value);
-  const unavailable = indexes.value.find((index) => index > items.length);
-  if (unavailable !== undefined) {
+  const selected: string[] = [];
+  for (const requested of indexes.value) {
+    const index = requested < 0 ? items.length + requested + 1 : requested;
+    if (index < 1 || index > items.length) {
+      return {
+        value: '',
+        error: `${capitalize(name)} position ${requested} is unavailable; this result has ${items.length} ${name}${items.length === 1 ? '' : 's'}.`,
+      };
+    }
+    selected.push(items[index - 1] ?? '');
+  }
+  return { value: selected.join(name === 'word' ? '_' : '') };
+}
+
+function applyReplaceWrapper(value: string, argumentsText: string): { error?: string; value: string } {
+  const rawArguments = splitEscaped(argumentsText, ',');
+  if (rawArguments.length !== 2) {
     return {
       value: '',
-      error: `${capitalize(name)} position ${unavailable} is unavailable; this result has ${items.length} ${name}${items.length === 1 ? '' : 's'}.`,
+      error: 'Replace wrappers require exactly two arguments: replace(find,replacement).',
     };
   }
-  const selected = indexes.value.map((index) => items[index - 1] ?? '');
-  return { value: selected.join(name === 'word' ? '_' : '') };
+  const find = unescapeWrapperArgument(rawArguments[0] ?? '');
+  const replacement = unescapeWrapperArgument(rawArguments[1] ?? '');
+  if (!find) return { value: '', error: 'The replace wrapper requires text to find.' };
+  return { value: value.split(find).join(replacement) };
 }
 
 function parseWrapperIndexes(
@@ -141,20 +161,24 @@ function parseWrapperIndexes(
   name: string,
 ): { error?: string; value: number[] } {
   const positions = value.split(',').map((position) => position.trim());
-  if (!positions.length || positions.some((position) => !/^\d+$/u.test(position))) {
+  if (!positions.length || positions.some((position) => !/^-?\d+$/u.test(position))) {
     return {
       value: [],
-      error: `${capitalize(name)} wrappers require 1-based positions separated by commas.`,
+      error: `${capitalize(name)} wrappers require non-zero positions separated by commas.`,
     };
   }
   const indexes = positions.map(Number);
-  if (indexes.some((index) => index < 1)) {
-    return { value: [], error: `${capitalize(name)} positions must start at 1.` };
+  if (indexes.some((index) => index === 0)) {
+    return { value: [], error: `${capitalize(name)} positions cannot be 0.` };
   }
   return { value: indexes };
 }
 
 function splitPipeline(value: string): string[] {
+  return splitEscaped(value, '|').map((part) => part.trim());
+}
+
+function splitEscaped(value: string, separator: string): string[] {
   const parts: string[] = [];
   let part = '';
   for (let index = 0; index < value.length; index++) {
@@ -162,14 +186,14 @@ function splitPipeline(value: string): string[] {
     if (character === '\\' && index + 1 < value.length) {
       part += character + (value[index + 1] ?? '');
       index++;
-    } else if (character === '|') {
-      parts.push(part.trim());
+    } else if (character === separator) {
+      parts.push(part);
       part = '';
     } else {
       part += character;
     }
   }
-  parts.push(part.trim());
+  parts.push(part);
   return parts;
 }
 
@@ -186,6 +210,10 @@ function findClosingBrace(pattern: string, start: number): number {
 
 function unescapePlaceholder(value: string): string {
   return value.replace(/\\([\\#{}|])/g, '$1');
+}
+
+function unescapeWrapperArgument(value: string): string {
+  return value.replace(/\\([\\#{}|,])/g, '$1');
 }
 
 function capitalize(value: string): string {

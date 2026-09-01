@@ -1089,8 +1089,10 @@ class NamePatternHelpModal extends Modal {
       '{property:FullName|word(2,1)} → selected words joined with underscores',
       '{property:FullName|char(1)} → selected characters',
       '{property:FullName|word(2)|char(1)} → wrappers run from left to right',
+      '{property:FullName|word(-1)} → negative positions count from the end',
+      '{property:Status|replace(Draft,Final)} → replace every literal match',
       '{profile} → managing Autolink profile name',
-      '\\#, \\{, \\}, and \\| → literal characters',
+      '\\#, \\{, \\}, \\|, and \\, → literal characters',
     ]) examples.createEl('li', { text: example });
     this.contentEl.createEl('p', {
       text: 'Example: {filename}_##_text',
