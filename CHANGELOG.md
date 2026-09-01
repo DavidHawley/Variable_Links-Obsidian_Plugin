@@ -28,6 +28,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added per-row inclusion, problem-row skipping, continuous counter recalculation, and first, last, or custom word ordering for mass rename results, with selectable splitting, joining, and whitespace preservation.
 - Added composable word and character selection wrappers to naming-pattern placeholders, including property values.
 - Added reverse word and character indexing plus literal text replacement to naming-pattern wrappers.
+- Added click-open contextual help for captured date and time formats, with validation, a live local-time preview, a complete token reference, and copyable examples.
 
 ### Changed
 

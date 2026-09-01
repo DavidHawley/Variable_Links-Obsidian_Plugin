@@ -1621,6 +1621,102 @@
   --icon-size: var(--icon-xs);
 }
 
+.variable-links-context-help-label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.variable-links-context-help-button {
+  --icon-size: var(--icon-xs);
+  flex: 0 0 auto;
+}
+
+.variable-links-context-help-modal {
+  width: min(720px, calc(100vw - 32px));
+}
+
+.variable-links-setting-validation {
+  display: none;
+  width: 100%;
+  margin-top: 6px;
+  color: var(--text-error);
+}
+
+.variable-links-setting-validation.is-visible {
+  display: block;
+}
+
+.variable-links-date-format-preview-setting {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.variable-links-date-format-preview-setting label {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.variable-links-date-format-preview-setting input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.variable-links-date-format-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+.variable-links-date-format-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.variable-links-date-format-table th,
+.variable-links-date-format-table td {
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  text-align: left;
+}
+
+.variable-links-date-format-examples {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.variable-links-date-format-examples > div {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+@media (max-width: 520px) {
+  .variable-links-date-format-preview-setting {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .variable-links-date-format-preview-setting label {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .variable-links-management-center-rename-preview {
   max-height: min(420px, 50vh);
   overflow: auto;

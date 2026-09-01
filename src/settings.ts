@@ -1,4 +1,4 @@
-import { App, Modal, Notice, PluginSettingTab, SettingDefinitionItem } from 'obsidian';
+import { App, Modal, Notice, PluginSettingTab, Setting, SettingDefinitionItem, setIcon } from 'obsidian';
 import {
   DEFAULT_APPEARANCE_COLORS,
   normalizeAppearanceColor,
@@ -13,6 +13,8 @@ import {
   type AutolinkScopeType,
 } from './autolink';
 import { openAutolinkProfilePreview } from './autolinkPreview';
+import { addContextHelpButton } from './contextHelp';
+import { formatCapturedDateTime } from './dateTime';
 import VariableLinksPlugin from './main';
 import type { TokenSyntaxMigrationPlan } from './tokenCache';
 import {
@@ -402,29 +404,29 @@ export class VariableLinksSettingTab extends PluginSettingTab {
           {
             name: 'Default date format',
             desc: 'Format used by DATE shortcuts without an inline format.',
-            control: {
-              type: 'text',
-              key: 'defaultDateFormat',
-              placeholder: 'YYYY-MM-DD',
-            },
+            render: (setting) => this.renderDateTimeFormatSetting(
+              setting,
+              'defaultDateFormat',
+              'YYYY-MM-DD',
+            ),
           },
           {
             name: 'Default time format',
             desc: 'Format used by TIME shortcuts without an inline format.',
-            control: {
-              type: 'text',
-              key: 'defaultTimeFormat',
-              placeholder: 'HH:mm:ss',
-            },
+            render: (setting) => this.renderDateTimeFormatSetting(
+              setting,
+              'defaultTimeFormat',
+              'HH:mm:ss',
+            ),
           },
           {
             name: 'Default date-time format',
             desc: 'Format used by DATETIME shortcuts without an inline format.',
-            control: {
-              type: 'text',
-              key: 'defaultDateTimeFormat',
-              placeholder: 'YYYY-MM-DD HH:mm:ss',
-            },
+            render: (setting) => this.renderDateTimeFormatSetting(
+              setting,
+              'defaultDateTimeFormat',
+              'YYYY-MM-DD HH:mm:ss',
+            ),
           },
         ],
       },
@@ -494,6 +496,139 @@ export class VariableLinksSettingTab extends PluginSettingTab {
 
   private isAppearanceSettingKey(key: SettingKey): boolean {
     return key.startsWith('defaultAppearance') || key === 'savedAppearanceColors';
+  }
+
+  private renderDateTimeFormatSetting(
+    setting: Setting,
+    key: 'defaultDateFormat' | 'defaultTimeFormat' | 'defaultDateTimeFormat',
+    placeholder: string,
+  ): () => void {
+    const error = setting.settingEl.createDiv({
+      cls: 'variable-links-setting-validation variable-links-hint-text',
+      attr: { 'aria-live': 'polite' },
+    });
+    let input: HTMLInputElement;
+    setting.addText((component) => {
+      input = component.inputEl;
+      component
+        .setValue(this.variableLinksPlugin.settings[key])
+        .setPlaceholder(placeholder)
+        .onChange((value) => {
+          const normalized = value.trim();
+          const result = formatCapturedDateTime(new Date(), normalized);
+          error.toggleClass('is-visible', !result.ok);
+          error.setText(result.ok ? '' : result.error);
+          if (result.ok) {
+            void this.setControlValue(key, normalized).catch((caught: unknown) => {
+              new Notice(`Variable Links: could not save the format: ${getErrorMessage(caught)}`);
+            });
+          }
+        });
+    });
+    const initial = formatCapturedDateTime(new Date(), this.variableLinksPlugin.settings[key]);
+    error.toggleClass('is-visible', !initial.ok);
+    error.setText(initial.ok ? '' : initial.error);
+    const disposeHelp = addContextHelpButton(
+      setting.nameEl,
+      this.variableLinksPlugin,
+      'Date and time format',
+      (parent) => this.renderDateTimeFormatHelp(parent, input.value),
+    );
+    return disposeHelp;
+  }
+
+  private renderDateTimeFormatHelp(parent: HTMLElement, initialFormat: string): () => void {
+    parent.createEl('p', {
+      text: 'Date, time, and datetime use the same case-sensitive format language. Their settings only provide different defaults.',
+    });
+    const previewSetting = parent.createDiv({ cls: 'variable-links-date-format-preview-setting' });
+    const previewLabel = previewSetting.createEl('label');
+    previewLabel.createSpan({ text: 'Format to preview' });
+    const format = previewLabel.createEl('input', {
+      attr: {
+        type: 'text',
+        value: initialFormat,
+        spellcheck: 'false',
+      },
+    });
+    const preview = parent.createDiv({ cls: 'variable-links-date-format-preview' });
+    preview.createSpan({ text: 'Current local result:' });
+    const previewValue = preview.createEl('code', { attr: { 'aria-live': 'polite' } });
+    const previewError = parent.createDiv({
+      cls: 'variable-links-setting-validation variable-links-hint-text',
+      attr: { 'aria-live': 'polite' },
+    });
+    const renderPreview = (): void => {
+      const result = formatCapturedDateTime(new Date(), format.value);
+      previewValue.setText(result.ok ? result.value : 'Invalid format');
+      previewError.toggleClass('is-visible', !result.ok);
+      previewError.setText(result.ok ? '' : result.error);
+    };
+    format.addEventListener('input', renderPreview);
+    renderPreview();
+
+    parent.createEl('p', {
+      text: 'Put literal words in [brackets], or use a backslash before one literal character. Token letters are case-sensitive: MM is month, while mm is minutes.',
+    });
+    const table = parent.createEl('table', { cls: 'variable-links-date-format-table' });
+    const header = table.createEl('thead').createEl('tr');
+    header.createEl('th', { text: 'Tokens' });
+    header.createEl('th', { text: 'Meaning' });
+    const body = table.createEl('tbody');
+    for (const [tokens, meaning] of [
+      ['YYYY, YY', 'Four- or two-digit year'],
+      ['MMMM, MMM, MM, M', 'Full, short, padded, or numeric month'],
+      ['DD, D', 'Padded or numeric day'],
+      ['WW, www, w', 'Full, short, or single-letter weekday'],
+      ['HH, H', '24-hour clock'],
+      ['hh, h', '12-hour clock'],
+      ['mm, m', 'Minutes'],
+      ['ss, s', 'Seconds'],
+      ['SSS', 'Milliseconds'],
+      ['A, a', 'Uppercase or lowercase AM/PM'],
+    ] as const) {
+      const row = body.createEl('tr');
+      row.createEl('td').createEl('code', { text: tokens });
+      row.createEl('td', { text: meaning });
+    }
+
+    new Setting(parent).setName('Examples').setHeading();
+    const examples = parent.createDiv({ cls: 'variable-links-date-format-examples' });
+    for (const example of [
+      'YYYY-MM-DD',
+      'HH:mm:ss',
+      'YYYY-MM-DD HH:mm:ss',
+      'WW, MMMM D, YYYY',
+      'hh:mm A',
+      'YYYY-MM-DD [at] hh:mm A',
+    ]) {
+      const row = examples.createDiv();
+      row.createEl('code', { text: example });
+      const copy = row.createEl('button', {
+        cls: 'clickable-icon',
+        attr: { type: 'button', 'aria-label': `Copy ${example}`, title: 'Copy format' },
+      });
+      setIcon(copy, 'copy');
+      copy.addEventListener('click', () => {
+        const clipboard = parent.ownerDocument.defaultView?.navigator.clipboard;
+        if (!clipboard) {
+          new Notice('Variable links: clipboard access is unavailable.');
+          return;
+        }
+        void clipboard.writeText(example).then(
+          () => new Notice('Variable links: format copied.'),
+          (caught: unknown) => new Notice(
+            `Variable links: could not copy the format: ${getErrorMessage(caught)}`,
+          ),
+        );
+      });
+    }
+    const hostWindow = parent.ownerDocument.defaultView;
+    const timer = hostWindow?.setInterval(renderPreview, 1000);
+    return () => {
+      format.removeEventListener('input', renderPreview);
+      if (timer !== undefined) hostWindow?.clearInterval(timer);
+    };
   }
 
   private renderAutolinkProfiles(controlEl: HTMLElement): () => void {
@@ -1023,6 +1158,12 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       button.removeEventListener('click', onClick);
     };
   }
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'An unknown error occurred.';
 }
 
 export default VariableLinksSettingTab;
