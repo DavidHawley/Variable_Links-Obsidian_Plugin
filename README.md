@@ -201,7 +201,9 @@ Each profile can define:
 - A starter Info Card layout.
 - Whether matching notes may override the profile through frontmatter properties.
 
-Preview a profile before applying it. **Apply safe additions** creates non-conflicting links and safely refreshes fields still managed by the profile. Replacing an existing same-name Variable Link requires separately enabling overwrite and confirming **Apply all**.
+Preview a profile before applying it. **Apply safe changes** creates non-conflicting links and safely refreshes fields still managed by the profile. Replacing an existing same-name Variable Link requires separately enabling overwrite and confirming **Apply all**.
+
+When a profile's Card-property list changes, you can separately update property references in existing Cards without renaming their Variable Links or replacing the rest of each Card design.
 
 Deleting a profile does not delete Variable Links it previously created.
 
