@@ -13,7 +13,7 @@ import {
   type AutolinkScopeType,
 } from './autolink';
 import { openAutolinkProfilePreview } from './autolinkPreview';
-import { addContextHelpButton } from './contextHelp';
+import { addContextHelpButton, openContextHelp } from './contextHelp';
 import { formatCapturedDateTime } from './dateTime';
 import VariableLinksPlugin from './main';
 import type { TokenSyntaxMigrationPlan } from './tokenCache';
@@ -304,6 +304,18 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       {
         type: 'group',
         heading: 'Default variable appearance',
+        extraButtons: [(button) => {
+          button
+            .setIcon('circle-help')
+            .setTooltip('Default variable appearance help')
+            .onClick(() => openContextHelp(
+              this.variableLinksPlugin,
+              'Default variable appearance',
+              button.extraSettingsEl,
+              (parent) => this.renderDefaultAppearanceHelp(parent),
+            ));
+          button.extraSettingsEl.setAttribute('aria-label', 'Default variable appearance help');
+        }],
         items: [
           {
             name: 'Bold',
@@ -368,36 +380,54 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         ],
       },
       {
-        name: 'Enable info cards',
-        desc: 'Show info cards when hovering over rendered variables.',
-        control: { type: 'toggle', key: 'enableInfoCards' },
-      },
-      {
-        name: 'Reading View hover delay',
-        desc: 'Seconds to hover over a rendered variable before its info card appears in Reading View.',
-        control: {
-          type: 'number',
-          key: 'readingViewHoverDelaySeconds',
-          min: 0,
-          max: 30,
-          step: 0.25,
-        },
-      },
-      {
-        name: 'Live Preview hover delay',
-        desc: 'Seconds to hover over a rendered variable before its info card appears in Live Preview.',
-        control: {
-          type: 'number',
-          key: 'livePreviewHoverDelaySeconds',
-          min: 1,
-          max: 30,
-          step: 0.25,
-        },
-      },
-      {
-        name: 'Disable Live Preview hover',
-        desc: 'Prevent info cards from opening in Live Preview. Reading View is unaffected.',
-        control: { type: 'toggle', key: 'disableLivePreviewHover' },
+        type: 'group',
+        heading: 'Info card hover',
+        extraButtons: [(button) => {
+          button
+            .setIcon('circle-help')
+            .setTooltip('Info card hover help')
+            .onClick(() => openContextHelp(
+              this.variableLinksPlugin,
+              'Info card hover',
+              button.extraSettingsEl,
+              (parent) => this.renderInfoCardHoverHelp(parent),
+            ));
+          button.extraSettingsEl.setAttribute('aria-label', 'Info card hover help');
+        }],
+        items: [
+          {
+            name: 'Enable info cards',
+            desc: 'Show info cards when hovering over rendered variables.',
+            control: { type: 'toggle', key: 'enableInfoCards' },
+          },
+          {
+            name: 'Reading View hover delay',
+            desc: 'Seconds to hover over a rendered variable before its info card appears in Reading View.',
+            control: {
+              type: 'number',
+              key: 'readingViewHoverDelaySeconds',
+              min: 0,
+              max: 30,
+              step: 0.25,
+            },
+          },
+          {
+            name: 'Live Preview hover delay',
+            desc: 'Seconds to hover over a rendered variable before its info card appears in Live Preview.',
+            control: {
+              type: 'number',
+              key: 'livePreviewHoverDelaySeconds',
+              min: 1,
+              max: 30,
+              step: 0.25,
+            },
+          },
+          {
+            name: 'Disable Live Preview hover',
+            desc: 'Prevent info cards from opening in Live Preview. Reading View is unaffected.',
+            control: { type: 'toggle', key: 'disableLivePreviewHover' },
+          },
+        ],
       },
       {
         name: 'Open file links in new pane',
@@ -661,6 +691,41 @@ export class VariableLinksSettingTab extends PluginSettingTab {
     parent.createEl('p', {
       text: 'Formats that overlap Markdown or Obsidian syntax may not render reliably. Review warnings and test a new format before migrating existing notes.',
       cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderDefaultAppearanceHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'These settings define the appearance inherited by variable links that have use default appearance enabled.',
+    });
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Inherited variables update when these defaults change.',
+    });
+    details.createEl('li', {
+      text: 'Turning off use default appearance restores that variable’s saved custom appearance.',
+    });
+    details.createEl('li', {
+      text: 'Saved colors are reusable swatches; changing a swatch does not recolor variables that already saved its earlier color.',
+    });
+  }
+
+  private renderInfoCardHoverHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Info card hover behavior is configured separately for reading view and live preview.',
+    });
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Enable info cards is the master switch for both editor modes.',
+    });
+    details.createEl('li', {
+      text: 'Delays use quarter-second steps. Reading view allows an immediate 0-second delay; Live preview starts at 1 second.',
+    });
+    details.createEl('li', {
+      text: 'Disable live preview hover prevents every card from opening in live preview but does not affect reading view.',
+    });
+    details.createEl('li', {
+      text: 'An individual card can disable only its own live preview hover from the card properties panel.',
     });
   }
 

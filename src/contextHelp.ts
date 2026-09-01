@@ -9,7 +9,7 @@ class ContextHelpModal extends Modal {
   constructor(
     private readonly plugin: VariableLinksPlugin,
     private readonly title: string,
-    private readonly origin: HTMLButtonElement,
+    private readonly origin: HTMLElement,
     private readonly renderContent: ContextHelpRenderer,
   ) {
     super(plugin.app);
@@ -34,6 +34,15 @@ class ContextHelpModal extends Modal {
   }
 }
 
+export function openContextHelp(
+  plugin: VariableLinksPlugin,
+  title: string,
+  origin: HTMLElement,
+  renderContent: ContextHelpRenderer,
+): void {
+  new ContextHelpModal(plugin, title, origin, renderContent).open();
+}
+
 export function addContextHelpButton(
   parent: HTMLElement,
   plugin: VariableLinksPlugin,
@@ -53,7 +62,7 @@ export function addContextHelpButton(
   const open = (event: MouseEvent): void => {
     event.preventDefault();
     event.stopPropagation();
-    new ContextHelpModal(plugin, title, button, renderContent).open();
+    openContextHelp(plugin, title, button, renderContent);
   };
   button.addEventListener('click', open);
   return () => button.removeEventListener('click', open);

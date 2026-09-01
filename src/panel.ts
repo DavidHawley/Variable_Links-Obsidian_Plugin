@@ -86,6 +86,16 @@ function emptyDefinition(type: VariableType = 'property'): VariableDefinition {
   return { type, file: '', property: '', value: type === 'fixed' ? '' : undefined };
 }
 
+function renderCardHoverOverrideHelp(parent: HTMLElement): void {
+  parent.createEl('p', {
+    text: 'This disables live preview hover only for this info card. Reading view remains available.',
+  });
+  parent.createEl('p', {
+    text: 'The global info card hover settings can still disable all cards or change the delay used by cards that remain enabled.',
+    cls: 'variable-links-hint-text',
+  });
+}
+
 interface PropertySuggestion {
   file: TFile;
   property: string;
@@ -386,6 +396,12 @@ class InfoCardLayoutModal extends Modal {
       this.disableLivePreviewHover = livePreviewInput.checked;
     });
     livePreviewLabel.createSpan({ text: 'Disable live preview hover for this card' });
+    addContextHelpButton(
+      livePreviewLabel,
+      this.plugin,
+      'Card hover override',
+      renderCardHoverOverrideHelp,
+    );
 
     const footer = this.contentEl.createDiv({ cls: 'variable-links-card-layout-footer' });
     footer.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
@@ -2346,6 +2362,13 @@ export class VariablePropertiesView extends ItemView {
       'Use default appearance',
       useDefaults,
     );
+    const useDefaultsLabel = useDefaultsInput.parentElement;
+    if (useDefaultsLabel) addContextHelpButton(
+      useDefaultsLabel,
+      this.plugin,
+      'Variable appearance inheritance',
+      (helpParent) => this.renderAppearanceInheritanceHelp(helpParent),
+    );
     const restoreDefaultsButton = defaultsRow.createEl('button', {
       text: 'Restore defaults',
       attr: { type: 'button' },
@@ -2727,7 +2750,15 @@ export class VariablePropertiesView extends ItemView {
     const livePreviewRow = form.createDiv({ cls: 'variable-links-panel-checkbox' });
     const livePreviewInput = livePreviewRow.createEl('input', { type: 'checkbox' });
     livePreviewInput.checked = card.disableLivePreviewHover === true;
-    livePreviewRow.createEl('label', { text: 'Disable live preview hover for this card' });
+    const livePreviewLabel = livePreviewRow.createEl('label', {
+      text: 'Disable live preview hover for this card',
+    });
+    addContextHelpButton(
+      livePreviewLabel,
+      this.plugin,
+      'Card hover override',
+      renderCardHoverOverrideHelp,
+    );
 
     const getSimpleCard = (nextUseBlockLayout: boolean): CardConfig => {
       const fields = fieldsInput.value.split(',').map((field) => field.trim()).filter(Boolean);
@@ -3054,6 +3085,20 @@ export class VariablePropertiesView extends ItemView {
       text: 'After saving, double-click the linked value field to edit supported text, number, or true/false properties in the source note.',
     });
   }
+
+  private renderAppearanceInheritanceHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'When enabled, this variable uses the current default variable appearance from plugin settings and follows later default changes.',
+    });
+    const details = parent.createEl('ul');
+    details.createEl('li', {
+      text: 'Turning it off restores the variable’s last saved custom appearance.',
+    });
+    details.createEl('li', {
+      text: 'Restore defaults replaces the custom draft with the current defaults and returns the variable to inherited mode.',
+    });
+  }
+
 
   private addTextarea(
     parent: HTMLElement,
