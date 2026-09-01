@@ -35,6 +35,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Completed the contextual-help review with guidance for Autolink safety, text-case overrides, and mass-rename word processing.
 - Added naming-pattern syntax help directly beside the Name pattern field in each Autolink profile.
 - Added combined Autolink previews for the current note, selected folders, and all enabled profiles, with deterministic profile precedence and out-of-scope reporting.
+- Added repeatable Autolink synchronization that safely updates profile-managed source and property fields while preserving manual changes, Card snapshots, and other custom settings.
 
 ### Changed
 

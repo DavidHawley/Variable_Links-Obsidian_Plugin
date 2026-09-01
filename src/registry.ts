@@ -100,6 +100,7 @@ export interface ManagedAutolinkAddition {
 
 export interface ManagedAutolinkApplyResult {
   added: number;
+  updated: number;
   overwritten: number;
 }
 
@@ -370,8 +371,7 @@ export class Registry {
       }
       const link = this.movedFileLink(definition.link ?? '', oldPath, newPath);
       if (link !== null) update.link = link;
-      if (definition.managed?.managedFields.includes('file')
-        && this.sameFilePath(definition.managed.sourcePath, oldPath)) {
+      if (definition.managed && this.sameFilePath(definition.managed.sourcePath, oldPath)) {
         update.managedSourcePath = newPath.replace(/\\/g, '/');
       }
       if (Object.keys(update).length) updates.set(name, update);
@@ -483,7 +483,7 @@ export class Registry {
     additions: readonly ManagedAutolinkAddition[],
     allowOverwrite = false,
   ): Promise<ManagedAutolinkApplyResult> {
-    if (!additions.length) return { added: 0, overwritten: 0 };
+    if (!additions.length) return { added: 0, updated: 0, overwritten: 0 };
     if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
     const tokenSyntax = getTokenSyntax(this.plugin.settings);
     const normalized = additions.map(({ name, definition }) => {
@@ -517,16 +517,47 @@ export class Registry {
     }
 
     let added = 0;
+    let updated = 0;
     let overwritten = 0;
     await this.mutateRegistryLinks((links) => {
-      for (const { name } of normalized) {
-        if (!allowOverwrite && Object.prototype.hasOwnProperty.call(links, name)) {
-          throw new Error(`“${name}” now belongs to an existing Variable Link. No additions were saved.`);
+      for (const { name, definition } of normalized) {
+        const current = links[name];
+        if (!Object.prototype.hasOwnProperty.call(links, name)) continue;
+        const currentManaged = this.isRecord(current)
+          ? normalizeManagedAutolinkEntry(current.managed)
+          : undefined;
+        const desiredManaged = definition.managed;
+        const safelyManaged = currentManaged !== undefined
+          && desiredManaged !== undefined
+          && currentManaged.profileId === desiredManaged.profileId
+          && this.sameFilePath(currentManaged.sourcePath, desiredManaged.sourcePath);
+        if (!safelyManaged && !allowOverwrite) {
+          throw new Error(`“${name}” now belongs to an unrelated Variable Link. No Autolink changes were saved.`);
         }
       }
       for (const { name, definition } of normalized) {
         const current = links[name];
         if (Object.prototype.hasOwnProperty.call(links, name)) {
+          const currentManaged = this.isRecord(current)
+            ? normalizeManagedAutolinkEntry(current.managed)
+            : undefined;
+          const desiredManaged = definition.managed;
+          const safelyManaged = currentManaged !== undefined
+            && desiredManaged !== undefined
+            && currentManaged.profileId === desiredManaged.profileId
+            && this.sameFilePath(currentManaged.sourcePath, desiredManaged.sourcePath);
+          if (safelyManaged && this.isRecord(current)) {
+            const next: Record<string, unknown> = { ...current };
+            if (currentManaged.managedFields.includes('file')) next.file = definition.file;
+            if (currentManaged.managedFields.includes('property')) next.property = definition.property;
+            next.managed = {
+              ...desiredManaged,
+              managedFields: currentManaged.managedFields,
+            };
+            links[name] = next;
+            updated++;
+            continue;
+          }
           const guid = this.isRecord(current) && typeof current.guid === 'string'
             ? current.guid.trim()
             : '';
@@ -541,15 +572,15 @@ export class Registry {
     try {
       await this.load();
     } catch {
-      new Notice('Autolink additions were saved, but the registry view could not be refreshed. Reload Obsidian.');
-      return { added, overwritten };
+      new Notice('Autolink changes were saved, but the registry view could not be refreshed. Reload Obsidian.');
+      return { added, updated, overwritten };
     }
     try {
       await this.plugin.refreshAfterRegistryReload();
     } catch {
-      new Notice('Autolink additions were saved, but some derived views could not be refreshed. Reload Obsidian.');
+      new Notice('Autolink changes were saved, but some derived views could not be refreshed. Reload Obsidian.');
     }
-    return { added, overwritten };
+    return { added, updated, overwritten };
   }
 
   /** Persist a mapping. A rename keeps the GUID and updates verified token references. */
@@ -605,6 +636,13 @@ export class Registry {
     if (Object.prototype.hasOwnProperty.call(definition, 'favorite')) normalized.favorite = definition.favorite === true;
     if (Object.prototype.hasOwnProperty.call(definition, 'managed')) {
       normalized.managed = normalizeManagedAutolinkEntry(definition.managed);
+    } else if (existing?.managed) {
+      const managedFields = existing.managed.managedFields.filter((field) => {
+        if (field === 'file') return this.sameFilePath(existing.file, definition.file);
+        if (field === 'property') return existing.property.trim() === definition.property.trim();
+        return true;
+      });
+      normalized.managed = { ...existing.managed, managedFields };
     }
     const rename = !!oldName && oldName !== variableName;
     const tokenCache = this.plugin.tokenCache;

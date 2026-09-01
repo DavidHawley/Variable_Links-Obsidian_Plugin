@@ -751,7 +751,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       text: 'Value property chooses the note property displayed by each generated variable. Name pattern controls its permanent variable name.',
     });
     details.createEl('li', {
-      text: 'Preview matches reads notes without changing the registry. Apply safe additions creates only non-conflicting entries.',
+      text: 'Preview matches reads notes without changing the registry. Apply safe changes adds non-conflicting entries and updates only fields that remain profile-managed.',
     });
     details.createEl('li', {
       text: 'Allow overwrite and apply all are required before same-name entries can be replaced; other warnings remain excluded.',

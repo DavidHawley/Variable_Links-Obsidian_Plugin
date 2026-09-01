@@ -9,11 +9,13 @@ import {
   type AutolinkCardPreset,
   type AutolinkProfile,
 } from './autolink';
-import { toFileLink } from './linkSyntax';
+import { filePathFromLink, toFileLink } from './linkSyntax';
 import { createAutolinkCardSnapshot } from './cardPresets';
 import { getTokenSyntax } from './tokenSyntax';
 import { parseVariableTextCaseMarker } from './textCase';
 import { renderNamePattern } from './namePattern';
+
+type AutolinkPreviewAction = 'addition' | 'update' | 'unchanged' | 'conflict';
 
 interface AutolinkPreviewItem {
   file: TFile;
@@ -24,8 +26,11 @@ interface AutolinkPreviewItem {
   cardProperties: string[];
   overrideSummary: string;
   warnings: string[];
+  action: AutolinkPreviewAction;
   existingNameCollision: boolean;
-  managedUpdateCandidate: boolean;
+  existingManagedName: string;
+  preservedFields: string[];
+  updateFields: string[];
   precedenceNote: string;
 }
 
@@ -96,8 +101,9 @@ class CombinedAutolinkPreviewModal extends Modal {
       text: scopedFiles.length ? 'No enabled profile matches the selected scope.' : 'The selected scope contains no Markdown files.',
       cls: 'mod-muted',
     });
-    this.renderPathDetails('Notes without a matching enabled profile', unmatched.map(({ path }) => path));
-    this.renderPathDetails(
+    renderPathDetails(this.contentEl, 'Notes without a matching enabled profile', unmatched.map(({ path }) => path));
+    renderPathDetails(
+      this.contentEl,
       'Managed links outside their profile scope',
       outOfScope.map(({ name, path }) => `${name} — ${path}`),
     );
@@ -126,22 +132,13 @@ class CombinedAutolinkPreviewModal extends Modal {
       row.createEl('td', { text: item.valueProperty || 'Missing' });
       row.createEl('td', { text: formatCardSummary(item) });
       row.createEl('td', { text: item.overrideSummary });
-      const status = [...item.warnings];
-      if (item.precedenceNote) status.push(item.precedenceNote);
       row.createEl('td', {
-        text: status.length ? status.join(' ') : 'Ready',
+        text: formatPreviewStatus(item),
         cls: item.warnings.length ? 'mod-warning' : '',
       });
     }
   }
 
-  private renderPathDetails(title: string, paths: readonly string[]): void {
-    if (!paths.length) return;
-    const details = this.contentEl.createEl('details', { cls: 'variable-links-autolink-preview-details' });
-    details.createEl('summary', { text: `${title} (${paths.length})` });
-    const list = details.createEl('ul');
-    for (const path of paths) list.createEl('li', { text: path });
-  }
 }
 
 class AutolinkPreviewModal extends Modal {
@@ -158,7 +155,12 @@ class AutolinkPreviewModal extends Modal {
     this.plugin.trackDialog(this);
     this.contentEl.createEl('h3', { text: `Autolink preview: ${this.profile.name}` });
     const items = this.buildItems();
-    const safeItems = items.filter(isSafeAddition);
+    const safeItems = items.filter(isSafeChange);
+    const additionCount = safeItems.filter(({ action }) => action === 'addition').length;
+    const updateCount = safeItems.filter(({ action }) => action === 'update').length;
+    const unchangedCount = items.filter(({ action, warnings }) =>
+      action === 'unchanged' && warnings.length === 0
+    ).length;
     const allApplicableItems = items.filter(isApplicableWithOverwrite);
     const overwriteCount = allApplicableItems.filter((item) => item.existingNameCollision).length;
     const savedProfile = this.registry.autolinkProfiles.find(({ id }) => id === this.profile.id);
@@ -166,22 +168,22 @@ class AutolinkPreviewModal extends Modal {
     const canApply = this.profile.enabled && profileIsSaved && safeItems.length > 0;
     this.contentEl.createEl('p', {
       text: items.length
-        ? `${items.length} matching note${items.length === 1 ? '' : 's'}; ${safeItems.length} safe addition${safeItems.length === 1 ? '' : 's'} and ${overwriteCount} overwrite candidate${overwriteCount === 1 ? '' : 's'}. Nothing changes until you confirm an action.`
+        ? `${items.length} matching note${items.length === 1 ? '' : 's'}; ${additionCount} safe addition${additionCount === 1 ? '' : 's'}, ${updateCount} safe update${updateCount === 1 ? '' : 's'}, ${unchangedCount} up to date, and ${overwriteCount} overwrite candidate${overwriteCount === 1 ? '' : 's'}. Nothing changes until you confirm an action.`
         : 'No matching notes. Preview only; no Variable Links will be changed.',
     });
     if (!this.profile.enabled) {
       this.contentEl.createEl('p', {
-        text: 'Enable and save this profile before applying additions.',
+        text: 'Enable and save this profile before applying changes.',
         cls: 'variable-links-hint-text',
       });
     } else if (!profileIsSaved) {
       this.contentEl.createEl('p', {
-        text: 'Save this profile before applying additions. The preview may still show unsaved settings.',
+        text: 'Save this profile before applying changes. The preview may still show unsaved settings.',
         cls: 'variable-links-hint-text',
       });
     } else if (safeItems.length) {
       this.contentEl.createEl('p', {
-        text: 'New additions receive the previewed built-in card as a snapshot. Existing links, warnings, updates, and removals remain unchanged.',
+        text: 'New additions receive the previewed card snapshot. Safe updates change only fields that remain profile-managed; customized cards and other settings are preserved.',
         cls: 'variable-links-hint-text',
       });
     }
@@ -200,11 +202,17 @@ class AutolinkPreviewModal extends Modal {
         row.createEl('td', { text: formatCardSummary(item) });
         row.createEl('td', { text: item.overrideSummary });
         row.createEl('td', {
-          text: item.warnings.length ? item.warnings.join(' ') : 'Ready',
+          text: formatPreviewStatus(item),
           cls: item.warnings.length ? 'mod-warning' : '',
         });
       }
     }
+    const outOfScope = getOutOfScopeManagedEntries(this.app, this.registry, [this.profile]);
+    renderPathDetails(
+      this.contentEl,
+      'Managed links outside this profile scope',
+      outOfScope.map(({ name, path }) => `${name} — ${path}`),
+    );
     const actions = this.contentEl.createDiv({ cls: 'variable-links-autolink-preview-actions' });
     const overwriteLabel = actions.createEl('label', {
       cls: 'variable-links-autolink-overwrite-control',
@@ -221,7 +229,7 @@ class AutolinkPreviewModal extends Modal {
       attr: { type: 'button' },
     });
     const applySafe = buttons.createEl('button', {
-      text: 'Apply safe additions',
+      text: 'Apply safe changes',
       cls: 'mod-cta',
       attr: { type: 'button' },
     });
@@ -235,7 +243,7 @@ class AutolinkPreviewModal extends Modal {
     });
     applyAll.addEventListener('click', () => {
       if (!allowOverwrite.checked) return;
-      new ConfirmAutolinkAdditionsModal(
+      new ConfirmAutolinkChangesModal(
         this.app,
         this.plugin,
         this.registry,
@@ -247,13 +255,13 @@ class AutolinkPreviewModal extends Modal {
       ).open();
     });
     applySafe.addEventListener('click', () => {
-      new ConfirmAutolinkAdditionsModal(
+      new ConfirmAutolinkChangesModal(
         this.app,
         this.plugin,
         this.registry,
         this.profile,
         safeItems,
-        () => this.buildItems().filter(isSafeAddition),
+        () => this.buildItems().filter(isSafeChange),
         false,
         () => this.close(),
       ).open();
@@ -272,7 +280,7 @@ class AutolinkPreviewModal extends Modal {
   }
 }
 
-class ConfirmAutolinkAdditionsModal extends Modal {
+class ConfirmAutolinkChangesModal extends Modal {
   private applying = false;
 
   constructor(
@@ -291,14 +299,15 @@ class ConfirmAutolinkAdditionsModal extends Modal {
   onOpen(): void {
     this.plugin.trackDialog(this);
     this.contentEl.createEl('h3', {
-      text: this.allowOverwrite ? 'Apply all autolink changes?' : 'Apply safe autolink additions?',
+      text: this.allowOverwrite ? 'Apply all autolink changes?' : 'Apply safe autolink changes?',
     });
     const overwriteCount = this.items.filter((item) => item.existingNameCollision).length;
-    const additionCount = this.items.length - overwriteCount;
+    const additionCount = this.items.filter(({ action }) => action === 'addition').length;
+    const updateCount = this.items.filter(({ action }) => action === 'update').length;
     this.contentEl.createEl('p', {
       text: this.allowOverwrite
-        ? `Add ${additionCount} and overwrite ${overwriteCount} property-backed Variable Link${this.items.length === 1 ? '' : 's'} from “${this.profile.name}”?`
-        : `Add ${additionCount} property-backed Variable Link${additionCount === 1 ? '' : 's'} from “${this.profile.name}”?`,
+        ? `Add ${additionCount}, safely update ${updateCount}, and overwrite ${overwriteCount} property-backed Variable Link${this.items.length === 1 ? '' : 's'} from “${this.profile.name}”?`
+        : `Add ${additionCount} and safely update ${updateCount} property-backed Variable Link${this.items.length === 1 ? '' : 's'} from “${this.profile.name}”?`,
     });
     if (overwriteCount) {
       this.contentEl.createEl('p', {
@@ -306,21 +315,23 @@ class ConfirmAutolinkAdditionsModal extends Modal {
         cls: 'mod-warning',
       });
     }
-    const cardCount = this.items.filter(({ cardPreset }) => cardPreset !== 'none').length;
+    const cardCount = this.items.filter(({ action, cardPreset }) =>
+      action === 'addition' && cardPreset !== 'none'
+    ).length;
     if (cardCount) {
       this.contentEl.createEl('p', {
-        text: `${cardCount} applied result${cardCount === 1 ? '' : 's'} will include a new built-in Card snapshot using the listed properties.`,
+        text: `${cardCount} new addition${cardCount === 1 ? '' : 's'} will include a built-in Card snapshot using the listed properties. Existing Cards are preserved during safe updates.`,
       });
     }
     this.contentEl.createEl('p', {
       text: this.allowOverwrite
         ? 'Other warnings remain excluded. The entire batch is cancelled if the preview is no longer current.'
-        : 'This adds new registry entries only. If any name is no longer available, the entire batch is cancelled without changing the registry.',
+        : 'Safe updates preserve every field no longer managed by the profile. If the preview is no longer current, the entire batch is cancelled without changing the registry.',
     });
     const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
     const cancel = actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } });
     const apply = actions.createEl('button', {
-      text: this.allowOverwrite ? 'Apply all' : 'Apply additions',
+      text: this.allowOverwrite ? 'Apply all' : 'Apply safe changes',
       cls: 'mod-cta',
       attr: { type: 'button' },
     });
@@ -335,8 +346,8 @@ class ConfirmAutolinkAdditionsModal extends Modal {
         this.applying = false;
         cancel.disabled = false;
         apply.disabled = false;
-        apply.textContent = this.allowOverwrite ? 'Apply all' : 'Apply additions';
-        new Notice(`Variable Links: could not apply Autolink additions: ${error instanceof Error ? error.message : String(error)}`);
+        apply.textContent = this.allowOverwrite ? 'Apply all' : 'Apply safe changes';
+        new Notice(`Variable Links: could not apply Autolink changes: ${error instanceof Error ? error.message : String(error)}`);
       });
     });
   }
@@ -369,7 +380,8 @@ class ConfirmAutolinkAdditionsModal extends Modal {
         },
       },
     })), this.allowOverwrite);
-    new Notice(`Variable Links: added ${result.added} and overwritten ${result.overwritten} Autolink Variable Link${result.added + result.overwritten === 1 ? '' : 's'}.`);
+    const changed = result.added + result.updated + result.overwritten;
+    new Notice(`Variable Links: added ${result.added}, safely updated ${result.updated}, and overwritten ${result.overwritten} Autolink Variable Link${changed === 1 ? '' : 's'}.`);
     this.close();
     this.onApplied();
   }
@@ -393,18 +405,25 @@ function previewItemsEqual(
     valueProperty: item.valueProperty,
     cardPreset: item.cardPreset,
     cardProperties: item.cardProperties,
+    action: item.action,
     existingNameCollision: item.existingNameCollision,
+    existingManagedName: item.existingManagedName,
+    preservedFields: item.preservedFields,
+    updateFields: item.updateFields,
+    warnings: item.warnings,
   });
   return left.length === right.length
     && left.every((item, index) => summarize(item) === summarize(right[index]));
 }
 
-function isSafeAddition(item: AutolinkPreviewItem): boolean {
-  return item.warnings.length === 0;
+function isSafeChange(item: AutolinkPreviewItem): boolean {
+  return item.warnings.length === 0
+    && (item.action === 'addition' || item.action === 'update');
 }
 
 function isApplicableWithOverwrite(item: AutolinkPreviewItem): boolean {
-  return item.warnings.length === (item.existingNameCollision ? 1 : 0);
+  return isSafeChange(item)
+    || (item.action === 'conflict' && item.existingNameCollision && item.warnings.length === 1);
 }
 
 function buildAutolinkItems(
@@ -420,6 +439,9 @@ function buildAutolinkItems(
     .map((file, index) => buildAutolinkItem(app, profile, file, index + 1));
   const names = new Map<string, number>();
   for (const item of allItems) names.set(item.name, (names.get(item.name) ?? 0) + 1);
+  const managedEntries = [...registry.data.entries()].filter(([, definition]) =>
+    definition.managed?.profileId === profile.id
+  );
   const tokenSyntax = getTokenSyntax(plugin.settings);
   for (const item of allItems) {
     if (!item.name) item.warnings.push('A Variable Link name could not be determined.');
@@ -435,14 +457,42 @@ function buildAutolinkItems(
         item.warnings.push('Name resembles token text-case syntax and must be created manually.');
       }
     }
-    const existing = item.name ? registry.getVariable(item.name) : null;
-    if (existing) {
-      item.existingNameCollision = true;
-      item.managedUpdateCandidate = existing.managed?.profileId === profile.id
-        && sameVaultPath(existing.managed.sourcePath, item.file.path);
-      item.warnings.push(item.managedUpdateCandidate
-        ? 'Existing managed Variable Link is an update candidate.'
-        : 'Name already belongs to an existing Variable Link.');
+    const sourceMatches = managedEntries.filter(([, definition]) =>
+      definition.managed && sameVaultPath(definition.managed.sourcePath, item.file.path)
+    );
+    const managedMatch = sourceMatches.find(([name]) => name === item.name) ?? sourceMatches[0];
+    if (sourceMatches.length > 1) {
+      item.action = 'conflict';
+      item.warnings.push('More than one existing managed Variable Link uses this profile and source note.');
+    } else if (managedMatch) {
+      const [existingName, existing] = managedMatch;
+      item.existingManagedName = existingName;
+      if (existingName !== item.name) {
+        item.action = 'conflict';
+        item.warnings.push(`Existing managed Variable Link “${existingName}” needs a previewed rename before this name can be used.`);
+      } else if (existing.type === 'fixed' && (existing.managed?.managedFields.length ?? 0) > 0) {
+        item.action = 'conflict';
+        item.warnings.push('The managed entry is fixed-value data but still claims profile-managed property fields. Review it manually.');
+      } else {
+        const sourceChanged = !sameVaultPath(filePathFromLink(existing.file), item.file.path);
+        if (sourceChanged) {
+          if (existing.managed?.managedFields.includes('file')) item.updateFields.push('source note');
+          else item.preservedFields.push('source note');
+        }
+        const propertyChanged = existing.property.trim() !== item.valueProperty.trim();
+        if (propertyChanged) {
+          if (existing.managed?.managedFields.includes('property')) item.updateFields.push('value property');
+          else item.preservedFields.push('value property');
+        }
+        item.action = item.updateFields.length ? 'update' : 'unchanged';
+      }
+    } else {
+      const existing = item.name ? registry.getVariable(item.name) : null;
+      if (existing) {
+        item.action = 'conflict';
+        item.existingNameCollision = true;
+        item.warnings.push('Name already belongs to an unrelated Variable Link.');
+      }
     }
   }
   const scopedItems = includedPaths
@@ -541,8 +591,11 @@ function buildAutolinkItem(
     cardProperties,
     overrideSummary,
     warnings,
+    action: 'addition',
     existingNameCollision: false,
-    managedUpdateCandidate: false,
+    existingManagedName: '',
+    preservedFields: [],
+    updateFields: [],
     precedenceNote: '',
   };
 }
@@ -647,6 +700,35 @@ function formatCardSummary(item: AutolinkPreviewItem): string {
   return item.cardPreset === 'none'
     ? 'None'
     : `${item.cardPreset} · ${item.cardProperties.length ? item.cardProperties.join(', ') : 'No properties'}`;
+}
+
+function formatPreviewStatus(item: AutolinkPreviewItem): string {
+  const details = [...item.warnings];
+  if (!details.length) {
+    if (item.action === 'addition') details.push('Ready to add.');
+    else if (item.action === 'update') details.push(`Safe update: ${item.updateFields.join(', ')}.`);
+    else if (item.action === 'unchanged') details.push(item.preservedFields.length
+      ? 'No profile-managed changes.'
+      : 'Up to date.');
+    else details.push('Conflict requires review.');
+  }
+  if (item.preservedFields.length) {
+    details.push(`Preserving manual ${item.preservedFields.join(' and ')}.`);
+  }
+  if (item.precedenceNote) details.push(item.precedenceNote);
+  return details.join(' ');
+}
+
+function renderPathDetails(
+  parent: HTMLElement,
+  title: string,
+  paths: readonly string[],
+): void {
+  if (!paths.length) return;
+  const details = parent.createEl('details', { cls: 'variable-links-autolink-preview-details' });
+  details.createEl('summary', { text: `${title} (${paths.length})` });
+  const list = details.createEl('ul');
+  for (const path of paths) list.createEl('li', { text: path });
 }
 
 function normalizePreset(
