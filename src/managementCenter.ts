@@ -7,12 +7,19 @@ import {
   type ViewStateResult,
 } from 'obsidian';
 import type VariableLinksPlugin from './main';
-import { getVariableType, type VariableDefinition } from './registry';
+import {
+  getVariableType,
+  type VariableDefinition,
+  type VariableRename,
+} from './registry';
 import type { TokenValueReplacement, TokenValueReplacementPlan } from './tokenCache';
+import { getTokenSyntax } from './tokenSyntax';
+import { parseVariableTextCaseMarker } from './textCase';
 
 export const VIEW_TYPE_MANAGEMENT_CENTER = 'variable-links-management-center';
 
 type ManagementActivity = 'variables';
+type MassRenameMode = 'prefix' | 'suffix' | 'replace';
 type OwnershipFilter = 'all' | 'manual' | 'managed';
 type VariableTypeFilter = 'all' | 'property' | 'fixed';
 type VariableSort = 'name-ascending' | 'name-descending' | 'type' | 'source';
@@ -169,7 +176,15 @@ export class ManagementCenterView extends ItemView {
       cls: 'variable-links-management-center-list-status variable-links-hint-text',
       attr: { 'aria-live': 'polite' },
     });
-    const deleteSelected = listToolbar.createEl('button', {
+    const bulkActions = listToolbar.createDiv({
+      cls: 'variable-links-management-center-bulk-actions',
+    });
+    const renameSelected = bulkActions.createEl('button', {
+      text: 'Rename selected',
+      attr: { type: 'button' },
+    });
+    renameSelected.addEventListener('click', () => this.openMassRename(entries));
+    const deleteSelected = bulkActions.createEl('button', {
       text: 'Delete selected',
       cls: 'mod-warning',
       attr: { type: 'button' },
@@ -178,7 +193,13 @@ export class ManagementCenterView extends ItemView {
       void this.confirmBulkDelete(entries);
     });
     const list = content.createDiv({ cls: 'variable-links-management-center-list' });
-    const renderList = (): void => this.renderList(entries, list, status, deleteSelected);
+    const renderList = (): void => this.renderList(
+      entries,
+      list,
+      status,
+      renameSelected,
+      deleteSelected,
+    );
     search.addEventListener('input', () => {
       this.state.query = search.value;
       this.saveViewState();
@@ -216,6 +237,7 @@ export class ManagementCenterView extends ItemView {
     entries: readonly VariableEntry[],
     list: HTMLElement,
     status: HTMLElement,
+    renameSelected: HTMLButtonElement,
     deleteSelected: HTMLButtonElement,
   ): void {
     list.empty();
@@ -223,6 +245,8 @@ export class ManagementCenterView extends ItemView {
     const selected = new Set(this.state.selected);
     const updateStatus = (): void => {
       status.setText(`Showing ${visible.length} of ${entries.length} · ${selected.size} selected`);
+      renameSelected.disabled = selected.size === 0;
+      renameSelected.setText(selected.size ? `Rename selected (${selected.size})` : 'Rename selected');
       deleteSelected.disabled = selected.size === 0;
       deleteSelected.setText(selected.size ? `Delete selected (${selected.size})` : 'Delete selected');
     };
@@ -403,6 +427,32 @@ export class ManagementCenterView extends ItemView {
     }
   }
 
+  private openMassRename(entries: readonly VariableEntry[]): void {
+    const selectedKeys = new Set(this.state.selected);
+    const selectedEntries = entries.filter(({ key }) => selectedKeys.has(key));
+    if (!selectedEntries.length) return;
+    new MassRenameVariablesModal(
+      this.plugin,
+      selectedEntries,
+      new Set(entries.map(({ name }) => name)),
+      (renames) => void this.renameVariables(renames),
+    ).open();
+  }
+
+  private async renameVariables(renames: readonly VariableRename[]): Promise<void> {
+    const registry = this.plugin.registry;
+    if (!registry) return;
+    try {
+      const result = await registry.renameVariables(renames);
+      new Notice(
+        `Variable Links: renamed ${result.renamed} variable link${result.renamed === 1 ? '' : 's'} and updated ${result.tokenCount} token${result.tokenCount === 1 ? '' : 's'} in ${result.fileCount} note${result.fileCount === 1 ? '' : 's'}.`,
+      );
+    } catch (error) {
+      new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
+      this.refresh();
+    }
+  }
+
   private async confirmBulkDelete(entries: readonly VariableEntry[]): Promise<void> {
     const selectedKeys = new Set(this.state.selected);
     const selectedEntries = entries.filter(({ key }) => selectedKeys.has(key));
@@ -513,6 +563,173 @@ export class ManagementCenterView extends ItemView {
 
   private saveViewState(): void {
     this.app.workspace.requestSaveLayout();
+  }
+}
+
+class MassRenameVariablesModal extends Modal {
+  private currentRenames: VariableRename[] = [];
+  private find = '';
+  private mode: MassRenameMode = 'prefix';
+  private prefix = '';
+  private replacement = '';
+  private suffix = '';
+
+  constructor(
+    private readonly plugin: VariableLinksPlugin,
+    private readonly entries: readonly VariableEntry[],
+    private readonly existingNames: ReadonlySet<string>,
+    private readonly onConfirm: (renames: readonly VariableRename[]) => void,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    this.modalEl.addClass('variable-links-management-center-rename-modal');
+    this.contentEl.createEl('h3', { text: 'Rename selected variable links' });
+    this.contentEl.createEl('p', {
+      text: 'Review every resulting name before applying the batch. If any name is invalid or occupied, nothing will be renamed.',
+      cls: 'variable-links-hint-text',
+    });
+
+    const controls = this.contentEl.createDiv({ cls: 'variable-links-management-center-rename-controls' });
+    const modeSetting = controls.createDiv({ cls: 'setting-item' });
+    modeSetting.createDiv({ text: 'Rename mode', cls: 'setting-item-name' });
+    const modeControl = modeSetting.createDiv({ cls: 'setting-item-control' });
+    const mode = modeControl.createEl('select', { attr: { 'aria-label': 'Rename mode' } });
+    mode.createEl('option', { text: 'Add prefix', value: 'prefix' });
+    mode.createEl('option', { text: 'Add suffix', value: 'suffix' });
+    mode.createEl('option', { text: 'Find and replace', value: 'replace' });
+    const fields = controls.createDiv();
+    const previewStatus = this.contentEl.createDiv({
+      cls: 'variable-links-hint-text',
+      attr: { 'aria-live': 'polite' },
+    });
+    const preview = this.contentEl.createDiv({ cls: 'variable-links-management-center-rename-preview' });
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
+      .addEventListener('click', () => this.close());
+    const apply = actions.createEl('button', {
+      text: 'Rename variables',
+      cls: 'mod-cta',
+      attr: { type: 'button' },
+    });
+    apply.addEventListener('click', () => {
+      if (!this.currentRenames.length || apply.disabled) return;
+      const renames = [...this.currentRenames];
+      this.close();
+      this.onConfirm(renames);
+    });
+
+    const renderPreview = (): void => this.renderPreview(preview, previewStatus, apply);
+    const addTextField = (
+      label: string,
+      value: string,
+      update: (next: string) => void,
+      placeholder: string,
+    ): void => {
+      const setting = fields.createDiv({ cls: 'setting-item' });
+      setting.createDiv({ text: label, cls: 'setting-item-name' });
+      const control = setting.createDiv({ cls: 'setting-item-control' });
+      const input = control.createEl('input', { attr: { type: 'text', placeholder } });
+      input.value = value;
+      input.addEventListener('input', () => {
+        update(input.value);
+        renderPreview();
+      });
+    };
+    const renderFields = (): void => {
+      fields.empty();
+      if (this.mode === 'prefix') {
+        addTextField('Prefix', this.prefix, (value) => { this.prefix = value; }, 'Text before each name');
+      } else if (this.mode === 'suffix') {
+        addTextField('Suffix', this.suffix, (value) => { this.suffix = value; }, 'Text after each name');
+      } else {
+        addTextField('Find', this.find, (value) => { this.find = value; }, 'Text to replace');
+        addTextField('Replace with', this.replacement, (value) => { this.replacement = value; }, 'Replacement text');
+      }
+      renderPreview();
+    };
+    mode.addEventListener('change', () => {
+      this.mode = readMassRenameMode(mode.value);
+      renderFields();
+    });
+    renderFields();
+  }
+
+  onClose(): void {
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+  }
+
+  private renderPreview(
+    parent: HTMLElement,
+    status: HTMLElement,
+    apply: HTMLButtonElement,
+  ): void {
+    parent.empty();
+    const rows = this.entries.map((entry) => ({
+      entry,
+      newName: this.getNewName(entry.name).trim(),
+      issue: '',
+    }));
+    const findMissing = this.mode === 'replace' && !this.find;
+    const changingOldNames = new Set(
+      rows.filter(({ entry, newName }) => newName && newName !== entry.name)
+        .map(({ entry }) => entry.name),
+    );
+    const nameCounts = new Map<string, number>();
+    for (const { newName } of rows) nameCounts.set(newName, (nameCounts.get(newName) ?? 0) + 1);
+    const tokenSyntax = getTokenSyntax(this.plugin.settings);
+    for (const row of rows) {
+      if (findMissing) row.issue = 'Enter text to find';
+      else if (!row.entry.definition.guid) row.issue = 'Missing stable identifier';
+      else if (!row.newName) row.issue = 'Name cannot be empty';
+      else if (row.newName.includes(tokenSyntax.prefix) || row.newName.includes(tokenSyntax.suffix)) {
+        row.issue = 'Contains the active token delimiter';
+      } else if (parseVariableTextCaseMarker(row.newName)) {
+        row.issue = 'Resembles reserved text-case syntax';
+      } else if ((nameCounts.get(row.newName) ?? 0) > 1) {
+        row.issue = 'Duplicates another resulting name';
+      } else if (this.existingNames.has(row.newName) && !changingOldNames.has(row.newName)) {
+        row.issue = 'Already exists';
+      }
+    }
+    const changed = rows.filter(({ entry, newName }) => newName !== entry.name);
+    const issues = rows.filter(({ issue }) => issue).length;
+    this.currentRenames = issues
+      ? []
+      : changed.map(({ entry, newName }) => ({
+          guid: entry.definition.guid ?? '',
+          oldName: entry.name,
+          newName,
+        }));
+    apply.disabled = issues > 0 || !this.currentRenames.length;
+    status.setText(
+      issues
+        ? `${issues} problem${issues === 1 ? '' : 's'} must be resolved before renaming.`
+        : `${changed.length} of ${rows.length} selected variable link${rows.length === 1 ? '' : 's'} will be renamed.`,
+    );
+
+    const header = parent.createDiv({ cls: 'variable-links-management-center-rename-row is-header' });
+    header.createSpan({ text: 'Current name' });
+    header.createSpan({ text: 'New name' });
+    header.createSpan({ text: 'Status' });
+    for (const row of rows) {
+      const item = parent.createDiv({ cls: 'variable-links-management-center-rename-row' });
+      item.createSpan({ text: row.entry.name, attr: { title: row.entry.name } });
+      item.createSpan({ text: row.newName || '—', attr: { title: row.newName } });
+      item.createSpan({
+        text: row.issue || (row.newName === row.entry.name ? 'No change' : 'Ready'),
+        cls: row.issue ? 'is-error' : 'variable-links-hint-text',
+      });
+    }
+  }
+
+  private getNewName(name: string): string {
+    if (this.mode === 'prefix') return `${this.prefix}${name}`;
+    if (this.mode === 'suffix') return `${name}${this.suffix}`;
+    return this.find ? name.split(this.find).join(this.replacement) : name;
   }
 }
 
@@ -661,6 +878,10 @@ function readState(state: unknown): ManagementCenterState {
 
 function readOwnershipFilter(value: unknown): OwnershipFilter {
   return value === 'manual' || value === 'managed' ? value : 'all';
+}
+
+function readMassRenameMode(value: unknown): MassRenameMode {
+  return value === 'suffix' || value === 'replace' ? value : 'prefix';
 }
 
 function readVariableTypeFilter(value: unknown): VariableTypeFilter {

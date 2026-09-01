@@ -1480,6 +1480,13 @@
   margin-top: 6px;
 }
 
+.variable-links-management-center-bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .variable-links-management-center-list {
   overflow-x: auto;
   border: 1px solid var(--background-modifier-border);
@@ -1572,6 +1579,56 @@
 
 .variable-links-management-center-delete-option p {
   margin: 6px 0 0 24px;
+}
+
+.variable-links-management-center-rename-modal {
+  width: min(820px, calc(100vw - 32px));
+}
+
+.variable-links-management-center-rename-controls {
+  margin-bottom: 10px;
+}
+
+.variable-links-management-center-rename-preview {
+  max-height: min(420px, 50vh);
+  overflow: auto;
+  margin-top: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+}
+
+.variable-links-management-center-rename-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(120px, 0.75fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 520px;
+  min-height: 36px;
+  padding: 6px 10px;
+}
+
+.variable-links-management-center-rename-row + .variable-links-management-center-rename-row {
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.variable-links-management-center-rename-row.is-header {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+}
+
+.variable-links-management-center-rename-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.variable-links-management-center-rename-row .is-error {
+  color: var(--text-error);
 }
 
 @media (max-width: 520px) {

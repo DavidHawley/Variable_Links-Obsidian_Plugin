@@ -446,6 +446,28 @@ export default class VariableLinksPlugin extends Plugin {
     await this.saveSettings();
   }
 
+  async renameInfoCardEditorCollapsedItemsBatch(
+    renames: readonly { previousName: string; nextName: string }[],
+  ): Promise<void> {
+    const current = this.settings.infoCardEditorCollapsedItems;
+    const moved = new Map<string, string[]>();
+    for (const { previousName, nextName } of renames) {
+      const itemIds = current[previousName];
+      if (previousName !== nextName && itemIds) moved.set(nextName, itemIds);
+    }
+    if (!moved.size) return;
+    const collapsedItems = Object.assign(
+      Object.create(null) as Record<string, string[]>,
+      current,
+    );
+    for (const { previousName, nextName } of renames) {
+      if (previousName !== nextName) delete collapsedItems[previousName];
+    }
+    for (const [nextName, itemIds] of moved) collapsedItems[nextName] = itemIds;
+    this.settings.infoCardEditorCollapsedItems = collapsedItems;
+    await this.saveSettings();
+  }
+
   async openVariableProperties(variableName?: string): Promise<void> {
     if (!this.active) return;
     const panelModule = await import('./panel');

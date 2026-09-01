@@ -103,6 +103,18 @@ export interface ManagedAutolinkApplyResult {
   overwritten: number;
 }
 
+export interface VariableRename {
+  guid: string;
+  newName: string;
+  oldName: string;
+}
+
+export interface VariableRenameResult {
+  fileCount: number;
+  renamed: number;
+  tokenCount: number;
+}
+
 export function getVariableType(definition: VariableDefinition): VariableType {
   return definition.type === 'fixed' ? 'fixed' : 'property';
 }
@@ -674,6 +686,112 @@ export class Registry {
     }
     this.plugin.livePreviewRenderer?.refresh();
     await this.plugin.refreshManagementCenterViews();
+  }
+
+  async renameVariables(renames: readonly VariableRename[]): Promise<VariableRenameResult> {
+    if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
+    const normalized = renames
+      .map(({ guid, oldName, newName }) => ({
+        guid: guid.trim(),
+        oldName: oldName.trim(),
+        newName: newName.trim(),
+      }))
+      .filter(({ oldName, newName }) => oldName !== newName);
+    if (!normalized.length) return { renamed: 0, fileCount: 0, tokenCount: 0 };
+    const oldNames = new Set<string>();
+    const newNames = new Set<string>();
+    const tokenSyntax = getTokenSyntax(this.plugin.settings);
+    for (const rename of normalized) {
+      if (!rename.guid || !rename.oldName || !rename.newName) {
+        throw new Error('Every mass rename requires a GUID, current name, and new name.');
+      }
+      if (oldNames.has(rename.oldName)) throw new Error(`“${rename.oldName}” is selected more than once.`);
+      if (newNames.has(rename.newName)) throw new Error(`More than one variable would be named “${rename.newName}”.`);
+      oldNames.add(rename.oldName);
+      newNames.add(rename.newName);
+      const definition = this.data.get(rename.oldName);
+      if (!definition || definition.guid !== rename.guid) {
+        throw new Error(`“${rename.oldName}” changed after the preview was prepared.`);
+      }
+      if (rename.newName.includes(tokenSyntax.prefix) || rename.newName.includes(tokenSyntax.suffix)) {
+        throw new Error(`“${rename.newName}” contains the active token prefix or suffix.`);
+      }
+      if (parseVariableTextCaseMarker(rename.newName)) {
+        throw new Error(`“${rename.newName}” resembles reserved token text-case syntax. Rename it individually instead.`);
+      }
+    }
+    for (const { newName } of normalized) {
+      if (this.data.has(newName) && !oldNames.has(newName)) {
+        throw new Error(`A Variable Link named “${newName}” already exists.`);
+      }
+    }
+    const tokenCache = this.plugin.tokenCache;
+    if (!tokenCache) throw new Error('The token cache is unavailable, so the mass rename was cancelled.');
+    const renamePlan = await tokenCache.prepareBulkRename(normalized);
+    await renamePlan.apply();
+    const definitions = new Map(
+      normalized.map(({ oldName }) => [oldName, this.data.get(oldName)]),
+    );
+    try {
+      await this.mutateRegistryLinks((links) => {
+        const stored = new Map<string, unknown>();
+        for (const { guid, oldName } of normalized) {
+          const current = links[oldName];
+          if (!this.isRecord(current) || current.guid !== guid) {
+            throw new Error(`“${oldName}” changed after the preview was prepared.`);
+          }
+          stored.set(oldName, current);
+        }
+        for (const { oldName } of normalized) delete links[oldName];
+        for (const { oldName, newName } of normalized) links[newName] = stored.get(oldName);
+      });
+    } catch (error) {
+      await renamePlan.rollback();
+      throw error;
+    }
+
+    try {
+      await this.plugin.renameInfoCardEditorCollapsedItemsBatch(
+        normalized.map(({ oldName, newName }) => ({ previousName: oldName, nextName: newName })),
+      );
+    } catch {
+      new Notice('The variables were renamed, but some card designer collapse state could not be moved.');
+    }
+    try {
+      await this.load();
+    } catch {
+      for (const { oldName } of normalized) this.data.delete(oldName);
+      for (const { oldName, newName } of normalized) {
+        const definition = definitions.get(oldName);
+        if (definition) this.data.set(newName, definition);
+      }
+      new Notice('The variables were renamed, but the registry view could not be reloaded. Reload Obsidian.');
+    }
+    try {
+      await this.plugin.indexer?.build();
+    } catch {
+      new Notice('The variables were renamed, but the search index could not be refreshed. Reload Obsidian.');
+    }
+    try {
+      await renamePlan.commit();
+    } catch {
+      try {
+        await tokenCache.rebuild();
+      } catch {
+        new Notice('The variables were renamed, but the token cache could not be refreshed. Rebuild it from settings.');
+      }
+    }
+    this.plugin.livePreviewRenderer?.refresh();
+    try {
+      await this.plugin.refreshManagementCenterViews();
+    } catch {
+      // The saved renames remain authoritative; open views can refresh later.
+    }
+    return {
+      renamed: normalized.length,
+      fileCount: renamePlan.fileCount,
+      tokenCount: renamePlan.tokenCount,
+    };
   }
 
   async deleteVariable(name: string) {

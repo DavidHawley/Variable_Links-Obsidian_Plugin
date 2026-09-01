@@ -23,6 +23,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added a searchable, sortable Variable Links registry list with ownership and type filters, persistent selections, and per-variable settings and delete actions.
 - Added confirmed bulk deletion for selected Variable Links, with hidden-selection disclosure and a cached-token impact count before deletion.
 - Added an opt-in deletion choice to replace active tokens with their current text values before removing single or selected Variable Links.
+- Added previewed mass rename actions for applying a prefix, suffix, or find-and-replace operation to selected Variable Links, with all-or-nothing conflict validation and verified token updates.
 
 ### Changed
 

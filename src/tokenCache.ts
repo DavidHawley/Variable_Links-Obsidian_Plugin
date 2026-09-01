@@ -51,6 +51,20 @@ export interface TokenValueReplacementPlan {
   commit(): Promise<void>;
 }
 
+export interface TokenRename {
+  guid: string;
+  newName: string;
+  oldName: string;
+}
+
+export interface TokenRenamePlan {
+  fileCount: number;
+  tokenCount: number;
+  apply(): Promise<void>;
+  rollback(): Promise<void>;
+  commit(): Promise<void>;
+}
+
 export default class TokenCache {
   private app: App;
   private registry: Registry;
@@ -240,58 +254,92 @@ export default class TokenCache {
     };
   }
 
-  async prepareRename(guid: string, oldName: string, newName: string) {
+  async prepareRename(guid: string, oldName: string, newName: string): Promise<TokenRenamePlan> {
+    return this.prepareBulkRename([{ guid, oldName, newName }]);
+  }
+
+  async prepareBulkRename(renames: readonly TokenRename[]): Promise<TokenRenamePlan> {
     if (!this.active) throw new Error('The token cache is not active.');
-    await this.synchronize();
-    if (!this.data.tokens[guid]) await this.rebuild();
-    let paths = Array.from(new Set((this.data.tokens[guid]?.locations || []).map((location) => location.file)));
-    if (!paths.length) paths = this.app.vault.getMarkdownFiles().map((file) => file.path);
-    const files = paths
-      .map((path) => this.app.vault.getAbstractFileByPath(path))
-      .filter((file): file is TFile => file instanceof TFile);
-    const applied: Array<{ file: TFile; original: string; updated: string }> = [];
-    const rollback = async () => {
+    await this.synchronize(true);
+    if (!this.active) throw new Error('The token cache stopped during rename preparation.');
+    const paths = new Set<string>();
+    for (const { guid } of renames) {
+      for (const location of this.data.tokens[guid]?.locations ?? []) paths.add(location.file);
+    }
+    const replacements = new Map(renames.map(({ oldName, newName }) => [oldName, newName]));
+    const changes: Array<{
+      file: TFile;
+      original: string;
+      updated: string;
+      tokenCount: number;
+    }> = [];
+    for (const path of paths) {
+      const abstractFile = this.app.vault.getAbstractFileByPath(path);
+      if (!(abstractFile instanceof TFile)) continue;
+      const original = await this.app.vault.read(abstractFile);
+      const occurrences = this.findTokens(original)
+        .filter((occurrence) => replacements.has(occurrence.name));
+      if (!occurrences.length) continue;
+      let updated = original;
+      for (const occurrence of occurrences.reverse()) {
+        const replacement = replacements.get(occurrence.name);
+        if (!replacement) continue;
+        const token = formatVariableToken(replacement, occurrence.syntax, occurrence.textCase);
+        updated = updated.slice(0, occurrence.start) + token + updated.slice(occurrence.end);
+      }
+      changes.push({ file: abstractFile, original, updated, tokenCount: occurrences.length });
+    }
+
+    const applied: typeof changes = [];
+    const rollback = async (): Promise<void> => {
+      const conflictedFiles: string[] = [];
       for (const change of [...applied].reverse()) {
-        try {
-          await this.app.vault.process(change.file, (current) =>
-            current === change.updated ? change.original : current
-          );
-        } catch {
-          // Continue rolling back the remaining files.
-        }
+        await this.app.vault.process(change.file, (current) => {
+          if (current === change.updated) return change.original;
+          conflictedFiles.push(change.file.path);
+          return current;
+        });
       }
       applied.length = 0;
       await this.rebuild();
-    };
-
-    return {
-      apply: async () => {
-        try {
-          for (const file of files) {
-            const preview = await this.app.vault.read(file);
-            if (this.replaceToken(preview, oldName, newName) === preview) continue;
-            let original = '';
-            let updated = '';
-            await this.app.vault.process(file, (current) => {
-              original = current;
-              updated = this.replaceToken(current, oldName, newName);
-              return updated;
-            });
-            if (updated !== original) applied.push({ file, original, updated });
-          }
-        } catch (error) {
-          await rollback();
-          throw error;
-        }
-      },
-      rollback,
-      commit: async () => {
-        for (const change of applied) await this.indexFile(change.file);
-        if (!this.data.tokens[guid]) this.data.tokens[guid] = { guid, name: newName, locations: [] };
-        this.data.tokens[guid].name = newName;
-        this.syncTokenNames();
-        await this.persist();
+      if (conflictedFiles.length) {
+        throw new Error(
+          `Could not restore ${conflictedFiles.length} note${conflictedFiles.length === 1 ? '' : 's'} because they changed during renaming.`,
+        );
       }
+    };
+    const apply = async (): Promise<void> => {
+      try {
+        for (const change of changes) {
+          await this.app.vault.process(change.file, (current) => {
+            if (current !== change.original) {
+              throw new Error(`${change.file.path} changed after the rename preview was prepared.`);
+            }
+            return change.updated;
+          });
+          applied.push(change);
+        }
+      } catch (error) {
+        await rollback();
+        throw error;
+      }
+    };
+    const commit = async (): Promise<void> => {
+      for (const change of applied) await this.indexFile(change.file);
+      applied.length = 0;
+      for (const { guid, newName } of renames) {
+        const token = this.data.tokens[guid];
+        if (token) token.name = newName;
+      }
+      this.syncTokenNames();
+      await this.persist();
+    };
+    return {
+      fileCount: changes.length,
+      tokenCount: changes.reduce((total, change) => total + change.tokenCount, 0),
+      apply,
+      rollback,
+      commit,
     };
   }
 
@@ -449,16 +497,6 @@ export default class TokenCache {
       this.data.tokens[definition.guid] = token;
     }
     for (const guid of Object.keys(this.data.tokens)) if (!validGuids.has(guid)) delete this.data.tokens[guid];
-  }
-
-  private replaceToken(content: string, oldName: string, newName: string) {
-    const occurrences = this.findTokens(content).filter((occurrence) => occurrence.name === oldName);
-    let updated = content;
-    for (const occurrence of occurrences.reverse()) {
-      const replacement = formatVariableToken(newName, occurrence.syntax, occurrence.textCase);
-      updated = updated.slice(0, occurrence.start) + replacement + updated.slice(occurrence.end);
-    }
-    return updated;
   }
 
   private findTokens(
