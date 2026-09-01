@@ -1,7 +1,7 @@
 {
   "id": "variable-links",
   "name": "Variable Links",
-  "version": "1.2.6",
+  "version": "1.3.0",
   "minAppVersion": "1.13.7",
   "description": "Variable-like links that resolve to frontmatter properties and can display Info cards on hover.",
   "author": "DavidHawley",
