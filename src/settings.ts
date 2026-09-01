@@ -56,6 +56,18 @@ export interface VariableLinksSettings {
 
 type SettingKey = keyof VariableLinksSettings;
 type TokenSyntaxChangeAction = 'cancel' | 'new-only' | 'migrate';
+type VariableLinksSettingsSection = 'general' | 'syntax' | 'appearance' | 'cards' | 'autolink';
+
+const VARIABLE_LINKS_SETTINGS_SECTIONS: ReadonlyArray<{
+  id: VariableLinksSettingsSection;
+  label: string;
+}> = [
+  { id: 'general', label: 'General' },
+  { id: 'syntax', label: 'Syntax' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'cards', label: 'Cards' },
+  { id: 'autolink', label: 'Autolink' },
+];
 
 export const DEFAULT_SETTINGS: VariableLinksSettings = {
   registryFilePath: '',
@@ -232,6 +244,8 @@ export function normalizeLivePreviewHoverDelay(value: unknown): number {
 }
 
 export class VariableLinksSettingTab extends PluginSettingTab {
+  private activeSection: VariableLinksSettingsSection = 'general';
+
   constructor(app: App, private readonly variableLinksPlugin: VariableLinksPlugin) {
     super(app, variableLinksPlugin);
   }
@@ -239,30 +253,58 @@ export class VariableLinksSettingTab extends PluginSettingTab {
   getSettingDefinitions(): SettingDefinitionItem<SettingKey>[] {
     return [
       {
-        name: 'Registry file',
-        desc: 'JSON, YAML, or Markdown registry. The default is a hidden registry.json in this plugin folder.',
-        control: {
-          type: 'file',
-          key: 'registryFilePath',
-          placeholder: 'Select a registry file',
-        },
+        name: 'Settings sections',
+        searchable: false,
+        render: (setting) => this.renderSettingsSectionTabs(setting),
       },
       {
-        name: 'Management center',
-        desc: 'Open Variable Links management tools in a main workspace tab.',
-        render: (setting) => {
-          const button = setting.controlEl.createEl('button', {
-            text: 'Open',
-            attr: { type: 'button' },
-          });
-          const onClick = (): void => void this.variableLinksPlugin.openManagementCenter();
-          button.addEventListener('click', onClick);
-          return () => button.removeEventListener('click', onClick);
-        },
+        type: 'group',
+        heading: 'General',
+        cls: 'variable-links-settings-tab-panel variable-links-settings-tab-panel-general',
+        items: [
+          {
+            name: 'Registry file',
+            desc: 'JSON, YAML, or Markdown registry. The default is a hidden registry.json in this plugin folder.',
+            control: {
+              type: 'file',
+              key: 'registryFilePath',
+              placeholder: 'Select a registry file',
+            },
+          },
+          {
+            name: 'Management center',
+            desc: 'Open Variable Links management tools in a main workspace tab.',
+            render: (setting) => {
+              const button = setting.controlEl.createEl('button', {
+                text: 'Open',
+                attr: { type: 'button' },
+              });
+              const onClick = (): void => void this.variableLinksPlugin.openManagementCenter();
+              button.addEventListener('click', onClick);
+              return () => button.removeEventListener('click', onClick);
+            },
+          },
+          {
+            name: 'Open file links in new pane',
+            desc: 'Open the configured file link in a new pane when clicking a rendered variable.',
+            control: { type: 'toggle', key: 'openInNewPane' },
+          },
+          {
+            name: 'Suggestion fuzzy matching',
+            desc: 'Match suggestions by variable name, display name, source file, or property.',
+            control: { type: 'toggle', key: 'suggestionFuzzy' },
+          },
+          {
+            name: 'Update token cache',
+            desc: 'Rescan every Markdown file and update the recorded Variable Link locations.',
+            render: (setting) => this.renderTokenCacheUpdateButton(setting.controlEl),
+          },
+        ],
       },
       {
         type: 'group',
         heading: 'Autolink profiles',
+        cls: 'variable-links-settings-tab-panel variable-links-settings-tab-panel-autolink',
         extraButtons: [(button) => {
           button
             .setIcon('circle-help')
@@ -289,6 +331,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       {
         type: 'group',
         heading: 'Variable Link syntax',
+        cls: 'variable-links-settings-tab-panel variable-links-settings-tab-panel-syntax',
         items: [
           {
             name: 'Token prefix and suffix',
@@ -310,13 +353,9 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         ],
       },
       {
-        name: 'Update token cache',
-        desc: 'Rescan every Markdown file and update the recorded Variable Link locations.',
-        render: (setting) => this.renderTokenCacheUpdateButton(setting.controlEl),
-      },
-      {
         type: 'group',
         heading: 'Default variable appearance',
+        cls: 'variable-links-settings-tab-panel variable-links-settings-tab-panel-appearance',
         extraButtons: [(button) => {
           button
             .setIcon('circle-help')
@@ -395,6 +434,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       {
         type: 'group',
         heading: 'Info card hover',
+        cls: 'variable-links-settings-tab-panel variable-links-settings-tab-panel-cards',
         extraButtons: [(button) => {
           button
             .setIcon('circle-help')
@@ -443,18 +483,9 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         ],
       },
       {
-        name: 'Open file links in new pane',
-        desc: 'Open the configured file link in a new pane when clicking a rendered variable.',
-        control: { type: 'toggle', key: 'openInNewPane' },
-      },
-      {
-        name: 'Suggestion fuzzy matching',
-        desc: 'Match suggestions by variable name, display name, source file, or property.',
-        control: { type: 'toggle', key: 'suggestionFuzzy' },
-      },
-      {
         type: 'group',
         heading: 'Captured date and time',
+        cls: 'variable-links-settings-tab-panel variable-links-settings-tab-panel-syntax',
         items: [
           {
             name: 'Default date format',
@@ -486,6 +517,80 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         ],
       },
     ];
+  }
+
+  private renderSettingsSectionTabs(setting: Setting): () => void {
+    setting.settingEl.addClass('variable-links-settings-tabs-setting');
+    const tabList = setting.controlEl.createDiv({
+      cls: 'variable-links-settings-tabs',
+      attr: { role: 'tablist', 'aria-label': 'Variable Links settings sections' },
+    });
+    const buttons = VARIABLE_LINKS_SETTINGS_SECTIONS.map(({ id, label }) => {
+      const button = tabList.createEl('button', {
+        text: label,
+        cls: 'variable-links-settings-tab',
+        attr: {
+          type: 'button',
+          role: 'tab',
+          id: `variable-links-settings-tab-${id}`,
+          'aria-selected': 'false',
+        },
+      });
+      return { button, id, label };
+    });
+    const applySection = (): void => {
+      for (const { button, id } of buttons) {
+        const active = id === this.activeSection;
+        button.toggleClass('is-active', active);
+        button.setAttribute('aria-selected', String(active));
+        button.tabIndex = active ? 0 : -1;
+      }
+      for (const panel of this.containerEl.querySelectorAll<HTMLElement>(
+        '.variable-links-settings-tab-panel',
+      )) {
+        const active = panel.classList.contains(
+          `variable-links-settings-tab-panel-${this.activeSection}`,
+        );
+        panel.hidden = !active;
+        panel.setAttribute('role', 'tabpanel');
+        panel.setAttribute(
+          'aria-label',
+          `${VARIABLE_LINKS_SETTINGS_SECTIONS.find(({ id }) => id === this.activeSection)?.label ?? 'Plugin'} settings`,
+        );
+      }
+    };
+    const activate = (id: VariableLinksSettingsSection, focus: boolean): void => {
+      this.activeSection = id;
+      applySection();
+      if (focus) buttons.find((item) => item.id === id)?.button.focus();
+    };
+    const cleanups: Array<() => void> = [];
+    buttons.forEach(({ button, id }, index) => {
+      const onClick = (): void => activate(id, false);
+      const onKeyDown = (event: KeyboardEvent): void => {
+        let nextIndex = -1;
+        if (event.key === 'ArrowRight') nextIndex = (index + 1) % buttons.length;
+        else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + buttons.length) % buttons.length;
+        else if (event.key === 'Home') nextIndex = 0;
+        else if (event.key === 'End') nextIndex = buttons.length - 1;
+        if (nextIndex < 0) return;
+        event.preventDefault();
+        const next = buttons[nextIndex];
+        if (next) activate(next.id, true);
+      };
+      button.addEventListener('click', onClick);
+      button.addEventListener('keydown', onKeyDown);
+      cleanups.push(
+        () => button.removeEventListener('click', onClick),
+        () => button.removeEventListener('keydown', onKeyDown),
+      );
+    });
+    const hostWindow = setting.settingEl.ownerDocument.defaultView ?? window;
+    const frame = hostWindow.requestAnimationFrame(applySection);
+    return () => {
+      hostWindow.cancelAnimationFrame(frame);
+      for (const cleanup of cleanups) cleanup();
+    };
   }
 
   getControlValue(key: string): unknown {

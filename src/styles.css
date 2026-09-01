@@ -881,6 +881,60 @@
   margin: 8px 0;
 }
 
+.variable-links-settings-tabs-setting.setting-item {
+  position: sticky;
+  z-index: 5;
+  top: 0;
+  padding: 8px 0 0;
+  border: 0;
+  background: var(--background-primary);
+}
+
+.variable-links-settings-tabs-setting .setting-item-info {
+  display: none;
+}
+
+.variable-links-settings-tabs-setting .setting-item-control {
+  flex: 1 1 auto;
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.variable-links-settings-tabs {
+  display: flex;
+  gap: 3px;
+  width: 100%;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.variable-links-settings-tab {
+  flex: 1 0 92px;
+  max-width: 140px;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.variable-links-settings-tab:hover,
+.variable-links-settings-tab:focus-visible {
+  background: var(--background-modifier-hover);
+}
+
+.variable-links-settings-tab.is-active {
+  border-color: var(--background-modifier-border);
+  border-bottom-color: var(--interactive-accent);
+  background: var(--background-secondary);
+  color: var(--text-accent);
+}
+
+.variable-links-settings-tab-panel[hidden] {
+  display: none;
+}
+
 .variable-links-panel-color-swatch {
   width: 24px;
   height: 24px;

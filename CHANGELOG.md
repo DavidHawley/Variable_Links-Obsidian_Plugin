@@ -42,6 +42,7 @@ All notable user-visible changes to Variable Links are recorded here.
 ### Changed
 
 - Stacked the Autolink profile description above its full-width editor, aligned the profile fields around a clear center seam, and gave collapsible profile titles H4 styling.
+- Organized plugin settings into General, Syntax, Appearance, Cards, and Autolink tabs without discarding in-progress edits when switching tabs.
 
 ### Fixed
 
