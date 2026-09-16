@@ -312,6 +312,21 @@ This document records planned improvements to Variable Links. Plans may change a
 
 > **Planning gate:** Review and iterate on the complete Card type, template, rule, population, and registry-management editing behavior before implementation begins. Build on the Autolink profiles, stable template identifiers, basic Card population, and management view introduced in 1.3 rather than creating parallel systems. Keep the first version declarative and understandable rather than adding a scripting language.
 
+### AI-friendly registry schema and export
+
+- Add a backward-compatible registry schema version and document the supported JSON, YAML, and Markdown-frontmatter formats.
+- Publish a machine-readable JSON Schema and complete examples so an AI tool can identify variable names, types, sources, values, links, Cards, appearances, and Autolink ownership without inferring their meaning from plugin code.
+- Make important semantics explicit where practical, including the value kind (`fixed` or `property`), source note and property, declared data type, and an optional plain-language description.
+- Preserve stable GUIDs and managed-entry provenance as the canonical identity and ownership information for every Variable Link.
+- Add an optional generated, read-only AI index or export with flattened records, token syntax, source paths, and optionally resolved values or Card summaries. Mark generated data with its source registry and generation time so stale exports are recognizable.
+- Keep the global registry as the source of truth and continue using note frontmatter for document-local Autolink overrides. Do not create independent per-document registries unless a later design defines deterministic precedence, globally unique identities, collision handling, reload behavior, and rename/move synchronization.
+- Provide explicit refresh or regeneration actions rather than silently mutating registry data while an AI export is being read.
+
+#### AI registry testing
+
+- Test old registries without a schema version, schema-version upgrades, JSON/YAML/Markdown parsing, unknown optional metadata, and round-trip edits from the Management Center.
+- Test generated exports for duplicate names, renamed or moved files, missing properties, fixed and property variables, stale timestamps, custom token syntax, Cards, Autolink ownership, and registry reloads.
+
 ### Management Center expansion and direct registry management
 
 - Extend the 1.3 Variable Link management view with direct editing while preserving its compact single-line collapsed rows.
