@@ -327,6 +327,47 @@ This document records planned improvements to Variable Links. Plans may change a
 - Test old registries without a schema version, schema-version upgrades, JSON/YAML/Markdown parsing, unknown optional metadata, and round-trip edits from the Management Center.
 - Test generated exports for duplicate names, renamed or moved files, missing properties, fixed and property variables, stale timestamps, custom token syntax, Cards, Autolink ownership, and registry reloads.
 
+### Hidden values, list selectors, and suggestion shortcuts
+
+- Treat visibility as independent from value source and shape so every Fixed value, Fixed list, Property value, and Property list can be visible or hidden.
+- Render a hidden Variable Link as a subdued `&` marker in Live Preview, reveal its raw token while the caret is inside it, and render no value in Reading View.
+- Keep hidden values available to token caching, renaming, Cards, resolved-value search, shortcuts, and AI exports even though Reading View omits them.
+- Store Fixed lists as real ordered values rather than comma-separated text, and preserve existing Property arrays through a backward-compatible automatic shape until the user chooses Single value or List explicitly.
+- Support one-based and reverse list selection, plus stable named items that survive list reordering. Use a Markdown-safe canonical token form such as `{{mainChar::index(1)}}` and `{{mainChar::item(speaking)}}`.
+- Give list items an optional stable key, display name, and shortcut aliases. Warn when a Property list changes in a way that can invalidate an index-based shortcut.
+
+#### Focused suggestion search modes
+
+- After the opening token delimiter is typed, show a small search-help hint instead of loading the full suggestion list. Typing an ordinary character starts the existing combined search unchanged.
+- Include focused search prefixes for existing Variable Links (`@`), note properties (`;`), resolved values (`!`), and shortcuts (`~`). Keep the existing `*` value-search prefix as a compatibility alias.
+- Reserve `?` for the complete suggestion-search help. The compact hint should list every mode and include a `Don't show this hint after {{` checkbox.
+- When the compact hint is disabled, wait for the first ordinary character or search prefix before opening suggestions. Keep `{{?` available regardless of the saved preference, and provide a Syntax setting for restoring the hint.
+- Remove search prefixes when a suggestion is accepted, return to normal search when the prefix is erased, label the active mode in the popup, and retain Tab/Enter completion and caret placement.
+- Preserve existing variables whose names begin with a reserved search character, and provide an escaped literal-name search when a leading character would otherwise select a search mode.
+- Debounce and cache resolved-value searches, avoid resolving the whole registry for an empty query, and keep mode-specific results capped and ranked.
+
+#### Shortcut manager
+
+- Add a searchable Shortcuts activity to the Management Center and an inline Add shortcut action beside list items.
+- Let each shortcut define a unique code, display name, canonical target, optional list selector, additional search terms, and enabled state.
+- Keep general shortcut browsing out of the normal combined results so it does not enlarge the existing suggestion list, while still recognizing an exact shortcut code such as `MCS` for direct completion.
+- Expand a selected shortcut into its canonical Variable Link token, such as replacing `{{MCS}}` with `{{mainChar::item(speaking)}}`, instead of leaving notes dependent on shortcut lookup at render time.
+- Give real Variable Link names priority over shortcut codes, reject duplicate shortcuts, follow variable renames by GUID, and warn before deleting a variable or list item used by shortcuts.
+
+#### Suggested implementation order
+
+1. Add focused search modes, the compact opening hint, saved hint visibility, and `{{?` help.
+2. Add hidden rendering and backward-compatible Fixed and Property list storage.
+3. Add index and stable named-item selectors across rendering, Copy Markdown, renaming, migration, and token caching.
+4. Add the searchable Shortcuts activity, per-item shortcut creation, direct exact-code completion, and canonical expansion.
+
+#### Hidden, list, and shortcut testing
+
+- Test visible and hidden scalar and list values in Source Mode, Live Preview, Reading View, tables, list items, headings, empty paragraphs, Cards, links, Copy Markdown, and AI exports.
+- Test first, middle, last, reverse, missing, empty, and reordered list items; Property lists that change shape; and list values containing Markdown, punctuation, custom delimiters, and Unicode.
+- Test every focused search mode with ordinary, multi-term, fuzzy, exact, empty, and escaped queries; custom and legacy token delimiters; keyboard and pointer operation; mobile layouts; and the hint enabled or disabled.
+- Test shortcut creation, search, expansion, conflicts, renames, deleted targets, reordered items, disabled shortcuts, token-cache rebuilds, and plugin reloads.
+
 ### Management Center expansion and direct registry management
 
 - Extend the 1.3 Variable Link management view with direct editing while preserving its compact single-line collapsed rows.
