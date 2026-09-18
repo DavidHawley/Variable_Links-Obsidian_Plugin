@@ -310,22 +310,7 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.4.0
 
-> **Planning gate:** Review and iterate on the complete Card type, template, rule, population, and registry-management editing behavior before implementation begins. Build on the Autolink profiles, stable template identifiers, basic Card population, and management view introduced in 1.3 rather than creating parallel systems. Keep the first version declarative and understandable rather than adding a scripting language.
-
-### AI-friendly registry schema and export
-
-- Add a backward-compatible registry schema version and document the supported JSON, YAML, and Markdown-frontmatter formats.
-- Publish a machine-readable JSON Schema and complete examples so an AI tool can identify variable names, types, sources, values, links, Cards, appearances, and Autolink ownership without inferring their meaning from plugin code.
-- Make important semantics explicit where practical, including the value kind (`fixed` or `property`), source note and property, declared data type, and an optional plain-language description.
-- Preserve stable GUIDs and managed-entry provenance as the canonical identity and ownership information for every Variable Link.
-- Add an optional generated, read-only AI index or export with flattened records, token syntax, source paths, and optionally resolved values or Card summaries. Mark generated data with its source registry and generation time so stale exports are recognizable.
-- Keep the global registry as the source of truth and continue using note frontmatter for document-local Autolink overrides. Do not create independent per-document registries unless a later design defines deterministic precedence, globally unique identities, collision handling, reload behavior, and rename/move synchronization.
-- Provide explicit refresh or regeneration actions rather than silently mutating registry data while an AI export is being read.
-
-#### AI registry testing
-
-- Test old registries without a schema version, schema-version upgrades, JSON/YAML/Markdown parsing, unknown optional metadata, and round-trip edits from the Management Center.
-- Test generated exports for duplicate names, renamed or moved files, missing properties, fixed and property variables, stale timestamps, custom token syntax, Cards, Autolink ownership, and registry reloads.
+> **Planning gate:** Review the expression syntax, date arithmetic rules, error behavior, and direct-editing safeguards before their implementation begins. Keep computed values declarative and understandable, use a safe parser rather than executable JavaScript, and build direct editing on the Management Center and validation systems introduced in 1.3.
 
 ### Hidden values, list selectors, and suggestion shortcuts
 
@@ -368,11 +353,46 @@ This document records planned improvements to Variable Links. Plans may change a
 - Test every focused search mode with ordinary, multi-term, fuzzy, exact, empty, and escaped queries; custom and legacy token delimiters; keyboard and pointer operation; mobile layouts; and the hint enabled or disabled.
 - Test shortcut creation, search, expansion, conflicts, renames, deleted targets, reordered items, disabled shortcuts, token-cache rebuilds, and plugin reloads.
 
-### Management Center expansion and direct registry management
+### Computed math variables and date arithmetic
+
+- Add a Computed value type whose permanent Variable Link name is separate from its stored expression, so a note can use `{{math_01}}` while the registry stores an expression such as `2 * @intProperty - @modIntProperty`.
+- Reference variables by a readable name in the editor while binding dependencies to stable GUIDs internally so renaming a referenced Variable Link does not break the expression.
+- Support an explicit reference form for names that cannot be represented safely after `@`, such as `var("complex name")`.
+- Parse expressions with a purpose-built safe parser. Do not use JavaScript `eval`, dynamic functions, or arbitrary executable code.
+- Support parentheses, unary signs, `+`, `-`, `*`, `/`, `%`, and exponentiation, plus focused numeric functions such as `abs`, `round`, `floor`, `ceil`, `min`, `max`, `sum`, `average`, `clamp`, `sqrt`, and `pow`.
+- Provide strict handling for missing or non-numeric values, divide-by-zero, invalid functions, and non-finite results. Show a short token error and a detailed explanation in the editor rather than silently returning misleading output.
+- Detect circular references and excessive dependency depth, and invalidate dependent cached values when a source Variable Link changes.
+- Let the computed-value editor provide Variable Link suggestions, syntax help, a live result preview, and result-format controls such as rounding or decimal precision.
+- Allow selectors and shortcuts to resolve before a referenced value enters a calculation so scalar values selected from lists can participate safely.
+
+#### Date and time arithmetic
+
+- Store a canonical temporal value together with its display format so arithmetic does not depend on reparsing formatted text.
+- Use the same date/time parser for Date, Time, and Date-time values; those types differ only in their default format and initial entry behavior.
+- Support pipeline arithmetic such as `{{date::add(2M,3d,2h,15m)}}` and `{{date::sub(2M,3d,2h,15m)}}`.
+- Use unambiguous, case-sensitive units: `y` years, `M` months, `w` weeks, `d` days, `h` hours, `m` minutes, and `s` seconds.
+- Apply years and months as calendar operations with end-of-month clamping, then apply smaller durations in a documented order. Define local-time and daylight-saving behavior explicitly.
+- Keep a compact expression such as `@date + 2M` inside a stored Computed value as a later extension after the canonical `add` and `sub` pipeline is stable.
+- Consider explicit inline expressions such as `{{= 2 * @intProperty - @modIntProperty}}` only after stored Computed variables are proven safe; do not interpret an ordinary token such as `{{2 * ...}}` as code.
+- Integrate computed and adjusted values with Live Preview, Reading View, Cards, Copy Markdown, hidden values, shortcuts, token caching, registry reloads, and dependency updates.
+
+#### Computed-value testing
+
+- Test operator precedence, parentheses, unary signs, every supported function, decimal and negative inputs, missing values, non-numeric values, divide-by-zero, invalid syntax, and non-finite results.
+- Test direct and indirect circular references, deep dependency chains, renamed or deleted dependencies, cache invalidation, registry reloads, selectors, shortcuts, hidden values, and Copy Markdown.
+- Test leap years, month-end clamping, daylight-saving boundaries, date-only and time-only defaults, mixed duration units, formatting changes, and arithmetic across day, month, and year boundaries.
+
+#### Suggested implementation order
+
+1. Define typed computed and temporal storage, dependency references, error states, and migration behavior.
+2. Add the safe numeric parser, resolver, cycle detection, dependency invalidation, and focused tests.
+3. Add the Computed value editor with autocomplete, syntax help, preview, and result formatting.
+4. Add canonical temporal storage and the `add` and `sub` pipelines with calendar-aware behavior.
+5. Integrate computed results throughout rendering, Cards, copying, shortcuts, caches, and registry reloads before considering explicit inline expressions.
+
+### Direct Management Center editing
 
 - Extend the 1.3 Variable Link management view with direct editing while preserving its compact single-line collapsed rows.
-- Add focused Autolink, Templates and rules, and Diagnostics activities as tabs in the same Management Center when their workflows are mature enough to move beyond Settings or standalone dialogs.
-- Keep each activity backed by the existing profile, template, rule, registry, and diagnostic systems rather than duplicating storage or validation inside the Management Center.
 - Allow safe, simple values such as Display name and Favorite to be edited inline.
 - Provide an expandable row inspector or adjacent detail editor for variable type, source note, property, fixed value, file link, default text case, appearance, Card, and Autolink ownership information.
 - Reuse the existing Properties-panel validation, type-change confirmation, property suggestions, rename protections, and Card editor instead of implementing different rules in the manager.
@@ -380,6 +400,35 @@ This document records planned improvements to Variable Links. Plans may change a
 - Add previewed multi-edit operations only for fields that can be applied consistently across every selected entry; never silently replace Cards, appearance, or mappings with incompatible values.
 - Keep selection stable by GUID during direct edits and refresh safely when the registry changes externally.
 - Test inline and expanded editing with search filters, sorting, selected rows, renamed variables, deleted entries, narrow windows, keyboard navigation, and plugin unload cleanup.
+
+## 1.5.0
+
+> **Planning gate:** Review the schema, export format, privacy controls, refresh behavior, and AI-facing documentation before implementation begins. Keep the global registry authoritative and make generated AI data explicitly identifiable and safely refreshable.
+
+### AI-friendly registry schema and export
+
+- Add a backward-compatible registry schema version and document the supported JSON, YAML, and Markdown-frontmatter formats.
+- Publish a machine-readable JSON Schema and complete examples so an AI tool can identify variable names, types, sources, values, links, Cards, appearances, and Autolink ownership without inferring their meaning from plugin code.
+- Make important semantics explicit where practical, including the value kind (`fixed` or `property`), source note and property, declared data type, and an optional plain-language description.
+- Preserve stable GUIDs and managed-entry provenance as the canonical identity and ownership information for every Variable Link.
+- Add an optional generated, read-only AI index or export with flattened records, token syntax, source paths, and optionally resolved values or Card summaries. Mark generated data with its source registry and generation time so stale exports are recognizable.
+- Keep the global registry as the source of truth and continue using note frontmatter for document-local Autolink overrides. Do not create independent per-document registries unless a later design defines deterministic precedence, globally unique identities, collision handling, reload behavior, and rename/move synchronization.
+- Provide explicit refresh or regeneration actions rather than silently mutating registry data while an AI export is being read.
+
+#### AI registry testing
+
+- Test old registries without a schema version, schema-version upgrades, JSON/YAML/Markdown parsing, unknown optional metadata, and round-trip edits from the Management Center.
+- Test generated exports for duplicate names, renamed or moved files, missing properties, fixed and property variables, stale timestamps, custom token syntax, Cards, Autolink ownership, and registry reloads.
+
+## 1.6.0
+
+> **Planning gate:** Review how Card types, reusable templates, automatic population rules, and additional Management Center activities fit the existing registry and Autolink systems before implementation begins. Keep automation declarative and preserve every existing Card until the user deliberately applies a template or rule.
+
+### Management Center activity expansion
+
+- Add focused Autolink, Templates and rules, and Diagnostics activities as tabs in the same Management Center when their workflows are mature enough to move beyond Settings or standalone dialogs.
+- Keep each activity backed by the existing profile, template, rule, registry, and diagnostic systems rather than duplicating storage or validation inside the Management Center.
+- Build these activities on the direct-editing foundation completed in 1.4, retaining stable GUID selection, consistent validation, keyboard access, and safe handling of external registry changes.
 
 ### Rule-based Info Card templates
 
@@ -451,4 +500,4 @@ This document records planned improvements to Variable Links. Plans may change a
 2. Add manual template application, previews, replacement modes, and undo before enabling automation.
 3. Add the declarative rule builder, priorities, manual overrides, and rule explanations.
 4. Add automatic population, explicit re-evaluation, and the optional bulk workflow after single-Card smoke testing succeeds.
-5. Extend the 1.3 registry manager with direct editing and carefully limited multi-edit operations after its read, selection, rename, and deletion workflows are stable.
+5. Integrate template and rule workflows into the expanded Management Center activities after the 1.4 direct-editing foundation is stable.
