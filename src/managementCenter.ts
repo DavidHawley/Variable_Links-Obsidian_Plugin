@@ -15,7 +15,13 @@ import {
   type VariableRename,
 } from './registry';
 import type { TokenValueReplacement, TokenValueReplacementPlan } from './tokenCache';
-import { getTokenSyntax } from './tokenSyntax';
+import {
+  formatVariableSelector,
+  getTokenSyntax,
+  parseVariableSelector,
+  type VariableSelector,
+} from './tokenSyntax';
+import type { VariableShortcut } from './shortcuts';
 import { parseVariableTextCaseMarker } from './textCase';
 import { filePathFromLink } from './linkSyntax';
 import { renderNamePattern, type NamePatternContext } from './namePattern';
@@ -29,7 +35,7 @@ import {
 
 export const VIEW_TYPE_MANAGEMENT_CENTER = 'variable-links-management-center';
 
-type ManagementActivity = 'variables';
+type ManagementActivity = 'variables' | 'shortcuts';
 type MassRenameMode = 'prefix' | 'suffix' | 'replace' | 'pattern' | 'profile-pattern';
 type RenameWordSelection = 'whole' | 'first' | 'last' | 'custom';
 type OwnershipFilter = 'all' | 'manual' | 'managed';
@@ -47,6 +53,7 @@ interface ManagementCenterState {
   page: number;
   pageSize: ManagementPageSize;
   selected: string[];
+  shortcutQuery: string;
 }
 
 interface VariableEntry {
@@ -58,6 +65,7 @@ interface VariableEntry {
 interface DeletionPreview {
   fileCount: number;
   replacements: Map<string, TokenValueReplacement>;
+  shortcutCount: number;
   tokenCount: number;
   unresolvedNames: string[];
 }
@@ -80,6 +88,7 @@ const DEFAULT_STATE: ManagementCenterState = {
   page: 1,
   pageSize: 50,
   selected: [],
+  shortcutQuery: '',
 };
 
 export class ManagementCenterView extends ItemView {
@@ -147,16 +156,38 @@ export class ManagementCenterView extends ItemView {
       cls: 'variable-links-management-center-tabs',
       attr: { role: 'tablist', 'aria-label': 'Management activities' },
     });
-    tabs.createEl('button', {
+    const variablesTab = tabs.createEl('button', {
       text: 'Variables',
-      cls: 'variable-links-management-center-tab is-active',
-      attr: { type: 'button', role: 'tab', 'aria-selected': 'true' },
+      cls: `variable-links-management-center-tab${this.state.activity === 'variables' ? ' is-active' : ''}`,
+      attr: {
+        type: 'button',
+        role: 'tab',
+        'aria-selected': String(this.state.activity === 'variables'),
+      },
     });
+    const shortcutsTab = tabs.createEl('button', {
+      text: 'Shortcuts',
+      cls: `variable-links-management-center-tab${this.state.activity === 'shortcuts' ? ' is-active' : ''}`,
+      attr: {
+        type: 'button',
+        role: 'tab',
+        'aria-selected': String(this.state.activity === 'shortcuts'),
+      },
+    });
+    variablesTab.addEventListener('click', () => this.showActivity('variables'));
+    shortcutsTab.addEventListener('click', () => this.showActivity('shortcuts'));
 
     const content = this.contentEl.createDiv({
       cls: 'variable-links-management-center-content',
-      attr: { role: 'tabpanel', 'aria-label': 'Variables' },
+      attr: {
+        role: 'tabpanel',
+        'aria-label': this.state.activity === 'variables' ? 'Variables' : 'Shortcuts',
+      },
     });
+    if (this.state.activity === 'shortcuts') {
+      this.renderShortcutsActivity(content);
+      return;
+    }
     content.createEl('h3', { text: 'Variable links' });
     const summary = content.createDiv({ cls: 'variable-links-management-center-summary' });
     this.addSummaryItem(summary, 'Total', entries.length);
@@ -611,6 +642,203 @@ export class ManagementCenterView extends ItemView {
     return property ? `${file}#${property}` : file;
   }
 
+  showActivity(activity: ManagementActivity): void {
+    if (this.state.activity === activity) return;
+    this.state.activity = activity;
+    this.saveViewState();
+    this.refresh();
+  }
+
+  private renderShortcutsActivity(content: HTMLElement): void {
+    const registry = this.plugin.registry;
+    const shortcuts = registry?.shortcuts ?? [];
+    content.createEl('h3', { text: 'Shortcuts' });
+    const summary = content.createDiv({ cls: 'variable-links-management-center-summary' });
+    this.addSummaryItem(summary, 'Total', shortcuts.length);
+    this.addSummaryItem(summary, 'Enabled', shortcuts.filter(({ enabled }) => enabled).length);
+    this.addSummaryItem(
+      summary,
+      'Needs attention',
+      shortcuts.filter(({ targetGuid }) => !registry?.getVariableNameByGuid(targetGuid)).length,
+    );
+
+    const tools = content.createDiv({ cls: 'variable-links-management-center-list-tools' });
+    const controls = tools.createDiv({ cls: 'variable-links-management-center-controls' });
+    const search = controls.createEl('input', {
+      cls: 'variable-links-management-center-search',
+      attr: {
+        type: 'search',
+        value: this.state.shortcutQuery,
+        placeholder: 'Search shortcuts',
+        'aria-label': 'Search shortcuts',
+      },
+    });
+    const add = controls.createEl('button', {
+      text: 'Add shortcut',
+      cls: 'mod-cta',
+      attr: { type: 'button' },
+    });
+    add.disabled = !registry?.data.size;
+    add.addEventListener('click', () => this.openShortcutEditor());
+    search.addEventListener('input', () => {
+      this.state.shortcutQuery = search.value;
+      this.saveViewState();
+      this.renderShortcutList(list);
+    });
+
+    const list = content.createDiv({
+      cls: 'variable-links-management-center-list variable-links-shortcut-list',
+    });
+    this.renderShortcutList(list);
+  }
+
+  private renderShortcutList(list: HTMLElement): void {
+    list.empty();
+    const registry = this.plugin.registry;
+    const terms = this.state.shortcutQuery.toLocaleLowerCase().trim().split(/\s+/u).filter(Boolean);
+    const shortcuts = [...(registry?.shortcuts ?? [])]
+      .filter((shortcut) => {
+        const target = registry?.getVariableNameByGuid(shortcut.targetGuid) ?? 'missing target';
+        const searchable = [
+          shortcut.code,
+          shortcut.displayName ?? '',
+          target,
+          formatVariableSelector(shortcut.selector),
+          ...shortcut.searchTerms,
+          shortcut.enabled ? 'enabled' : 'disabled',
+        ].join(' ').toLocaleLowerCase();
+        return terms.every((term) => searchable.includes(term));
+      })
+      .sort((left, right) => compareText(left.code, right.code));
+    if (!shortcuts.length) {
+      list.createEl('p', {
+        text: registry?.shortcuts.length
+          ? 'No shortcuts match the current search.'
+          : 'No shortcuts have been created yet.',
+        cls: 'variable-links-management-center-empty variable-links-hint-text',
+      });
+      return;
+    }
+    const header = list.createDiv({
+      cls: 'variable-links-management-center-list-header variable-links-shortcut-row',
+    });
+    header.createSpan({ text: 'Code' });
+    header.createSpan({ text: 'Display name' });
+    header.createSpan({ text: 'Canonical target' });
+    header.createSpan({ text: 'Status' });
+    header.createSpan({ text: 'Actions', cls: 'variable-links-management-center-actions-label' });
+    for (const shortcut of shortcuts) {
+      const row = list.createDiv({
+        cls: 'variable-links-management-center-row variable-links-shortcut-row',
+      });
+      row.createDiv({ text: shortcut.code, cls: 'variable-links-management-center-name' });
+      row.createDiv({
+        text: shortcut.displayName || '—',
+        cls: 'variable-links-management-center-source',
+      });
+      const targetName = registry?.getVariableNameByGuid(shortcut.targetGuid);
+      const target = targetName
+        ? `${targetName}${formatVariableSelector(shortcut.selector)}`
+        : `Missing target (${shortcut.targetGuid})`;
+      row.createDiv({
+        text: target,
+        cls: 'variable-links-management-center-source',
+        attr: { title: target },
+      });
+      const status = row.createDiv({ cls: 'variable-links-management-center-badges' });
+      status.createSpan({
+        text: shortcut.enabled ? 'Enabled' : 'Disabled',
+        cls: 'variable-links-management-center-badge',
+      });
+      if (registry?.getVariable(shortcut.code)) {
+        status.createSpan({
+          text: 'Name conflict',
+          cls: 'variable-links-management-center-badge',
+          attr: { title: 'The real Variable Link name takes priority during ordinary completion.' },
+        });
+      }
+      if (!targetName) {
+        status.createSpan({ text: 'Missing target', cls: 'variable-links-management-center-badge' });
+      }
+      const actions = row.createDiv({ cls: 'variable-links-management-center-actions' });
+      const edit = actions.createEl('button', {
+        cls: 'clickable-icon',
+        attr: { type: 'button', title: 'Edit shortcut', 'aria-label': `Edit shortcut ${shortcut.code}` },
+      });
+      setIcon(edit, 'pencil');
+      edit.addEventListener('click', () => this.openShortcutEditor(undefined, undefined, shortcut));
+      const duplicate = actions.createEl('button', {
+        cls: 'clickable-icon',
+        attr: {
+          type: 'button',
+          title: 'Duplicate shortcut',
+          'aria-label': `Duplicate shortcut ${shortcut.code}`,
+        },
+      });
+      setIcon(duplicate, 'copy');
+      duplicate.addEventListener('click', () => this.openShortcutEditor(
+        undefined,
+        undefined,
+        {
+          ...shortcut,
+          id: '',
+          code: this.getDuplicateShortcutCode(shortcut.code),
+          searchTerms: [...shortcut.searchTerms],
+          selector: shortcut.selector
+            ? { steps: shortcut.selector.steps.map((step) => ({ ...step })) }
+            : undefined,
+        },
+      ));
+      const remove = actions.createEl('button', {
+        cls: 'clickable-icon',
+        attr: { type: 'button', title: 'Delete shortcut', 'aria-label': `Delete shortcut ${shortcut.code}` },
+      });
+      setIcon(remove, 'trash-2');
+      remove.addEventListener('click', () => {
+        new DeleteShortcutModal(this.plugin, shortcut, () => {
+          void registry?.deleteShortcut(shortcut.id).catch((error: unknown) => {
+            new Notice(`Variable Links: ${getErrorMessage(error)}`);
+          });
+        }).open();
+      });
+    }
+  }
+
+  openShortcutEditor(
+    targetName?: string,
+    selector?: VariableSelector,
+    shortcut?: VariableShortcut,
+  ): void {
+    const registry = this.plugin.registry;
+    if (!registry) return;
+    const targetGuid = targetName ? registry.getVariable(targetName)?.guid : undefined;
+    new ShortcutEditorModal(
+      this.plugin,
+      shortcut ?? {
+        id: '',
+        code: '',
+        targetGuid: targetGuid ?? '',
+        selector,
+        displayName: undefined,
+        searchTerms: [],
+        enabled: true,
+      },
+    ).open();
+  }
+
+  private getDuplicateShortcutCode(code: string): string {
+    const used = new Set(
+      (this.plugin.registry?.shortcuts ?? []).map((shortcut) => shortcut.code.toLocaleLowerCase()),
+    );
+    let copy = `${code}_copy`;
+    let number = 2;
+    while (used.has(copy.toLocaleLowerCase())) {
+      copy = `${code}_copy_${number}`;
+      number++;
+    }
+    return copy;
+  }
+
   private getVariableTypeLabel(definition: VariableDefinition): string {
     const list = getVariableShape(definition) === 'list';
     if (getVariableType(definition) === 'fixed') return list ? 'Fixed list' : 'Fixed value';
@@ -837,7 +1065,9 @@ export class ManagementCenterView extends ItemView {
         textCase: entry.definition.textCase,
       });
     }
-    return { ...impact, replacements, unresolvedNames };
+    const shortcutCount = (this.plugin.registry?.shortcuts ?? [])
+      .filter((shortcut) => guids.includes(shortcut.targetGuid)).length;
+    return { ...impact, replacements, unresolvedNames, shortcutCount };
   }
 
   private async deleteVariables(
@@ -1403,6 +1633,293 @@ class MassRenameVariablesModal extends Modal {
   }
 }
 
+class ShortcutEditorModal extends Modal {
+  private suggestionCloseTimer: number | null = null;
+
+  constructor(
+    private readonly plugin: VariableLinksPlugin,
+    private readonly shortcut: VariableShortcut,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    const registry = this.plugin.registry;
+    this.contentEl.createEl('h3', {
+      text: this.shortcut.id ? 'Edit shortcut' : 'Add shortcut',
+    });
+    this.contentEl.createEl('p', {
+      text: 'Shortcuts expand into canonical variable link tokens when selected from suggestions.',
+      cls: 'variable-links-hint-text',
+    });
+    if (!registry) return;
+    const form = this.contentEl.createEl('form', { cls: 'variable-links-shortcut-form' });
+    const code = addShortcutTextField(form, 'Shortcut code', this.shortcut.code, 'MCS');
+    const displayName = addShortcutTextField(
+      form,
+      'Display name',
+      this.shortcut.displayName ?? '',
+      'Main character speaking voice',
+    );
+    const targetRow = form.createDiv({ cls: 'variable-links-shortcut-field' });
+    targetRow.createEl('label', { text: 'Target variable link:' });
+    const target = targetRow.createEl('input', {
+      attr: {
+        type: 'text',
+        placeholder: 'Type a variable name',
+        'aria-label': 'Target variable link',
+      },
+    });
+    target.value = registry.getVariableNameByGuid(this.shortcut.targetGuid) ?? '';
+    this.attachTargetSuggestions(target);
+    const selector = addShortcutTextField(
+      form,
+      'Selector pipeline',
+      formatVariableSelector(this.shortcut.selector),
+      'item(speaking)::upper(1)',
+    );
+    selector.parentElement?.createDiv({
+      text: 'The leading :: is optional.',
+      cls: 'variable-links-hint-text variable-links-shortcut-field-hint',
+    });
+    const terms = addShortcutTextField(
+      form,
+      'Search terms',
+      this.shortcut.searchTerms.join(', '),
+      'voice, speaking, main character',
+    );
+    const enabledRow = form.createDiv({ cls: 'variable-links-shortcut-checkbox' });
+    const enabledLabel = enabledRow.createEl('label');
+    const enabled = enabledLabel.createEl('input', { attr: { type: 'checkbox' } });
+    enabled.checked = this.shortcut.enabled;
+    enabledLabel.createSpan({ text: 'Enabled' });
+    const preview = form.createDiv({ cls: 'variable-links-hint-text' });
+    const updatePreview = (): void => {
+      const targetName = registry.getVariable(target.value.trim()) ? target.value.trim() : 'Choose a target';
+      const selectorText = normalizeShortcutSelectorInput(selector.value);
+      preview.setText(`Canonical target: ${targetName}${selectorText}`);
+    };
+    target.addEventListener('input', updatePreview);
+    selector.addEventListener('input', updatePreview);
+    updatePreview();
+    const error = form.createDiv({
+      cls: 'variable-links-hint-text variable-links-shortcut-error',
+      attr: { role: 'alert' },
+    });
+    const actions = form.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
+      .addEventListener('click', () => this.close());
+    const save = actions.createEl('button', {
+      text: 'Save shortcut',
+      cls: 'mod-cta',
+      attr: { type: 'submit' },
+    });
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      error.empty();
+      let parsedSelector: VariableSelector | undefined;
+      const selectorText = selector.value.trim();
+      if (selectorText) {
+        const normalizedSelector = normalizeShortcutSelectorInput(selectorText);
+        const parsed = parseVariableSelector(`ShortcutTarget${normalizedSelector}`);
+        if (parsed.name !== 'ShortcutTarget' || !parsed.selector) {
+          error.setText('Enter a complete selector pipeline, or leave it blank.');
+          return;
+        }
+        parsedSelector = parsed.selector;
+      }
+      const targetName = target.value.trim();
+      const targetGuid = registry.getVariable(targetName)?.guid;
+      if (!targetGuid) {
+        error.setText('Choose an existing target variable link from the suggestions.');
+        target.focus();
+        return;
+      }
+      save.disabled = true;
+      void registry.saveShortcut({
+        id: this.shortcut.id || undefined,
+        code: code.value,
+        displayName: displayName.value,
+        targetGuid,
+        selector: parsedSelector,
+        searchTerms: terms.value,
+        enabled: enabled.checked,
+      }).then(() => {
+        this.close();
+      }).catch((saveError: unknown) => {
+        save.disabled = false;
+        error.setText(getErrorMessage(saveError));
+      });
+    });
+  }
+
+  onClose(): void {
+    if (this.suggestionCloseTimer !== null) {
+      window.clearTimeout(this.suggestionCloseTimer);
+      this.suggestionCloseTimer = null;
+    }
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+  }
+
+  private attachTargetSuggestions(input: HTMLInputElement): void {
+    const registry = this.plugin.registry;
+    const row = input.parentElement;
+    if (!registry || !row) return;
+    input.autocomplete = 'off';
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-haspopup', 'listbox');
+    input.setAttribute('aria-expanded', 'false');
+    const menu = row.createDiv({
+      cls: 'variable-links-field-suggestions',
+      attr: { role: 'listbox' },
+    });
+    let selected = 0;
+    let visible: string[] = [];
+    const getMatches = (): string[] => {
+      const query = input.value.toLocaleLowerCase().trim();
+      const terms = query.split(/\s+/u).filter(Boolean);
+      return [...registry.data.entries()]
+        .filter(([, definition]) => Boolean(definition.guid))
+        .filter(([name, definition]) => {
+          const searchable = [
+            name,
+            definition.display ?? '',
+            definition.file,
+            definition.property,
+          ].join(' ').toLocaleLowerCase();
+          return terms.every((term) => searchable.includes(term));
+        })
+        .sort(([left], [right]) => {
+          const leftStarts = query && left.toLocaleLowerCase().startsWith(query) ? 0 : 1;
+          const rightStarts = query && right.toLocaleLowerCase().startsWith(query) ? 0 : 1;
+          return leftStarts - rightStarts || compareText(left, right);
+        })
+        .slice(0, 30)
+        .map(([name]) => name);
+    };
+    const close = (): void => {
+      menu.replaceChildren();
+      menu.classList.remove('is-visible');
+      input.setAttribute('aria-expanded', 'false');
+    };
+    const choose = (name: string): void => {
+      input.value = name;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+      input.setSelectionRange(name.length, name.length);
+      close();
+    };
+    const render = (): void => {
+      visible = getMatches();
+      selected = Math.min(selected, Math.max(visible.length - 1, 0));
+      menu.replaceChildren();
+      for (const [index, name] of visible.entries()) {
+        const definition = registry.getVariable(name);
+        const detail = definition?.display || definition?.property || definition?.file;
+        const option = menu.createEl('button', {
+          text: detail ? `${name} · ${detail}` : name,
+          cls: `variable-links-field-suggestion${index === selected ? ' is-selected' : ''}`,
+          attr: {
+            type: 'button',
+            role: 'option',
+            'aria-selected': String(index === selected),
+          },
+        });
+        option.addEventListener('mousedown', (event) => {
+          event.preventDefault();
+          choose(name);
+        });
+      }
+      menu.classList.toggle('is-visible', visible.length > 0);
+      input.setAttribute('aria-expanded', String(visible.length > 0));
+    };
+    input.addEventListener('focus', render);
+    input.addEventListener('input', () => {
+      selected = 0;
+      render();
+    });
+    input.addEventListener('blur', () => {
+      if (this.suggestionCloseTimer !== null) window.clearTimeout(this.suggestionCloseTimer);
+      this.suggestionCloseTimer = window.setTimeout(() => {
+        this.suggestionCloseTimer = null;
+        close();
+      }, 100);
+    });
+    input.addEventListener('keydown', (event) => {
+      if (!menu.classList.contains('is-visible') || !visible.length) return;
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        selected = (selected + 1) % visible.length;
+        render();
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        selected = (selected - 1 + visible.length) % visible.length;
+        render();
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        const name = visible[selected];
+        if (name) choose(name);
+      } else if (event.key === 'Escape') close();
+    });
+  }
+}
+
+class DeleteShortcutModal extends Modal {
+  constructor(
+    private readonly plugin: VariableLinksPlugin,
+    private readonly shortcut: VariableShortcut,
+    private readonly onConfirm: () => void,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    this.contentEl.createEl('h3', { text: 'Delete shortcut?' });
+    this.contentEl.createEl('p', {
+      text: `Delete shortcut “${this.shortcut.code}”? Tokens already expanded from it will remain unchanged.`,
+    });
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
+      .addEventListener('click', () => this.close());
+    actions.createEl('button', {
+      text: 'Delete shortcut',
+      cls: 'mod-warning',
+      attr: { type: 'button' },
+    }).addEventListener('click', () => {
+      this.close();
+      this.onConfirm();
+    });
+  }
+
+  onClose(): void {
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+  }
+}
+
+function addShortcutTextField(
+  parent: HTMLElement,
+  label: string,
+  value: string,
+  placeholder: string,
+): HTMLInputElement {
+  const row = parent.createDiv({ cls: 'variable-links-shortcut-field' });
+  row.createEl('label', { text: `${label}:` });
+  const input = row.createEl('input', {
+    attr: { type: 'text', placeholder, 'aria-label': label },
+  });
+  input.value = value;
+  return input;
+}
+
+function normalizeShortcutSelectorInput(value: string): string {
+  const trimmed = value.trim();
+  return !trimmed || trimmed.startsWith('::') ? trimmed : `::${trimmed}`;
+}
+
 class DeleteManagedVariableModal extends Modal {
   constructor(
     private readonly plugin: VariableLinksPlugin,
@@ -1419,6 +1936,12 @@ class DeleteManagedVariableModal extends Modal {
     this.contentEl.createEl('p', {
       text: `Delete “${this.variableName}”?`,
     });
+    if (this.preview.shortcutCount) {
+      this.contentEl.createEl('p', {
+        text: `${this.preview.shortcutCount} shortcut${this.preview.shortcutCount === 1 ? '' : 's'} targeting this Variable Link will also be deleted.`,
+        cls: 'mod-warning',
+      });
+    }
     const replacement = addReplacementControl(this.contentEl, this.preview);
     const impact = this.contentEl.createEl('p');
     const updateImpact = (): void => setDeletionImpactText(impact, this.preview, replacement.checked);
@@ -1463,6 +1986,12 @@ class BulkDeleteVariablesModal extends Modal {
         ? ` This includes ${this.hiddenCount} selection${this.hiddenCount === 1 ? '' : 's'} hidden by the current filters.`
         : ''}`,
     });
+    if (this.preview.shortcutCount) {
+      this.contentEl.createEl('p', {
+        text: `${this.preview.shortcutCount} associated shortcut${this.preview.shortcutCount === 1 ? '' : 's'} will also be deleted.`,
+        cls: 'mod-warning',
+      });
+    }
     const replacement = addReplacementControl(this.contentEl, this.preview);
     const impact = this.contentEl.createEl('p');
     const updateImpact = (): void => setDeletionImpactText(impact, this.preview, replacement.checked);
@@ -1535,7 +2064,7 @@ function readState(state: unknown): ManagementCenterState {
     ? state as Record<string, unknown>
     : {};
   return {
-    activity: 'variables',
+    activity: record.activity === 'shortcuts' ? 'shortcuts' : 'variables',
     query: typeof record.query === 'string' ? record.query : '',
     ownership: readOwnershipFilter(record.ownership),
     profileId: typeof record.profileId === 'string' && record.profileId ? record.profileId : 'all',
@@ -1548,6 +2077,7 @@ function readState(state: unknown): ManagementCenterState {
     selected: Array.isArray(record.selected)
       ? record.selected.filter((value): value is string => typeof value === 'string')
       : [],
+    shortcutQuery: typeof record.shortcutQuery === 'string' ? record.shortcutQuery : '',
   };
 }
 

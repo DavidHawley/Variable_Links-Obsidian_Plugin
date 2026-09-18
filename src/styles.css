@@ -1810,6 +1810,44 @@ input[type="checkbox"]:disabled:where([class^="variable-links-"], [class*=" vari
   text-align: right;
 }
 
+.variable-links-management-center-list-header.variable-links-shortcut-row,
+.variable-links-management-center-row.variable-links-shortcut-row {
+  grid-template-columns: minmax(110px, 0.7fr) minmax(150px, 1fr) minmax(260px, 1.6fr) minmax(130px, auto) 108px;
+  min-width: 760px;
+}
+
+.variable-links-shortcut-form {
+  display: grid;
+  gap: 10px;
+}
+
+.variable-links-shortcut-field {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(130px, max-content) minmax(220px, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.variable-links-shortcut-field-hint {
+  grid-column: 2;
+}
+
+.variable-links-shortcut-field input,
+.variable-links-shortcut-field select {
+  width: 100%;
+}
+
+.variable-links-shortcut-checkbox label {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.variable-links-shortcut-error:not(:empty) {
+  color: var(--text-error);
+}
+
 .variable-links-management-center-empty {
   margin: 0;
   padding: 18px;

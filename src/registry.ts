@@ -22,6 +22,14 @@ import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
 import { filePathFromLink } from './linkSyntax';
 import { getTokenSyntax, parseVariableSelector } from './tokenSyntax';
+import type { VariableSelector } from './tokenSyntax';
+import {
+  normalizeShortcutSearchTerms,
+  normalizeVariableShortcuts,
+  serializeVariableShortcuts,
+  validateShortcutCode,
+  type VariableShortcut,
+} from './shortcuts';
 import {
   normalizeVariableTextCase,
   parseVariableTextCaseMarker,
@@ -193,6 +201,7 @@ export class Registry {
   settings: VariableLinksSettings;
   data: Map<string, VariableDefinition> = new Map();
   autolinkProfiles: AutolinkProfile[] = [];
+  shortcuts: VariableShortcut[] = [];
   registryFile: TFile | null = null;
   registryPath: string = '';
   private modifyEvent: EventRef | null = null;
@@ -290,6 +299,7 @@ export class Registry {
     }
 
     this.autolinkProfiles = normalizeAutolinkProfiles(parsed['autolink-profiles']);
+    this.shortcuts = normalizeVariableShortcuts(parsed.shortcuts);
 
     this.data.clear();
     const generatedGuids = new Map<string, string>();
@@ -433,6 +443,83 @@ export class Registry {
 
   getVariable(name: string) {
     return this.data.get(name) ?? null;
+  }
+
+  getVariableNameByGuid(guid: string): string | null {
+    for (const [name, definition] of this.data) {
+      if (definition.guid === guid) return name;
+    }
+    return null;
+  }
+
+  getShortcutByCode(code: string): VariableShortcut | null {
+    const normalized = code.trim().toLocaleLowerCase();
+    return this.shortcuts.find((shortcut) =>
+      shortcut.enabled && shortcut.code.toLocaleLowerCase() === normalized
+    ) ?? null;
+  }
+
+  getShortcutsForVariableGuid(guid: string): VariableShortcut[] {
+    return this.shortcuts.filter((shortcut) => shortcut.targetGuid === guid);
+  }
+
+  async saveShortcut(
+    shortcut: Omit<VariableShortcut, 'id' | 'searchTerms'> & {
+      id?: string;
+      searchTerms: string | readonly string[];
+    },
+  ): Promise<VariableShortcut> {
+    if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
+    const code = shortcut.code.trim();
+    validateShortcutCode(code);
+    const targetName = this.getVariableNameByGuid(shortcut.targetGuid);
+    if (!targetName) {
+      throw new Error('The shortcut target no longer exists.');
+    }
+    if (shortcut.selector && this.plugin.resolver) {
+      const resolved = await this.plugin.resolver.resolve(targetName, shortcut.selector);
+      if (!resolved.ok) {
+        throw new Error(`The shortcut selector is not valid for “${targetName}”: ${resolved.error ?? 'unknown selector error'}`);
+      }
+    }
+    const existing = shortcut.id
+      ? this.shortcuts.find((candidate) => candidate.id === shortcut.id)
+      : undefined;
+    const duplicate = this.shortcuts.find((candidate) =>
+      candidate.id !== shortcut.id && candidate.code.toLocaleLowerCase() === code.toLocaleLowerCase()
+    );
+    if (duplicate) throw new Error(`Shortcut code “${code}” is already in use.`);
+    const saved: VariableShortcut = {
+      id: existing?.id ?? this.createGuid(),
+      code,
+      targetGuid: shortcut.targetGuid,
+      selector: shortcut.selector,
+      displayName: shortcut.displayName?.trim() || undefined,
+      searchTerms: normalizeShortcutSearchTerms(shortcut.searchTerms),
+      enabled: shortcut.enabled,
+    };
+    const next = existing
+      ? this.shortcuts.map((candidate) => candidate.id === saved.id ? saved : candidate)
+      : [...this.shortcuts, saved];
+    await this.mutateRegistryDocument((registry) => {
+      registry.shortcuts = serializeVariableShortcuts(next);
+      if (!this.isRecord(registry['variable-links'])) registry['variable-links'] = {};
+    });
+    await this.load();
+    await this.plugin.refreshManagementCenterViews();
+    return this.shortcuts.find((candidate) => candidate.id === saved.id) ?? saved;
+  }
+
+  async deleteShortcut(id: string): Promise<boolean> {
+    const next = this.shortcuts.filter((shortcut) => shortcut.id !== id);
+    if (next.length === this.shortcuts.length) return false;
+    await this.mutateRegistryDocument((registry) => {
+      registry.shortcuts = serializeVariableShortcuts(next);
+      if (!this.isRecord(registry['variable-links'])) registry['variable-links'] = {};
+    });
+    await this.load();
+    await this.plugin.refreshManagementCenterViews();
+    return true;
   }
 
   async updateFileReferences(oldPath: string, newPath: string): Promise<number> {
@@ -812,6 +899,10 @@ export class Registry {
       ...this.findListKeyRenames(existing?.fixedItems, normalized.fixedItems),
       ...this.findListKeyRenames(existing?.propertyItems, normalized.propertyItems),
     ];
+    const removedSelectorKeys = [
+      ...this.findRemovedListKeys(existing?.fixedItems, normalized.fixedItems),
+      ...this.findRemovedListKeys(existing?.propertyItems, normalized.propertyItems),
+    ];
     if (rename && selectorKeyRenames.length) {
       throw new Error('Rename the variable and its list-item keys in separate saves.');
     }
@@ -829,7 +920,9 @@ export class Registry {
     if (renamePlan) await renamePlan.apply();
     if (selectorRenamePlan) await selectorRenamePlan.apply();
     try {
-      await this.mutateRegistryLinks((links) => {
+      await this.mutateRegistryDocument((registry) => {
+        const links = this.isRecord(registry['variable-links']) ? registry['variable-links'] : {};
+        registry['variable-links'] = links;
         const current = links[oldName || variableName];
         const stored: Record<string, unknown> = this.isRecord(current) ? current : {};
         const updated: Record<string, unknown> = { ...stored, ...normalized };
@@ -861,6 +954,20 @@ export class Registry {
         }
         links[variableName] = updated;
         if (rename) delete links[oldName];
+        if (selectorKeyRenames.length || removedSelectorKeys.length) {
+          const renamedShortcuts = this.renameShortcutSelectorKeys(
+            normalizeVariableShortcuts(registry.shortcuts),
+            guid,
+            selectorKeyRenames,
+          );
+          const removed = new Set(removedSelectorKeys.map((key) => key.toLocaleLowerCase()));
+          registry.shortcuts = serializeVariableShortcuts(renamedShortcuts.filter((shortcut) =>
+            shortcut.targetGuid !== guid
+            || !shortcut.selector?.steps.some((step) =>
+              step.type === 'item' && removed.has(step.key.toLocaleLowerCase())
+            )
+          ));
+        }
       });
     } catch (error) {
       if (renamePlan) await renamePlan.rollback();
@@ -930,6 +1037,39 @@ export class Registry {
       return oldKey && newKey && oldKey.toLocaleLowerCase() !== newKey.toLocaleLowerCase()
         ? [{ oldKey, newKey }]
         : [];
+    });
+  }
+
+  private findRemovedListKeys(
+    previous: readonly VariableListItem[] | undefined,
+    next: readonly VariableListItem[] | undefined,
+  ): string[] {
+    if (!previous?.length) return [];
+    const nextIds = new Set((next ?? []).map((item) => item.id));
+    return previous.flatMap((item) =>
+      !nextIds.has(item.id) && item.key?.trim() ? [item.key.trim()] : []
+    );
+  }
+
+  private renameShortcutSelectorKeys(
+    shortcuts: readonly VariableShortcut[],
+    targetGuid: string,
+    renames: readonly { newKey: string; oldKey: string }[],
+  ): VariableShortcut[] {
+    const replacements = new Map(renames.map(({ oldKey, newKey }) => [
+      oldKey.toLocaleLowerCase(),
+      newKey,
+    ]));
+    return shortcuts.map((shortcut) => {
+      if (shortcut.targetGuid !== targetGuid || !shortcut.selector) return shortcut;
+      const selector: VariableSelector = {
+        steps: shortcut.selector.steps.map((step) => {
+          if (step.type !== 'item') return step;
+          const key = replacements.get(step.key.toLocaleLowerCase());
+          return key ? { type: 'item' as const, key } : step;
+        }),
+      };
+      return { ...shortcut, selector };
     });
   }
 
@@ -1053,8 +1193,14 @@ export class Registry {
     const guids = variableNames
       .map((name) => this.data.get(name)?.guid)
       .filter((guid): guid is string => Boolean(guid));
-    await this.mutateRegistryLinks((links) => {
+    await this.mutateRegistryDocument((registry) => {
+      const links = this.isRecord(registry['variable-links']) ? registry['variable-links'] : {};
+      registry['variable-links'] = links;
       for (const variableName of variableNames) delete links[variableName];
+      registry.shortcuts = serializeVariableShortcuts(
+        normalizeVariableShortcuts(registry.shortcuts)
+          .filter((shortcut) => !guids.includes(shortcut.targetGuid)),
+      );
     });
     try {
       await this.load();

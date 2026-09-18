@@ -539,6 +539,19 @@ export default class VariableLinksPlugin extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
   }
 
+  async openShortcutEditor(variableName: string, selector?: VariableSelector): Promise<void> {
+    if (!this.active) return;
+    await this.openManagementCenter();
+    const managementModule = await import('./managementCenter');
+    if (!this.active) return;
+    const leaf = this.app.workspace
+      .getLeavesOfType(managementModule.VIEW_TYPE_MANAGEMENT_CENTER)[0];
+    if (leaf?.view instanceof managementModule.ManagementCenterView) {
+      leaf.view.showActivity('shortcuts');
+      leaf.view.openShortcutEditor(variableName, selector);
+    }
+  }
+
   async openCombinedAutolinkPreview(
     scope: { type: 'all' } | { type: 'file' | 'folder'; path: string },
   ): Promise<void> {

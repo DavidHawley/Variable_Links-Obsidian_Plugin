@@ -149,6 +149,7 @@ class DeleteVariableModal extends Modal {
   constructor(
     private readonly plugin: VariableLinksPlugin,
     private readonly variableName: string,
+    private readonly shortcutCount: number,
     private readonly onConfirm: () => void,
   ) {
     super(plugin.app);
@@ -160,9 +161,52 @@ class DeleteVariableModal extends Modal {
     this.contentEl.createEl('p', {
       text: `Delete “${this.variableName}”? Existing tokens will remain in notes but will no longer resolve.`,
     });
+    if (this.shortcutCount) {
+      this.contentEl.createEl('p', {
+        text: `${this.shortcutCount} shortcut${this.shortcutCount === 1 ? '' : 's'} targeting this Variable Link will also be deleted.`,
+        cls: 'mod-warning',
+      });
+    }
     const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
     actions.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
     actions.createEl('button', { text: 'Delete', cls: 'mod-warning' }).addEventListener('click', () => {
+      this.close();
+      this.onConfirm();
+    });
+  }
+
+  onClose(): void {
+    this.plugin.releaseDialog(this);
+    this.contentEl.empty();
+  }
+}
+
+class RemoveListItemModal extends Modal {
+  constructor(
+    private readonly plugin: VariableLinksPlugin,
+    private readonly itemLabel: string,
+    private readonly shortcutCount: number,
+    private readonly onConfirm: () => void,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.plugin.trackDialog(this);
+    this.contentEl.createEl('h3', { text: 'Remove list item?' });
+    this.contentEl.createEl('p', { text: `Remove “${this.itemLabel}” from this list?` });
+    this.contentEl.createEl('p', {
+      text: `${this.shortcutCount} shortcut${this.shortcutCount === 1 ? '' : 's'} may be affected. Shortcuts using this item’s permanent key will be removed when the variable is saved; index shortcuts may point to a different item after the list changes.`,
+      cls: 'mod-warning',
+    });
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
+      .addEventListener('click', () => this.close());
+    actions.createEl('button', {
+      text: 'Remove item',
+      cls: 'mod-warning',
+      attr: { type: 'button' },
+    }).addEventListener('click', () => {
       this.close();
       this.onConfirm();
     });
@@ -2224,7 +2268,15 @@ export class VariablePropertiesView extends ItemView {
     deleteButton.disabled = !activeName || !storedDefinition;
     deleteButton.addEventListener('click', () => {
       if (deleteButton.disabled) return;
-      new DeleteVariableModal(this.plugin, activeName, () => void this.deleteVariable(activeName)).open();
+      const shortcutCount = storedDefinition?.guid
+        ? this.plugin.registry?.getShortcutsForVariableGuid(storedDefinition.guid).length ?? 0
+        : 0;
+      new DeleteVariableModal(
+        this.plugin,
+        activeName,
+        shortcutCount,
+        () => void this.deleteVariable(activeName),
+      ).open();
     });
 
     const tabContent = container.createDiv({ cls: 'variable-links-panel-tab-content' });
@@ -2510,6 +2562,7 @@ export class VariablePropertiesView extends ItemView {
           fixedItems = items;
           markFormDirty();
         },
+        existingVariable ? name : undefined,
       );
       this.renderVariableListEditor(
         propertyListEditor,
@@ -2522,6 +2575,7 @@ export class VariablePropertiesView extends ItemView {
           propertyItems = items;
           markFormDirty();
         },
+        existingVariable ? name : undefined,
       );
     };
     renderListEditors();
@@ -3241,6 +3295,7 @@ export class VariablePropertiesView extends ItemView {
     editableValues: boolean,
     footerText: string,
     onChanged: (items: VariableListItem[]) => void,
+    variableName?: string,
   ): void {
     parent.empty();
     const heading = parent.createDiv({ cls: 'variable-links-panel-list-heading' });
@@ -3252,7 +3307,14 @@ export class VariablePropertiesView extends ItemView {
       }).addEventListener('click', () => {
         items.push(createVariableListItem());
         onChanged(items);
-        this.renderVariableListEditor(parent, items, editableValues, footerText, onChanged);
+        this.renderVariableListEditor(
+          parent,
+          items,
+          editableValues,
+          footerText,
+          onChanged,
+          variableName,
+        );
       });
     }
     const list = parent.createDiv({ cls: 'variable-links-panel-list-items' });
@@ -3304,8 +3366,24 @@ export class VariablePropertiesView extends ItemView {
         item.display = displayInput.value.trim() || undefined;
         onChanged(items);
       });
-      if (editableValues) {
+      if (editableValues || variableName) {
         const actions = row.createDiv({ cls: 'variable-links-panel-list-item-actions' });
+        if (variableName) {
+          actions.createEl('button', {
+            text: 'Add shortcut',
+            attr: {
+              type: 'button',
+              title: 'Create a suggestion shortcut for this item',
+              'aria-label': `Add shortcut for item ${index + 1}`,
+            },
+          }).addEventListener('click', () => {
+            const selector = item.key
+              ? { steps: [{ type: 'item' as const, key: item.key }] }
+              : { steps: [{ type: 'index' as const, index: index + 1 }] };
+            void this.plugin.openShortcutEditor(variableName, selector);
+          });
+        }
+        if (!editableValues) return;
         const up = actions.createEl('button', {
           text: '↑',
           attr: { type: 'button', title: 'Move up', 'aria-label': `Move item ${index + 1} up` },
@@ -3315,7 +3393,14 @@ export class VariablePropertiesView extends ItemView {
           if (index === 0) return;
           [items[index - 1], items[index]] = [items[index], items[index - 1]];
           onChanged(items);
-          this.renderVariableListEditor(parent, items, editableValues, footerText, onChanged);
+          this.renderVariableListEditor(
+            parent,
+            items,
+            editableValues,
+            footerText,
+            onChanged,
+            variableName,
+          );
         });
         const down = actions.createEl('button', {
           text: '↓',
@@ -3326,15 +3411,52 @@ export class VariablePropertiesView extends ItemView {
           if (index >= items.length - 1) return;
           [items[index], items[index + 1]] = [items[index + 1], items[index]];
           onChanged(items);
-          this.renderVariableListEditor(parent, items, editableValues, footerText, onChanged);
+          this.renderVariableListEditor(
+            parent,
+            items,
+            editableValues,
+            footerText,
+            onChanged,
+            variableName,
+          );
         });
         actions.createEl('button', {
           text: 'Remove',
           attr: { type: 'button', 'aria-label': `Remove item ${index + 1}` },
         }).addEventListener('click', () => {
-          items.splice(index, 1);
-          onChanged(items);
-          this.renderVariableListEditor(parent, items, editableValues, footerText, onChanged);
+          const remove = (): void => {
+            items.splice(index, 1);
+            onChanged(items);
+            this.renderVariableListEditor(
+              parent,
+              items,
+              editableValues,
+              footerText,
+              onChanged,
+              variableName,
+            );
+          };
+          const guid = variableName
+            ? this.plugin.registry?.getVariable(variableName)?.guid
+            : undefined;
+          const affected = guid
+            ? this.plugin.registry?.getShortcutsForVariableGuid(guid).filter((shortcut) =>
+                shortcut.selector?.steps.some((step) =>
+                  step.type === 'index'
+                  || (step.type === 'item'
+                    && Boolean(item.key)
+                    && step.key.toLocaleLowerCase() === item.key?.toLocaleLowerCase())
+                )
+              ).length ?? 0
+            : 0;
+          if (affected) {
+            new RemoveListItemModal(
+              this.plugin,
+              item.display || item.key || item.value || `Item ${index + 1}`,
+              affected,
+              remove,
+            ).open();
+          } else remove();
         });
       }
     });

@@ -66,7 +66,7 @@ import {
 
 interface SuggestItem {
   name: string;
-  kind: 'variable' | 'property' | 'creation' | 'capture' | 'search-help' | 'hint-toggle' | 'mode-message';
+  kind: 'variable' | 'shortcut' | 'property' | 'creation' | 'capture' | 'search-help' | 'hint-toggle' | 'mode-message';
   alreadyMapped?: boolean;
   display?: string;
   file?: string;
@@ -83,6 +83,7 @@ interface SuggestItem {
   captureType?: CapturedTimeShortcut;
   captureFormat?: string;
   searchMode?: SuggestionSearchMode;
+  shortcutCode?: string;
   helpVariant?: 'opening' | 'full';
   message?: string;
   toggleChecked?: boolean;
@@ -152,14 +153,19 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       return this.getSearchHelpItems('full');
     }
     if (search.mode === 'shortcuts') {
-      return [{
-        name: '',
-        kind: 'mode-message',
-        searchMode: 'shortcuts',
-        message: search.query.trim()
-          ? 'No matching shortcuts are configured yet.'
-          : 'Type a shortcut code, display name, target, or search term.',
-      }];
+      const shortcutCaseQuery = parseVariableTextCaseQuery(search.query);
+      const shortcuts = this.getShortcutSuggestions(
+        shortcutCaseQuery.query,
+        shortcutCaseQuery.textCase,
+      );
+      return shortcuts.length ? shortcuts : [{
+          name: '',
+          kind: 'mode-message',
+          searchMode: 'shortcuts',
+          message: shortcutCaseQuery.query.trim()
+            ? 'No shortcuts match this search.'
+            : 'No enabled shortcuts are configured yet.',
+        }];
     }
 
     const caseQuery = parseVariableTextCaseQuery(search.query);
@@ -169,6 +175,10 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     );
     if (selectorSuggestions) return selectorSuggestions;
     const exactVariable = this.registry.getVariable(caseQuery.query);
+    if (search.mode === 'all' && !exactVariable) {
+      const exactShortcut = this.getExactShortcutSuggestion(caseQuery.query, caseQuery.textCase);
+      if (exactShortcut) return [exactShortcut];
+    }
     const creationQuery = search.mode === 'all' && !exactVariable
       ? parseNamedCreationQuery(caseQuery.query)
       : null;
@@ -318,7 +328,9 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       });
     }
     el.createDiv({
-      text: item.selector
+      text: item.kind === 'shortcut'
+        ? item.display ?? item.shortcutCode ?? item.name
+        : item.selector
         ? item.display ?? `${item.name} ${formatVariableSelector(item.selector)}`
         : item.kind === 'creation' || item.kind === 'capture'
         ? `Create ${item.name}`
@@ -330,6 +342,13 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       ? item.creationSource === undefined
         ? `Open ${item.creationType === 'fixed' ? 'fixed value' : 'property value'} editor`
         : `Create ${item.creationType === 'fixed' ? 'fixed value' : 'property mapping'}`
+      : item.kind === 'shortcut'
+      ? `Shortcut ${item.shortcutCode ?? ''} → ${formatVariableToken(
+          item.name,
+          getTokenSyntax(this.registry.plugin.settings),
+          item.textCase,
+          item.selector,
+        )}`
       : item.kind === 'variable'
       ? item.selector
         ? `${formatVariableSelector(item.selector)}${item.value !== undefined ? ` · ${item.value}` : ''}`
@@ -356,7 +375,9 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
         cls: 'suggest-sub',
       });
     }
-    if (item.display) el.createDiv({ text: item.display, cls: 'suggest-sub' });
+    if (item.kind === 'shortcut' && item.value) {
+      el.createDiv({ text: `Search terms: ${item.value}`, cls: 'suggest-sub' });
+    } else if (item.display) el.createDiv({ text: item.display, cls: 'suggest-sub' });
     if (item.textCase) {
       el.createDiv({
         text: `Text case: ${getVariableTextCaseLabel(item.textCase)}`,
@@ -492,7 +513,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
         return;
       }
     }
-    if (item.kind === 'variable' && this.hasTextCaseNameConflict(
+    if ((item.kind === 'variable' || item.kind === 'shortcut') && this.hasTextCaseNameConflict(
       variableName,
       item.textCase,
       item.selector,
@@ -1020,6 +1041,69 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     } catch {
       return '';
     }
+  }
+
+  private getExactShortcutSuggestion(
+    query: string,
+    textCase: VariableTextCase | undefined,
+  ): SuggestItem | null {
+    const shortcut = this.registry.getShortcutByCode(query);
+    if (!shortcut) return null;
+    const name = this.registry.getVariableNameByGuid(shortcut.targetGuid);
+    if (!name) return null;
+    const definition = this.registry.getVariable(name);
+    if (!definition) return null;
+    return {
+      name,
+      kind: 'shortcut',
+      shortcutCode: shortcut.code,
+      display: shortcut.displayName || shortcut.code,
+      selector: shortcut.selector,
+      variableType: getVariableType(definition),
+      variableShape: getVariableShape(definition),
+      hidden: definition.hidden === true,
+      textCase,
+    };
+  }
+
+  private getShortcutSuggestions(
+    query: string,
+    textCase: VariableTextCase | undefined,
+  ): SuggestItem[] {
+    const terms = query.toLocaleLowerCase().trim().split(/\s+/u).filter(Boolean);
+    const items = this.registry.shortcuts.flatMap((shortcut): SuggestItem[] => {
+      if (!shortcut.enabled) return [];
+      const name = this.registry.getVariableNameByGuid(shortcut.targetGuid);
+      if (!name) return [];
+      const definition = this.registry.getVariable(name);
+      if (!definition) return [];
+      return [{
+        name,
+        kind: 'shortcut',
+        shortcutCode: shortcut.code,
+        display: shortcut.displayName || shortcut.code,
+        selector: shortcut.selector,
+        variableType: getVariableType(definition),
+        variableShape: getVariableShape(definition),
+        hidden: definition.hidden === true,
+        searchMode: 'shortcuts',
+        textCase,
+        value: shortcut.searchTerms.join(', '),
+      }];
+    });
+    if (!terms.length) return items.slice(0, 100);
+    return this.rankItems(items, terms, (item) => {
+      const shortcut = this.registry.shortcuts.find((candidate) =>
+        candidate.code === item.shortcutCode
+      );
+      return [
+        item.shortcutCode,
+        item.display,
+        item.name,
+        formatVariableSelector(item.selector),
+        ...(shortcut?.searchTerms ?? []),
+      ];
+    }).slice(0, 100);
   }
 
   private applyTextCaseToSuggestions(

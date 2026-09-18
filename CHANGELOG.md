@@ -12,6 +12,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Preserved existing property-backed variables with automatic scalar or list behavior until the user explicitly saves a new value shape.
 - Added an option to hide any Variable Link’s rendered value, showing a subdued `&` editing marker in Live Preview and no output in Reading View while keeping the value available to plugin tools.
 - Added chainable selector pipelines with one-based, reverse, and named list selection; multi-position `word()` and `char()` selection; and whole-value or targeted `upper()` and `lower()` transformations. Selector suggestions preview each stage, while renaming and token-format migration preserve the complete pipeline.
+- Added persistent suggestion shortcuts with a searchable Management Center activity, inline list-item creation, editable duplication, enabled states, exact-code completion, focused `~` search, and expansion into canonical Variable Link tokens that continue following variable renames.
 
 ## 1.3.1 - 2026-09-01
 
