@@ -43,13 +43,20 @@ import {
   type SuggestionSearchMode,
 } from './suggestionSearch';
 import {
+  appendVariableSelector,
   canRepresentVariableTextCase,
   findVariableTokenTrigger,
+  formatVariableSelector,
   formatVariableToken,
   getRecognizedTokenSyntaxes,
   getTokenSyntax,
   hasVariableTokenSuffixAt,
+  parseVariableSelector,
+  parseVariableSelectorStep,
+  type VariableSelector,
+  type VariableSelectorStep,
 } from './tokenSyntax';
+import { splitGraphemes } from './selectorUtils';
 import {
   getVariableTextCaseLabel,
   parseVariableTextCaseQuery,
@@ -68,6 +75,7 @@ interface SuggestItem {
   variableType?: VariableType;
   variableShape?: VariableShape;
   hidden?: boolean;
+  selector?: VariableSelector;
   textCase?: VariableTextCase;
   creationType?: NamedCreationType;
   creationSource?: string;
@@ -155,6 +163,11 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     }
 
     const caseQuery = parseVariableTextCaseQuery(search.query);
+    const selectorSuggestions = await this.getSelectorSuggestions(
+      caseQuery.query,
+      caseQuery.textCase,
+    );
+    if (selectorSuggestions) return selectorSuggestions;
     const exactVariable = this.registry.getVariable(caseQuery.query);
     const creationQuery = search.mode === 'all' && !exactVariable
       ? parseNamedCreationQuery(caseQuery.query)
@@ -305,7 +318,9 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       });
     }
     el.createDiv({
-      text: item.kind === 'creation' || item.kind === 'capture'
+      text: item.selector
+        ? item.display ?? `${item.name} ${formatVariableSelector(item.selector)}`
+        : item.kind === 'creation' || item.kind === 'capture'
         ? `Create ${item.name}`
         : item.name,
     });
@@ -316,7 +331,9 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
         ? `Open ${item.creationType === 'fixed' ? 'fixed value' : 'property value'} editor`
         : `Create ${item.creationType === 'fixed' ? 'fixed value' : 'property mapping'}`
       : item.kind === 'variable'
-      ? item.variableType === 'fixed'
+      ? item.selector
+        ? `${formatVariableSelector(item.selector)}${item.value !== undefined ? ` · ${item.value}` : ''}`
+        : item.variableType === 'fixed'
         ? `${item.variableShape === 'list' ? 'Fixed list' : 'Fixed value'}${item.hidden ? ' · Hidden' : ''}${item.file ? ` · ${item.file}` : ''}`
         : `${item.variableShape === 'list' ? 'Property list' : 'Property value'}${item.hidden ? ' · Hidden' : ''} · ${item.file ?? ''}${item.property ? ` • ${item.property}` : ''}`
       : `Property · ${item.file ?? ''}`;
@@ -475,7 +492,11 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
         return;
       }
     }
-    if (item.kind === 'variable' && this.hasTextCaseNameConflict(variableName, item.textCase)) {
+    if (item.kind === 'variable' && this.hasTextCaseNameConflict(
+      variableName,
+      item.textCase,
+      item.selector,
+    )) {
       return;
     }
     if (item.kind === 'property') {
@@ -508,7 +529,12 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     }
 
     const target = this.getReplacementTarget(context);
-    const token = formatVariableToken(variableName, target.activeSyntax, item.textCase);
+    const token = formatVariableToken(
+      variableName,
+      target.activeSyntax,
+      item.textCase,
+      item.selector,
+    );
     context.editor.replaceRange(
       token,
       context.start,
@@ -620,13 +646,35 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       getRecognizedTokenSyntaxes(this.registry.plugin.settings),
     );
     const triggerSyntax = trigger?.start === context.start.ch ? trigger.syntax : activeSyntax;
-    const hasAutoCloser = hasVariableTokenSuffixAt(line, context.end.ch, triggerSyntax);
+    const suffixStart = this.findExistingTokenSuffix(
+      line,
+      context.start.ch + triggerSyntax.prefix.length,
+      context.end.ch,
+      triggerSyntax,
+    );
     return {
       activeSyntax,
-      replaceEnd: hasAutoCloser
-        ? { line: context.end.line, ch: context.end.ch + triggerSyntax.suffix.length }
+      replaceEnd: suffixStart !== null
+        ? { line: context.end.line, ch: suffixStart + triggerSyntax.suffix.length }
         : context.end,
     };
+  }
+
+  private findExistingTokenSuffix(
+    line: string,
+    contentStart: number,
+    cursor: number,
+    syntax: ReturnType<typeof getTokenSyntax>,
+  ): number | null {
+    if (hasVariableTokenSuffixAt(line, cursor, syntax)) return cursor;
+    const suffixStart = line.indexOf(
+      syntax.suffix,
+      Math.max(contentStart, cursor - syntax.suffix.length + 1),
+    );
+    if (suffixStart === -1) return null;
+    if (suffixStart + syntax.suffix.length < cursor) return null;
+    const nextPrefix = line.indexOf(syntax.prefix, Math.max(contentStart, cursor));
+    return nextPrefix !== -1 && nextPrefix < suffixStart ? null : suffixStart;
   }
 
   private getNamedCreationSuggestions(
@@ -806,6 +854,174 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     return name;
   }
 
+  private async getSelectorSuggestions(
+    query: string,
+    textCase: VariableTextCase | undefined,
+  ): Promise<SuggestItem[] | null> {
+    if (this.registry.getVariable(query)) return null;
+    const separator = query.lastIndexOf('::');
+    if (separator <= 0) return null;
+    const parsedPrefix = parseVariableSelector(
+      query.slice(0, separator),
+      (name) => this.registry.getVariable(name) !== null,
+    );
+    const name = parsedPrefix.name;
+    const currentSelector = parsedPrefix.selector;
+    const rawSelectorQuery = query.slice(separator + 2).trim();
+    const selectorQuery = rawSelectorQuery.toLocaleLowerCase();
+    const definition = this.registry.getVariable(name);
+    if (!definition) return null;
+    const result = await this.resolver.resolve(name, currentSelector).catch(() => null);
+    if (!result?.ok) {
+      return [{
+        name: '',
+        kind: 'mode-message',
+        message: `${name} does not currently resolve to a selectable value.`,
+      }];
+    }
+    const base: Omit<SuggestItem, 'selector' | 'display' | 'value'> = {
+      name,
+      kind: 'variable',
+      variableType: getVariableType(definition),
+      variableShape: getVariableShape(definition),
+      hidden: definition.hidden === true,
+      textCase,
+    };
+    const withStep = (step: VariableSelectorStep): VariableSelector =>
+      appendVariableSelector(currentSelector, step);
+    const items: SuggestItem[] = [];
+    if (Array.isArray(result.value)) {
+      result.value.forEach((value, index) => items.push({
+        ...base,
+        selector: withStep({ type: 'index', index: index + 1 }),
+        display: `Item ${index + 1}`,
+        value: formatSuggestionValue(value),
+      }));
+      if (result.value.length) {
+        items.unshift({
+          ...base,
+          selector: withStep({ type: 'index', index: -1 }),
+          display: 'Last item',
+          value: formatSuggestionValue(result.value[result.value.length - 1]),
+        });
+      }
+      const metadata = getVariableType(definition) === 'fixed'
+        ? definition.fixedItems ?? []
+        : definition.propertyItems ?? [];
+      for (const item of metadata) {
+        if (!item.key) continue;
+        items.unshift({
+          ...base,
+          selector: withStep({ type: 'item', key: item.key }),
+          display: item.display || item.key,
+          value: item.value,
+        });
+      }
+    } else {
+      const text = this.selectorValueText(result.value);
+      const words = text.trim().split(/\s+/u).filter(Boolean);
+      words.forEach((word, index) => items.push({
+        ...base,
+        selector: withStep({ type: 'word', indexes: [index + 1] }),
+        display: `Word ${index + 1}`,
+        value: word,
+      }));
+      if (words.length) {
+        items.unshift({
+          ...base,
+          selector: withStep({ type: 'word', indexes: [-1] }),
+          display: 'Last word',
+          value: words[words.length - 1],
+        });
+      }
+      const characters = splitGraphemes(text);
+      if (characters.length) {
+        items.push(...characters.slice(0, 100).map((character, index) => ({
+          ...base,
+          selector: withStep({ type: 'char', indexes: [index + 1] }),
+          display: `Character ${index + 1}`,
+          value: character,
+        })));
+        items.push({
+          ...base,
+          selector: withStep({ type: 'char', indexes: [-1] }),
+          display: 'Last character',
+          value: characters[characters.length - 1],
+        });
+      }
+      items.push({
+        ...base,
+        selector: withStep({ type: 'upper', indexes: [] }),
+        display: 'Uppercase all',
+        value: text.toLocaleUpperCase(),
+      }, {
+        ...base,
+        selector: withStep({ type: 'lower', indexes: [] }),
+        display: 'Lowercase all',
+        value: text.toLocaleLowerCase(),
+      });
+      if (characters.length) {
+        items.push({
+          ...base,
+          selector: withStep({ type: 'upper', indexes: [1] }),
+          display: 'Uppercase first character',
+          value: characters.map((part, index) => index === 0 ? part.toLocaleUpperCase() : part).join(''),
+        }, {
+          ...base,
+          selector: withStep({ type: 'lower', indexes: [1] }),
+          display: 'Lowercase first character',
+          value: characters.map((part, index) => index === 0 ? part.toLocaleLowerCase() : part).join(''),
+        });
+      }
+    }
+    const typedStep = parseVariableSelectorStep(rawSelectorQuery);
+    if (typedStep) {
+      const selector = withStep(typedStep);
+      if (!items.some((item) => formatVariableSelector(item.selector) === formatVariableSelector(selector))) {
+        const typedResult = await this.resolver.resolve(name, selector).catch(() => null);
+        if (typedResult?.ok) {
+          items.unshift({
+            ...base,
+            selector,
+            display: this.selectorStepLabel(typedStep),
+            value: formatSuggestionValue(typedResult.value),
+          });
+        }
+      }
+    }
+    if (!selectorQuery) return items.slice(0, 100);
+    const normalizedQuery = selectorQuery.replace(/\s+/gu, '');
+    return items.filter((item) => [
+      formatVariableSelector(item.selector),
+      item.display ?? '',
+      item.value ?? '',
+    ].some((field) => field.toLocaleLowerCase().replace(/\s+/gu, '').includes(normalizedQuery))).slice(0, 100);
+  }
+
+  private selectorStepLabel(step: VariableSelectorStep): string {
+    if (step.type === 'item') return `Item ${step.key}`;
+    if (step.type === 'index') return `Item ${step.index}`;
+    if (step.type === 'word') return `Word${step.indexes.length === 1 ? '' : 's'} ${step.indexes.join(', ')}`;
+    if (step.type === 'char') {
+      return `Character${step.indexes.length === 1 ? '' : 's'} ${step.indexes.join(', ')}`;
+    }
+    if (!step.indexes.length) return `${step.type === 'upper' ? 'Uppercase' : 'Lowercase'} all`;
+    return `${step.type === 'upper' ? 'Uppercase' : 'Lowercase'} character${step.indexes.length === 1 ? '' : 's'} ${step.indexes.join(', ')}`;
+  }
+
+  private selectorValueText(value: unknown): string {
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'string'
+      || typeof value === 'number'
+      || typeof value === 'boolean'
+      || typeof value === 'bigint') return String(value);
+    try {
+      return JSON.stringify(value) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
   private applyTextCaseToSuggestions(
     items: SuggestItem[],
     rawQuery: string,
@@ -824,14 +1040,19 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   private hasTextCaseNameConflict(
     variableName: string,
     textCase: VariableTextCase | undefined,
+    selector?: VariableSelector,
   ): boolean {
     if (!textCase) return false;
     if (canRepresentVariableTextCase(
       variableName,
       textCase,
       (name) => this.registry.getVariable(name) !== null,
+      selector,
     )) return false;
-    const wrappedName = wrapVariableNameWithTextCase(variableName, textCase);
+    const wrappedName = wrapVariableNameWithTextCase(
+      `${variableName}${formatVariableSelector(selector)}`,
+      textCase,
+    );
     new Notice(`Variable links: cannot apply this text case because ${wrappedName} conflicts with an existing variable name.`);
     return true;
   }

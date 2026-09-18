@@ -6,6 +6,7 @@ import {
   getRecognizedTokenSyntaxes,
   tokenSyntaxEquals,
   type TokenSyntax,
+  type VariableSelector,
 } from './tokenSyntax';
 import { applyVariableTextCase, type VariableTextCase } from './textCase';
 
@@ -24,6 +25,7 @@ type Occurrence = {
   ch: number;
   syntax: TokenSyntax;
   textCase?: VariableTextCase;
+  selector?: VariableSelector;
 };
 type MarkdownProtectionState = {
   htmlComment: boolean;
@@ -55,6 +57,11 @@ export interface TokenRename {
   guid: string;
   newName: string;
   oldName: string;
+}
+
+export interface SelectorKeyRename {
+  newKey: string;
+  oldKey: string;
 }
 
 export interface TokenRenamePlan {
@@ -258,6 +265,102 @@ export default class TokenCache {
     return this.prepareBulkRename([{ guid, oldName, newName }]);
   }
 
+  async prepareSelectorKeyRenames(
+    guid: string,
+    variableName: string,
+    renames: readonly SelectorKeyRename[],
+  ): Promise<TokenRenamePlan> {
+    if (!this.active) throw new Error('The token cache is not active.');
+    await this.synchronize(true);
+    const replacements = new Map(renames.map(({ oldKey, newKey }) => [
+      oldKey.toLocaleLowerCase(),
+      newKey,
+    ]));
+    const paths = new Set((this.data.tokens[guid]?.locations ?? []).map(({ file }) => file));
+    const changes: Array<{
+      file: TFile;
+      original: string;
+      updated: string;
+      tokenCount: number;
+    }> = [];
+    for (const path of paths) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) continue;
+      const original = await this.app.vault.read(file);
+      const occurrences = this.findTokens(original).filter((occurrence) =>
+        occurrence.name === variableName
+        && occurrence.selector?.steps.some((step) =>
+          step.type === 'item' && replacements.has(step.key.toLocaleLowerCase())
+        )
+      );
+      if (!occurrences.length) continue;
+      let updated = original;
+      for (const occurrence of occurrences.reverse()) {
+        if (!occurrence.selector) continue;
+        const selector: VariableSelector = {
+          steps: occurrence.selector.steps.map((step) => {
+            if (step.type !== 'item') return step;
+            const key = replacements.get(step.key.toLocaleLowerCase());
+            return key ? { type: 'item' as const, key } : step;
+          }),
+        };
+        const token = formatVariableToken(
+          variableName,
+          occurrence.syntax,
+          occurrence.textCase,
+          selector,
+        );
+        updated = updated.slice(0, occurrence.start) + token + updated.slice(occurrence.end);
+      }
+      changes.push({ file, original, updated, tokenCount: occurrences.length });
+    }
+    const applied: typeof changes = [];
+    const rollback = async (): Promise<void> => {
+      const conflicts: string[] = [];
+      for (const change of [...applied].reverse()) {
+        await this.app.vault.process(change.file, (current) => {
+          if (current === change.updated) return change.original;
+          conflicts.push(change.file.path);
+          return current;
+        });
+      }
+      applied.length = 0;
+      await this.rebuild();
+      if (conflicts.length) {
+        throw new Error(`Could not restore ${conflicts.length} note${conflicts.length === 1 ? '' : 's'} because they changed during list-key renaming.`);
+      }
+    };
+    const apply = async (): Promise<void> => {
+      try {
+        for (const change of changes) {
+          await this.app.vault.process(change.file, (current) => {
+            if (current !== change.original) {
+              throw new Error(`${change.file.path} changed after list-key renaming was prepared.`);
+            }
+            return change.updated;
+          });
+          applied.push(change);
+        }
+      } catch (error) {
+        await rollback();
+        throw error;
+      }
+    };
+    const commit = async (): Promise<void> => {
+      for (const change of applied) await this.indexFile(change.file);
+      applied.length = 0;
+      this.syncTokenNames();
+      await this.persist();
+    };
+    return {
+      fileCount: changes.length,
+      tokenCount: changes.reduce((total, change) => total + change.tokenCount, 0),
+      apply,
+      rollback,
+      commit,
+    };
+  }
+
   async prepareBulkRename(renames: readonly TokenRename[]): Promise<TokenRenamePlan> {
     if (!this.active) throw new Error('The token cache is not active.');
     await this.synchronize(true);
@@ -284,7 +387,12 @@ export default class TokenCache {
       for (const occurrence of occurrences.reverse()) {
         const replacement = replacements.get(occurrence.name);
         if (!replacement) continue;
-        const token = formatVariableToken(replacement, occurrence.syntax, occurrence.textCase);
+        const token = formatVariableToken(
+          replacement,
+          occurrence.syntax,
+          occurrence.textCase,
+          occurrence.selector,
+        );
         updated = updated.slice(0, occurrence.start) + token + updated.slice(occurrence.end);
       }
       changes.push({ file: abstractFile, original, updated, tokenCount: occurrences.length });
@@ -376,7 +484,12 @@ export default class TokenCache {
       let updated = original;
       for (const occurrence of occurrences.reverse()) {
         updated = updated.slice(0, occurrence.start)
-          + formatVariableToken(occurrence.name, nextSyntax, occurrence.textCase)
+          + formatVariableToken(
+            occurrence.name,
+            nextSyntax,
+            occurrence.textCase,
+            occurrence.selector,
+          )
           + updated.slice(occurrence.end);
       }
       changes.push({
@@ -562,6 +675,7 @@ export default class TokenCache {
             ch: tokenMatch.start + 1,
             syntax: tokenMatch.syntax,
             textCase: tokenMatch.textCase,
+            selector: tokenMatch.selector,
           });
         }
         const endState = this.scanMarkdownProtection(

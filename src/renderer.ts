@@ -6,7 +6,11 @@ import InfoCard from './card';
 import { filePathFromLink } from './linkSyntax';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 import { getActiveCardBlocks } from './cardBlocks';
-import { findVariableTokens, getRecognizedTokenSyntaxes } from './tokenSyntax';
+import {
+  findVariableTokens,
+  getRecognizedTokenSyntaxes,
+  type VariableSelector,
+} from './tokenSyntax';
 import { isCompleteVariableCreationExpression } from './creationSyntax';
 import { applyVariableTextCase, type VariableTextCase } from './textCase';
 
@@ -116,7 +120,12 @@ export class Renderer {
         // Resolve while the fragment is detached so table cells do not reflow
         // from a placeholder to their final value during scrolling.
         if (!definition?.hidden) {
-          resolutions.push(this.resolvePlaceholder(varName, placeholder, match.textCase));
+          resolutions.push(this.resolvePlaceholder(
+            varName,
+            placeholder,
+            match.textCase,
+            match.selector,
+          ));
         }
 
         lastIndex = match.end;
@@ -286,9 +295,10 @@ export class Renderer {
     variableName: string,
     placeholder: HTMLElement,
     tokenTextCase?: VariableTextCase,
+    selector?: VariableSelector,
   ): Promise<void> {
     try {
-      const result = await this.resolver.resolve(variableName);
+      const result = await this.resolver.resolve(variableName, selector);
       if (!this.enabled) return;
       if (!result.ok) {
         placeholder.textContent = `[Missing: ${variableName}]`;

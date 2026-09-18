@@ -39,12 +39,14 @@ import TokenCache from './tokenCache';
 import {
   canRepresentVariableTextCase,
   findVariableTokens,
+  formatVariableSelector,
   formatVariableToken,
   getRecognizedTokenSyntaxes,
   getTokenSyntax,
   normalizeLegacyTokenSyntaxes,
   normalizeTokenDelimiter,
   type TokenSyntax,
+  type VariableSelector,
 } from './tokenSyntax';
 import {
   applyVariableTextCase,
@@ -82,6 +84,7 @@ interface VariableTokenContext {
   to: EditorPosition;
   syntax: TokenSyntax;
   textCase?: VariableTextCase;
+  selector?: VariableSelector;
 }
 
 interface CloseableDialog {
@@ -98,6 +101,7 @@ interface MarkdownTokenMatch {
   end: number;
   name: string;
   textCase?: VariableTextCase;
+  selector?: VariableSelector;
 }
 
 interface CapturedTimeEditorExpression {
@@ -973,6 +977,7 @@ export default class VariableLinksPlugin extends Plugin {
           tokenContext.name,
           textCase,
           (name) => Boolean(this.registry?.getVariable(name)),
+          tokenContext.selector,
         );
         submenu.addItem((caseItem) => {
           caseItem
@@ -1018,6 +1023,7 @@ export default class VariableLinksPlugin extends Plugin {
         to: { line: position.line, ch: match.end },
         syntax: match.syntax,
         textCase: match.textCase,
+        selector: match.selector,
       };
       if (position.ch >= match.start && position.ch <= match.end) return token;
       if (expectedName) matchingTokens.push(token);
@@ -1065,6 +1071,7 @@ export default class VariableLinksPlugin extends Plugin {
       variableName,
       getTokenSyntax(this.settings),
       tokenContext.textCase,
+      tokenContext.selector,
     );
     editor.replaceRange(token, tokenContext.from, tokenContext.to);
     editor.setCursor({
@@ -1083,13 +1090,22 @@ export default class VariableLinksPlugin extends Plugin {
       tokenContext.name,
       textCase,
       (name) => Boolean(this.registry?.getVariable(name)),
+      tokenContext.selector,
     );
     if (!representable) {
-      const conflictingName = wrapVariableNameWithTextCase(tokenContext.name, textCase);
+      const conflictingName = wrapVariableNameWithTextCase(
+        `${tokenContext.name}${formatVariableSelector(tokenContext.selector)}`,
+        textCase,
+      );
       new Notice(`Variable links: cannot apply this text case because ${conflictingName} conflicts with an existing variable name.`);
       return;
     }
-    const token = formatVariableToken(tokenContext.name, tokenContext.syntax, textCase);
+    const token = formatVariableToken(
+      tokenContext.name,
+      tokenContext.syntax,
+      textCase,
+      tokenContext.selector,
+    );
     editor.replaceRange(token, tokenContext.from, tokenContext.to);
     editor.setCursor({
       line: tokenContext.from.line,
@@ -1109,10 +1125,10 @@ export default class VariableLinksPlugin extends Plugin {
     const matches = this.findMarkdownTokenMatches(source);
     const cache = new Map<string, Promise<string>>();
     const replacements = await Promise.all(matches.map((match) => {
-      const cacheKey = `${match.name}\u0000${match.textCase ?? ''}`;
+      const cacheKey = `${match.name}\u0000${match.textCase ?? ''}\u0000${formatVariableSelector(match.selector)}`;
       let replacement = cache.get(cacheKey);
       if (!replacement) {
-        replacement = this.renderCopiedVariableMarkdown(match.name, match.textCase);
+        replacement = this.renderCopiedVariableMarkdown(match.name, match.textCase, match.selector);
         cache.set(cacheKey, replacement);
       }
       return replacement;
@@ -1180,9 +1196,10 @@ export default class VariableLinksPlugin extends Plugin {
   private async renderCopiedVariableMarkdown(
     variableName: string,
     tokenTextCase?: VariableTextCase,
+    selector?: VariableSelector,
   ): Promise<string> {
     const definition = this.registry?.getVariable(variableName);
-    const result = await this.resolver?.resolve(variableName).catch(() => null);
+    const result = await this.resolver?.resolve(variableName, selector).catch(() => null);
     const rawValue = result?.ok
       ? this.formatCopiedValue(result.value)
       : `[Missing: ${variableName}]`;

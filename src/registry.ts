@@ -21,7 +21,7 @@ import {
 import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
 import { filePathFromLink } from './linkSyntax';
-import { getTokenSyntax } from './tokenSyntax';
+import { getTokenSyntax, parseVariableSelector } from './tokenSyntax';
 import {
   normalizeVariableTextCase,
   parseVariableTextCaseMarker,
@@ -40,12 +40,13 @@ export interface VariableListItem {
 
 const REGISTRY_POLL_INTERVAL_MS = 1000;
 
-class ReservedTextCaseNameModal extends Modal {
+class ReservedVariableNameModal extends Modal {
   private settled = false;
 
   constructor(
     private readonly plugin: VariableLinksPlugin,
     private readonly variableName: string,
+    private readonly syntaxKind: 'selector' | 'text-case',
     private readonly settle: (confirmed: boolean) => void,
   ) {
     super(plugin.app);
@@ -55,7 +56,9 @@ class ReservedTextCaseNameModal extends Modal {
     this.plugin.trackDialog(this);
     this.contentEl.createEl('h3', { text: 'Use a reserved-looking variable name?' });
     this.contentEl.createEl('p', {
-      text: `“${this.variableName}” begins and ends like token text-case syntax. Exact-name compatibility means it can take priority over a formatted token with the same text.`,
+      text: this.syntaxKind === 'selector'
+        ? `“${this.variableName}” looks like selector-pipeline syntax. Exact-name compatibility means it can take priority over a selected token with the same text.`
+        : `“${this.variableName}” begins and ends like token text-case syntax. Exact-name compatibility means it can take priority over a formatted token with the same text.`,
     });
     this.contentEl.createEl('p', {
       text: 'Use a different name unless this punctuation is intentional.',
@@ -741,10 +744,13 @@ export class Registry {
     }
 
     const existing = this.data.get(oldName || variableName);
+    const reservedNameKind = parseVariableTextCaseMarker(variableName)
+      ? 'text-case'
+      : parseVariableSelector(variableName).selector ? 'selector' : null;
     if (!this.data.has(variableName)
       && variableName !== oldName
-      && parseVariableTextCaseMarker(variableName)
-      && !await this.confirmReservedTextCaseName(variableName)) {
+      && reservedNameKind
+      && !await this.confirmReservedVariableName(variableName, reservedNameKind)) {
       throw new Error('The variable name change was cancelled.');
     }
     const guid = existing?.guid || definition.guid || this.createGuid();
@@ -802,12 +808,26 @@ export class Registry {
     }
     const rename = !!oldName && oldName !== variableName;
     const tokenCache = this.plugin.tokenCache;
+    const selectorKeyRenames = [
+      ...this.findListKeyRenames(existing?.fixedItems, normalized.fixedItems),
+      ...this.findListKeyRenames(existing?.propertyItems, normalized.propertyItems),
+    ];
+    if (rename && selectorKeyRenames.length) {
+      throw new Error('Rename the variable and its list-item keys in separate saves.');
+    }
     if (rename && !tokenCache) {
       throw new Error('The token cache is unavailable, so the rename was cancelled.');
     }
+    if (selectorKeyRenames.length && !tokenCache) {
+      throw new Error('The token cache is unavailable, so the list-item key rename was cancelled.');
+    }
     const renamePlan = rename && tokenCache ? await tokenCache.prepareRename(guid, oldName, variableName) : null;
+    const selectorRenamePlan = selectorKeyRenames.length && tokenCache
+      ? await tokenCache.prepareSelectorKeyRenames(guid, variableName, selectorKeyRenames)
+      : null;
 
     if (renamePlan) await renamePlan.apply();
+    if (selectorRenamePlan) await selectorRenamePlan.apply();
     try {
       await this.mutateRegistryLinks((links) => {
         const current = links[oldName || variableName];
@@ -844,6 +864,7 @@ export class Registry {
       });
     } catch (error) {
       if (renamePlan) await renamePlan.rollback();
+      if (selectorRenamePlan) await selectorRenamePlan.rollback();
       throw error;
     }
 
@@ -878,6 +899,15 @@ export class Registry {
           // A later vault event will retry the cache rebuild.
         }
       }
+    } else if (selectorRenamePlan) {
+      try {
+        await selectorRenamePlan.commit();
+      } catch {
+        try { await tokenCache?.rebuild(); }
+        catch {
+          // A later vault event will retry the cache rebuild.
+        }
+      }
     } else if (!existing && tokenCache) {
       try { await tokenCache.rebuild(); }
       catch {
@@ -886,6 +916,21 @@ export class Registry {
     }
     this.plugin.livePreviewRenderer?.refresh();
     await this.plugin.refreshManagementCenterViews();
+  }
+
+  private findListKeyRenames(
+    previous: readonly VariableListItem[] | undefined,
+    next: readonly VariableListItem[] | undefined,
+  ): Array<{ newKey: string; oldKey: string }> {
+    if (!previous?.length || !next?.length) return [];
+    const previousById = new Map(previous.map((item) => [item.id, item]));
+    return next.flatMap((item) => {
+      const oldKey = previousById.get(item.id)?.key?.trim();
+      const newKey = item.key?.trim();
+      return oldKey && newKey && oldKey.toLocaleLowerCase() !== newKey.toLocaleLowerCase()
+        ? [{ oldKey, newKey }]
+        : [];
+    });
   }
 
   async renameVariables(renames: readonly VariableRename[]): Promise<VariableRenameResult> {
@@ -918,6 +963,9 @@ export class Registry {
       }
       if (parseVariableTextCaseMarker(rename.newName)) {
         throw new Error(`“${rename.newName}” resembles reserved token text-case syntax. Rename it individually instead.`);
+      }
+      if (parseVariableSelector(rename.newName).selector) {
+        throw new Error(`“${rename.newName}” resembles reserved selector-pipeline syntax. Rename it individually instead.`);
       }
     }
     for (const { newName } of normalized) {
@@ -1045,9 +1093,12 @@ export class Registry {
     return variableNames.length;
   }
 
-  private confirmReservedTextCaseName(variableName: string): Promise<boolean> {
+  private confirmReservedVariableName(
+    variableName: string,
+    syntaxKind: 'selector' | 'text-case',
+  ): Promise<boolean> {
     return new Promise((resolve) => {
-      new ReservedTextCaseNameModal(this.plugin, variableName, resolve).open();
+      new ReservedVariableNameModal(this.plugin, variableName, syntaxKind, resolve).open();
     });
   }
 

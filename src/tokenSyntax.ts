@@ -15,6 +15,19 @@ export interface VariableTokenMatch {
   end: number;
   syntax: TokenSyntax;
   textCase?: VariableTextCase;
+  selector?: VariableSelector;
+}
+
+export type VariableSelectorStep =
+  | { type: 'index'; index: number }
+  | { type: 'item'; key: string }
+  | { type: 'word'; indexes: number[] }
+  | { type: 'char'; indexes: number[] }
+  | { type: 'upper'; indexes: number[] }
+  | { type: 'lower'; indexes: number[] };
+
+export interface VariableSelector {
+  steps: VariableSelectorStep[];
 }
 
 export interface VariableTokenTrigger {
@@ -91,20 +104,26 @@ export function formatVariableToken(
   name: string,
   syntax: TokenSyntax = DEFAULT_TOKEN_SYNTAX,
   textCase?: VariableTextCase,
+  selector?: VariableSelector,
 ): string {
-  return `${syntax.prefix}${wrapVariableNameWithTextCase(name, textCase)}${syntax.suffix}`;
+  const selectedName = `${name}${formatVariableSelector(selector)}`;
+  return `${syntax.prefix}${wrapVariableNameWithTextCase(selectedName, textCase)}${syntax.suffix}`;
 }
 
 export function canRepresentVariableTextCase(
   name: string,
   textCase: VariableTextCase,
   exactNameExists: (name: string) => boolean,
+  selector?: VariableSelector,
 ): boolean {
+  const selectedName = `${name}${formatVariableSelector(selector)}`;
   const parsed = interpretVariableTokenName(
-    wrapVariableNameWithTextCase(name, textCase),
+    wrapVariableNameWithTextCase(selectedName, textCase),
     exactNameExists,
   );
-  return parsed.name === name && parsed.textCase === textCase;
+  return parsed.name === name
+    && parsed.textCase === textCase
+    && variableSelectorsEqual(parsed.selector, selector);
 }
 
 export function findVariableTokens(
@@ -129,6 +148,7 @@ export function findVariableTokens(
         end: pattern.lastIndex,
         syntax: candidateSyntax,
         textCase: parsed.textCase,
+        selector: parsed.selector,
         priority,
       });
     }
@@ -149,6 +169,7 @@ export function findVariableTokens(
       end: candidate.end,
       syntax: candidate.syntax,
       textCase: candidate.textCase,
+      selector: candidate.selector,
     });
   }
   return matches;
@@ -196,22 +217,115 @@ export function hasVariableTokenSuffixAt(
 function createVariableTokenPattern(syntax: TokenSyntax): RegExp {
   if (syntax.prefix === DEFAULT_TOKEN_SYNTAX.prefix
     && syntax.suffix === DEFAULT_TOKEN_SYNTAX.suffix) {
-    return /\{\{\s*([^}\s]+)\s*}}/g;
+    return /\{\{\s*([^}\r\n]+?)\s*}}/g;
   }
   const prefix = escapeRegExp(syntax.prefix);
   const suffix = escapeRegExp(syntax.suffix);
-  return new RegExp(`${prefix}\\s*((?:(?!${suffix})\\S)+?)\\s*${suffix}`, 'g');
+  return new RegExp(`${prefix}\\s*((?:(?!${suffix})[^\\r\\n])+?)\\s*${suffix}`, 'g');
 }
 
 function interpretVariableTokenName(
   rawName: string,
   exactNameExists?: (name: string) => boolean,
-): { name: string; textCase?: VariableTextCase } {
+): { name: string; textCase?: VariableTextCase; selector?: VariableSelector } {
   if (exactNameExists?.(rawName)) return { name: rawName };
   const parsed = parseVariableTextCaseMarker(rawName, exactNameExists);
-  return parsed
-    ? { name: parsed.name, textCase: parsed.textCase }
-    : { name: rawName };
+  const selected = parseVariableSelector(parsed?.name ?? rawName, exactNameExists);
+  return {
+    name: selected.name,
+    textCase: parsed?.textCase,
+    selector: selected.selector,
+  };
+}
+
+export function formatVariableSelector(selector?: VariableSelector): string {
+  if (!selector) return '';
+  return selector.steps.map(formatVariableSelectorStep).join('');
+}
+
+export function parseVariableSelector(
+  value: string,
+  exactNameExists?: (name: string) => boolean,
+): { name: string; selector?: VariableSelector } {
+  if (exactNameExists?.(value)) return { name: value };
+  const candidates: Array<{ name: string; steps: VariableSelectorStep[] }> = [];
+  let separator = value.indexOf('::');
+  while (separator > 0) {
+    const name = value.slice(0, separator);
+    const steps = parseVariableSelectorSteps(value.slice(separator));
+    if (steps) candidates.push({ name, steps });
+    separator = value.indexOf('::', separator + 2);
+  }
+  const selected = [...candidates].reverse().find((candidate) => exactNameExists?.(candidate.name))
+    ?? candidates[0];
+  if (selected) return { name: selected.name, selector: { steps: selected.steps } };
+  return { name: value };
+}
+
+export function parseVariableSelectorStep(value: string): VariableSelectorStep | null {
+  const source = value.trim();
+  const item = source.match(/^item\(([\p{L}\p{N}_-]+)\)$/u);
+  if (item?.[1]) return { type: 'item', key: item[1] };
+  const operation = source.match(/^(index|word|char|upper|lower)\(([^()]*)\)$/u);
+  if (!operation?.[1] || operation[2] === undefined) return null;
+  const type = operation[1] as 'index' | 'word' | 'char' | 'upper' | 'lower';
+  const indexes = parseSelectorIndexes(operation[2]);
+  if (indexes === null) return null;
+  if (type === 'index') {
+    return indexes.length === 1 ? { type, index: indexes[0] } : null;
+  }
+  if ((type === 'word' || type === 'char') && !indexes.length) return null;
+  return { type, indexes };
+}
+
+export function appendVariableSelector(
+  selector: VariableSelector | undefined,
+  step: VariableSelectorStep,
+): VariableSelector {
+  return { steps: [...(selector?.steps ?? []), step] };
+}
+
+function parseVariableSelectorSteps(value: string): VariableSelectorStep[] | null {
+  if (!value.startsWith('::')) return null;
+  const steps: VariableSelectorStep[] = [];
+  let position = 0;
+  while (position < value.length) {
+    if (!value.startsWith('::', position)) return null;
+    const next = value.indexOf('::', position + 2);
+    const source = value.slice(position + 2, next === -1 ? value.length : next);
+    const step = parseVariableSelectorStep(source);
+    if (!step) return null;
+    steps.push(step);
+    if (next === -1) break;
+    position = next;
+  }
+  return steps.length ? steps : null;
+}
+
+function formatVariableSelectorStep(step: VariableSelectorStep): string {
+  switch (step.type) {
+    case 'index': return `::index(${step.index})`;
+    case 'item': return `::item(${step.key})`;
+    case 'word': return `::word(${step.indexes.join(',')})`;
+    case 'char': return `::char(${step.indexes.join(',')})`;
+    case 'upper': return `::upper(${step.indexes.join(',')})`;
+    case 'lower': return `::lower(${step.indexes.join(',')})`;
+  }
+}
+
+function parseSelectorIndexes(value: string): number[] | null {
+  if (!value.trim()) return [];
+  const parts = value.split(',').map((part) => part.trim());
+  if (parts.some((part) => !/^-?\d+$/u.test(part))) return null;
+  return parts.map(Number);
+}
+
+function variableSelectorsEqual(
+  left: VariableSelector | undefined,
+  right: VariableSelector | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  return formatVariableSelector(left) === formatVariableSelector(right);
 }
 
 function escapeRegExp(value: string): string {

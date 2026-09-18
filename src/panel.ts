@@ -3342,6 +3342,29 @@ export class VariablePropertiesView extends ItemView {
       cls: 'variable-links-hint-text variable-links-panel-list-hint',
       text: `${footerText} Keys may contain letters, numbers, underscores, and hyphens. Display names can contain spaces.`,
     });
+    const selectorHint = parent.createDiv({
+      cls: 'variable-links-hint-text variable-links-panel-list-hint',
+    });
+    selectorHint.createSpan({ text: 'Selectors: ' });
+    const syntax = getTokenSyntax(this.plugin.settings);
+    selectorHint.createEl('code', {
+      text: formatVariableToken('Name', syntax, undefined, {
+        steps: [{ type: 'index', index: 1 }],
+      }),
+    });
+    selectorHint.createSpan({ text: ', ' });
+    selectorHint.createEl('code', {
+      text: formatVariableToken('Name', syntax, undefined, {
+        steps: [{ type: 'index', index: -1 }],
+      }),
+    });
+    selectorHint.createSpan({ text: ', or ' });
+    selectorHint.createEl('code', {
+      text: formatVariableToken('Name', syntax, undefined, {
+        steps: [{ type: 'item', key: 'key' }],
+      }),
+    });
+    selectorHint.createSpan({ text: '.' });
   }
 
   private reconcilePropertyListItems(

@@ -2,7 +2,11 @@ import { App, Editor, EditorPosition, MarkdownView, TFile } from 'obsidian';
 import type VariableLinksPlugin from './main';
 import Registry, { VariableDefinition } from './registry';
 import Resolver from './resolver';
-import { findVariableTokenAt, getRecognizedTokenSyntaxes } from './tokenSyntax';
+import {
+  findVariableTokenAt,
+  getRecognizedTokenSyntaxes,
+  type VariableSelector,
+} from './tokenSyntax';
 
 export interface LastTouched {
   name: string;
@@ -14,6 +18,7 @@ export interface LastTouched {
   from: EditorPosition;
   to: EditorPosition;
   timestamp: number;
+  selector?: VariableSelector;
 }
 
 export default class CaretTracker {
@@ -47,7 +52,10 @@ export default class CaretTracker {
     this.lastTouched = null;
   }
 
-  findTokenAtIndex(text: string, index: number): { name: string; start: number; end: number } | null {
+  findTokenAtIndex(
+    text: string,
+    index: number,
+  ): { name: string; start: number; end: number; selector?: VariableSelector } | null {
     return findVariableTokenAt(
       text,
       index,
@@ -80,7 +88,7 @@ export default class CaretTracker {
     const token = this.findTokenAtIndex(text, caretIndex);
     if (!token) return;
 
-    const result = await this.resolver.resolve(token.name);
+    const result = await this.resolver.resolve(token.name, token.selector);
     if (!this.running || this.generation !== generation) return;
     this.lastTouched = {
       name: token.name,
@@ -92,6 +100,7 @@ export default class CaretTracker {
       from: editor.offsetToPos(token.start),
       to: editor.offsetToPos(token.end),
       timestamp: Date.now(),
+      selector: token.selector,
     };
     this.plugin.onCaretVariableChanged(this.lastTouched);
   }
