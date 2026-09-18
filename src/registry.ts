@@ -94,6 +94,7 @@ export interface VariableDefinition {
   shape?: VariableShape;
   fixedItems?: VariableListItem[];
   propertyItems?: VariableListItem[];
+  hidden?: boolean;
   link?: string;
   display?: string;
   textCase?: VariableTextCase;
@@ -311,6 +312,7 @@ export class Registry {
           propertyItems: Array.isArray(raw.propertyItems)
             ? normalizeVariableListItems(raw.propertyItems)
             : undefined,
+          hidden: raw.hidden === true,
           link: typeof raw.link === 'string' ? raw.link : undefined,
           display: typeof raw.display === 'string' ? raw.display : undefined,
           textCase: normalizeVariableTextCase(raw.textCase),
@@ -761,6 +763,9 @@ export class Registry {
     if (Object.prototype.hasOwnProperty.call(definition, 'propertyItems')) {
       normalized.propertyItems = normalizeVariableListItems(definition.propertyItems);
     }
+    if (Object.prototype.hasOwnProperty.call(definition, 'hidden')) {
+      normalized.hidden = definition.hidden === true;
+    }
     if (normalized.shape === 'list') {
       const activeItems = type === 'fixed'
         ? normalized.fixedItems ?? existing?.fixedItems ?? []
@@ -820,6 +825,9 @@ export class Registry {
           && definition.value === undefined) delete updated.value;
         if (Object.prototype.hasOwnProperty.call(definition, 'shape') && !normalized.shape) {
           delete updated.shape;
+        }
+        if (Object.prototype.hasOwnProperty.call(definition, 'hidden') && !normalized.hidden) {
+          delete updated.hidden;
         }
         if (Object.prototype.hasOwnProperty.call(definition, 'favorite') && !definition.favorite) delete updated.favorite;
         if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card) delete updated.card;

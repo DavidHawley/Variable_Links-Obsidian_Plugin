@@ -234,10 +234,18 @@ export default class LivePreviewRenderer {
     tokenTextCase: VariableTextCase | undefined,
     el: HTMLElement,
   ): Promise<void> {
+    const definition = this.resolver.registry.getVariable(name);
+    if (definition?.hidden) {
+      el.textContent = '&';
+      el.classList.add('is-hidden-value');
+      el.setAttribute('aria-label', `Hidden Variable Link: ${name}`);
+      el.setAttribute('data-tooltip-position', 'top');
+      return;
+    }
     applyVariableAppearance(
       el,
       getEffectiveVariableAppearance(
-        this.resolver.registry.getVariable(name)?.appearance,
+        definition?.appearance,
         this.resolver.registry.plugin.settings,
       ),
     );
@@ -255,7 +263,7 @@ export default class LivePreviewRenderer {
         : String(result.value);
       el.textContent = applyVariableTextCase(
         value,
-        tokenTextCase ?? this.resolver.registry.getVariable(name)?.textCase,
+        tokenTextCase ?? definition?.textCase,
       );
     } catch {
       if (!this.active) return;

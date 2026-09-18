@@ -67,6 +67,7 @@ interface SuggestItem {
   value?: string;
   variableType?: VariableType;
   variableShape?: VariableShape;
+  hidden?: boolean;
   textCase?: VariableTextCase;
   creationType?: NamedCreationType;
   creationSource?: string;
@@ -181,6 +182,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       property: getVariableType(entry.def) === 'property' ? entry.def.property : undefined,
       variableType: getVariableType(entry.def),
       variableShape: getVariableShape(entry.def),
+      hidden: entry.def.hidden === true,
       searchMode: itemSearchMode,
     }));
 
@@ -315,8 +317,8 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
         : `Create ${item.creationType === 'fixed' ? 'fixed value' : 'property mapping'}`
       : item.kind === 'variable'
       ? item.variableType === 'fixed'
-        ? `${item.variableShape === 'list' ? 'Fixed list' : 'Fixed value'}${item.file ? ` · ${item.file}` : ''}`
-        : `${item.variableShape === 'list' ? 'Property list' : 'Property value'} · ${item.file ?? ''}${item.property ? ` • ${item.property}` : ''}`
+        ? `${item.variableShape === 'list' ? 'Fixed list' : 'Fixed value'}${item.hidden ? ' · Hidden' : ''}${item.file ? ` · ${item.file}` : ''}`
+        : `${item.variableShape === 'list' ? 'Property list' : 'Property value'}${item.hidden ? ' · Hidden' : ''} · ${item.file ?? ''}${item.property ? ` • ${item.property}` : ''}`
       : `Property · ${item.file ?? ''}`;
     el.createDiv({ text: detail, cls: 'suggest-meta' });
     if (item.creationError) {

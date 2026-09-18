@@ -55,6 +55,19 @@ input[type="checkbox"]:disabled:where([class^="variable-links-"], [class*=" vari
   border-bottom-style: dotted;
 }
 
+.variable-links-token-reading.is-hidden-value {
+  display: none;
+}
+
+.variable-links-token-live-preview.is-hidden-value {
+  color: var(--text-faint);
+  border-bottom: 0;
+  background: transparent;
+  font-weight: var(--font-normal);
+  font-style: normal;
+  opacity: 0.8;
+}
+
 .variable-links-suggest-mode {
   margin-bottom: 2px;
   color: var(--text-muted);

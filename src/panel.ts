@@ -2424,6 +2424,19 @@ export class VariablePropertiesView extends ItemView {
     editSection.createEl('summary', { text: title });
     const editControls = editSection.createDiv({ cls: 'variable-links-panel-section-content' });
     const nameInput = this.addInput(editControls, 'Variable name', name, 'e.g. customer');
+    const hiddenRow = editControls.createDiv({ cls: 'variable-links-panel-checkbox' });
+    const hiddenInput = this.addInlineCheckbox(
+      hiddenRow,
+      'Hide rendered value',
+      definition.hidden === true,
+    );
+    const hiddenLabel = hiddenInput.parentElement;
+    if (hiddenLabel) addContextHelpButton(
+      hiddenLabel,
+      this.plugin,
+      'Hidden Variable Link',
+      (helpParent) => this.renderHiddenVariableHelp(helpParent),
+    );
     const propertyLinkInput = this.addInput(
       editControls,
       'Property link',
@@ -2800,6 +2813,7 @@ export class VariablePropertiesView extends ItemView {
           value: hasFixedValue ? fixedValueInput.value : undefined,
           fixedItems,
           propertyItems,
+          hidden: hiddenInput.checked,
           link: fileLinkInput.value.trim() ? toFileLink(fileLinkInput.value) : undefined,
           display: displayInput.value,
           textCase: normalizeVariableTextCase(textCaseInput.value),
@@ -3432,6 +3446,23 @@ export class VariablePropertiesView extends ItemView {
     });
     parent.createEl('p', {
       text: 'Changing an existing variable type requires confirmation. Inactive fixed-value, list, and property-link settings are preserved in case you switch back later.',
+      cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderHiddenVariableHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'A hidden variable link keeps its value available without displaying that value in the note.',
+    });
+    const details = parent.createEl('ul');
+    details.createEl('li', { text: 'Live preview shows a subdued & marker outside the token.' });
+    details.createEl('li', { text: 'Placing the caret inside the token reveals its raw text for editing.' });
+    details.createEl('li', { text: 'Reading view displays nothing for the token.' });
+    details.createEl('li', {
+      text: 'Cards, searches, copy Markdown, and other plugin tools can still use the underlying value.',
+    });
+    parent.createEl('p', {
+      text: 'Hiding is a display choice, not encryption or access protection.',
       cls: 'variable-links-hint-text',
     });
   }

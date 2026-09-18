@@ -498,6 +498,9 @@ export class ManagementCenterView extends ItemView {
         text: this.getVariableTypeLabel(entry.definition),
         cls: 'variable-links-management-center-badge',
       });
+      if (entry.definition.hidden) {
+        badges.createSpan({ text: 'Hidden', cls: 'variable-links-management-center-badge' });
+      }
       if (entry.definition.managed) {
         badges.createSpan({ text: 'Managed', cls: 'variable-links-management-center-badge' });
         const profileName = this.getProfileName(entry.definition.managed.profileId);
@@ -554,6 +557,7 @@ export class ManagementCenterView extends ItemView {
           item.display ?? '',
         ]),
         definition.link ?? '',
+        definition.hidden ? 'hidden' : '',
         definition.managed?.profileId ?? '',
         this.getProfileName(definition.managed?.profileId),
       ].join(' ').toLocaleLowerCase();

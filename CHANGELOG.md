@@ -10,6 +10,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added a compact search-symbol hint after the token prefix, complete `?` help, and a saved option for hiding or restoring the opening hint.
 - Added Fixed value, Fixed list, Note property, and Note property list choices, including ordered fixed-list editing and optional permanent keys and display names for list items.
 - Preserved existing property-backed variables with automatic scalar or list behavior until the user explicitly saves a new value shape.
+- Added an option to hide any Variable Link’s rendered value, showing a subdued `&` editing marker in Live Preview and no output in Reading View while keeping the value available to plugin tools.
 
 ## 1.3.1 - 2026-09-01
 

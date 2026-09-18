@@ -93,22 +93,31 @@ export class Renderer {
         const before = text.slice(lastIndex, match.start);
         if (before) frag.appendChild(document.createTextNode(before));
         const varName = match.name;
+        const definition = this.registry.getVariable(varName);
         const placeholder = createSpan();
         placeholder.className = 'variable-links-token variable-links-token-reading';
         placeholder.textContent = '…';
         placeholder.dataset.var = varName;
-        applyVariableAppearance(
-          placeholder,
-          getEffectiveVariableAppearance(
-            this.registry.getVariable(varName)?.appearance,
-            this.registry.plugin.settings,
-          ),
-        );
+        if (definition?.hidden) {
+          placeholder.textContent = '';
+          placeholder.classList.add('is-hidden-value');
+          placeholder.setAttribute('aria-hidden', 'true');
+        } else {
+          applyVariableAppearance(
+            placeholder,
+            getEffectiveVariableAppearance(
+              definition?.appearance,
+              this.registry.plugin.settings,
+            ),
+          );
+        }
         frag.appendChild(placeholder);
 
         // Resolve while the fragment is detached so table cells do not reflow
         // from a placeholder to their final value during scrolling.
-        resolutions.push(this.resolvePlaceholder(varName, placeholder, match.textCase));
+        if (!definition?.hidden) {
+          resolutions.push(this.resolvePlaceholder(varName, placeholder, match.textCase));
+        }
 
         lastIndex = match.end;
       }
