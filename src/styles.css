@@ -55,6 +55,61 @@ input[type="checkbox"]:disabled:where([class^="variable-links-"], [class*=" vari
   border-bottom-style: dotted;
 }
 
+.variable-links-suggest-mode {
+  margin-bottom: 2px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+}
+
+.variable-links-suggest-help,
+.variable-links-suggest-message {
+  cursor: default;
+}
+
+.variable-links-suggest-help-title {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.variable-links-suggest-help-description {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.35;
+}
+
+.variable-links-suggest-help-modes {
+  display: grid;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.variable-links-suggest-help-mode {
+  display: grid;
+  grid-template-columns: 2em minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.variable-links-suggest-help-mode code {
+  text-align: center;
+}
+
+.variable-links-suggest-help-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.variable-links-suggest-help-toggle input {
+  pointer-events: none;
+}
+
 .variable-links-overlay {
   background: rgba(255,255,0,0.06);
   padding: 2px 4px;

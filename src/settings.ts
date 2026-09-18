@@ -46,6 +46,7 @@ export interface VariableLinksSettings {
   savedAppearanceColors: string[];
   openInNewPane: boolean;
   suggestionFuzzy: boolean;
+  showSuggestionSearchHint: boolean;
   defaultDateFormat: string;
   defaultTimeFormat: string;
   defaultDateTimeFormat: string;
@@ -89,6 +90,7 @@ export const DEFAULT_SETTINGS: VariableLinksSettings = {
   savedAppearanceColors: [...DEFAULT_APPEARANCE_COLORS],
   openInNewPane: false,
   suggestionFuzzy: true,
+  showSuggestionSearchHint: true,
   defaultDateFormat: 'YYYY-MM-DD',
   defaultTimeFormat: 'HH:mm:ss',
   defaultDateTimeFormat: 'YYYY-MM-DD HH:mm:ss',
@@ -351,6 +353,11 @@ export class VariableLinksSettingTab extends PluginSettingTab {
                 disposeEditor();
               };
             },
+          },
+          {
+            name: 'Show suggestion search hint',
+            desc: 'Show a compact search-symbol guide after typing the Variable Link token prefix. Type ? after the prefix to open the guide at any time.',
+            control: { type: 'toggle', key: 'showSuggestionSearchHint' },
           },
         ],
       },

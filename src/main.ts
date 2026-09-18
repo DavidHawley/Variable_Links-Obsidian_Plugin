@@ -409,6 +409,9 @@ export default class VariableLinksPlugin extends Plugin {
       suggestionFuzzy: typeof saved.suggestionFuzzy === 'boolean'
         ? saved.suggestionFuzzy
         : DEFAULT_SETTINGS.suggestionFuzzy,
+      showSuggestionSearchHint: typeof saved.showSuggestionSearchHint === 'boolean'
+        ? saved.showSuggestionSearchHint
+        : DEFAULT_SETTINGS.showSuggestionSearchHint,
       defaultDateFormat: typeof saved.defaultDateFormat === 'string'
         ? saved.defaultDateFormat
         : DEFAULT_SETTINGS.defaultDateFormat,

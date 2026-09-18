@@ -30,9 +30,12 @@ import {
 import { parsePropertyLink, toFileLink } from './linkSyntax';
 import {
   formatSuggestionValue,
+  parseSuggestionSearchMode,
   parseSuggestionQuery,
   scoreSuggestionFields,
+  suggestionSearchModeLabel,
   truncateSuggestionValue,
+  type SuggestionSearchMode,
 } from './suggestionSearch';
 import {
   canRepresentVariableTextCase,
@@ -51,7 +54,7 @@ import {
 
 interface SuggestItem {
   name: string;
-  kind: 'variable' | 'property' | 'creation' | 'capture';
+  kind: 'variable' | 'property' | 'creation' | 'capture' | 'search-help' | 'hint-toggle' | 'mode-message';
   alreadyMapped?: boolean;
   display?: string;
   file?: string;
@@ -64,6 +67,11 @@ interface SuggestItem {
   creationError?: string;
   captureType?: CapturedTimeShortcut;
   captureFormat?: string;
+  searchMode?: SuggestionSearchMode;
+  helpVariant?: 'opening' | 'full';
+  message?: string;
+  toggleChecked?: boolean;
+  toggleTargetEnabled?: boolean;
 }
 
 export interface VariableCreationHandoff {
@@ -119,19 +127,46 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
 
   async getSuggestions(context: EditorSuggestContext): Promise<SuggestItem[]> {
     const generation = ++this.suggestionGeneration;
-    const caseQuery = parseVariableTextCaseQuery(context.query);
+    const search = parseSuggestionSearchMode(context.query);
+    if (context.query.length === 0) {
+      return this.registry.plugin.settings.showSuggestionSearchHint
+        ? this.getSearchHelpItems('opening')
+        : [];
+    }
+    if (search.mode === 'help') {
+      return this.getSearchHelpItems('full');
+    }
+    if (search.mode === 'shortcuts') {
+      return [{
+        name: '',
+        kind: 'mode-message',
+        searchMode: 'shortcuts',
+        message: search.query.trim()
+          ? 'No matching shortcuts are configured yet.'
+          : 'Type a shortcut code, display name, target, or search term.',
+      }];
+    }
+
+    const caseQuery = parseVariableTextCaseQuery(search.query);
     const exactVariable = this.registry.getVariable(caseQuery.query);
-    const creationQuery = exactVariable
-      ? null
-      : parseNamedCreationQuery(caseQuery.query);
-    const captureQuery = exactVariable
-      ? null
-      : parseCapturedTimeCreationQuery(caseQuery.query);
-    const query = parseSuggestionQuery(creationQuery?.name ?? caseQuery.query);
-    const creationItems = [
-      ...this.getCapturedTimeSuggestions(captureQuery, context.file, caseQuery.textCase),
-      ...this.getNamedCreationSuggestions(creationQuery, caseQuery.textCase),
-    ];
+    const creationQuery = search.mode === 'all' && !exactVariable
+      ? parseNamedCreationQuery(caseQuery.query)
+      : null;
+    const captureQuery = search.mode === 'all' && !exactVariable
+      ? parseCapturedTimeCreationQuery(caseQuery.query)
+      : null;
+    const query = parseSuggestionQuery(
+      search.mode === 'values'
+        ? `*${caseQuery.query}`
+        : creationQuery?.name ?? caseQuery.query,
+    );
+    const creationItems = search.mode === 'all'
+      ? [
+        ...this.getCapturedTimeSuggestions(captureQuery, context.file, caseQuery.textCase),
+        ...this.getNamedCreationSuggestions(creationQuery, caseQuery.textCase),
+      ]
+      : [];
+    const itemSearchMode = search.mode === 'all' ? undefined : search.mode;
     const variables: SuggestItem[] = Array.from(this.indexer.byName.values()).map((entry) => ({
       name: entry.name,
       kind: 'variable',
@@ -139,12 +174,21 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       file: entry.filePath,
       property: getVariableType(entry.def) === 'property' ? entry.def.property : undefined,
       variableType: getVariableType(entry.def),
+      searchMode: itemSearchMode,
     }));
 
     if (query.valueMode && !creationQuery) {
+      if (!query.terms.length) {
+        return [{
+          name: '',
+          kind: 'mode-message',
+          searchMode: 'values',
+          message: 'Type part of a resolved value to search.',
+        }];
+      }
       const resolved = await Promise.all(variables.map(async (item) => {
         const value = await this.getResolvedSuggestionValue(item.name);
-        return value === null ? null : { ...item, value };
+        return value === null ? null : { ...item, value, searchMode: 'values' as const };
       }));
       if (generation !== this.suggestionGeneration) return [];
       const resolvedItems: SuggestItem[] = [];
@@ -153,7 +197,15 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
         resolvedItems,
         query.terms,
         (item) => [item.value],
-      ).slice(0, 100), context.query, caseQuery.textCase);
+      ).slice(0, 100), search.query, caseQuery.textCase);
+    }
+
+    if (search.mode === 'variables') {
+      return this.applyTextCaseToSuggestions(this.rankItems(
+        variables,
+        query.terms,
+        (item) => [item.name, item.display, item.file, item.property],
+      ).slice(0, 100), search.query, caseQuery.textCase);
     }
 
     const properties: SuggestItem[] = [];
@@ -172,30 +224,77 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
           file: file.path,
           property,
           alreadyMapped: mappedProperties.has(this.propertyKey(file.path, property)),
+          searchMode: search.mode === 'properties' ? 'properties' : undefined,
         });
       }
     }
-    const variableMatches = this.rankItems(
-      variables,
-      query.terms,
-      (item) => [item.name, item.display, item.file, item.property],
-    );
     const propertyMatches = this.rankItems(
       properties,
       query.terms,
       (item) => [item.name, item.file, item.property],
     );
+    const orderedProperties = [
+      ...propertyMatches.filter((item) => !item.alreadyMapped),
+      ...propertyMatches.filter((item) => item.alreadyMapped),
+    ];
+    if (search.mode === 'properties') {
+      return this.applyTextCaseToSuggestions(
+        orderedProperties.slice(0, 100),
+        search.query,
+        caseQuery.textCase,
+      );
+    }
+
+    const variableMatches = this.rankItems(
+      variables,
+      query.terms,
+      (item) => [item.name, item.display, item.file, item.property],
+    );
     return [
       ...creationItems,
       ...this.applyTextCaseToSuggestions([
-      ...variableMatches,
-      ...propertyMatches.filter((item) => !item.alreadyMapped),
-      ...propertyMatches.filter((item) => item.alreadyMapped),
-      ].slice(0, Math.max(0, 100 - creationItems.length)), context.query, caseQuery.textCase),
+        ...variableMatches,
+        ...orderedProperties,
+      ].slice(0, Math.max(0, 100 - creationItems.length)), search.query, caseQuery.textCase),
     ];
   }
 
   renderSuggestion(item: SuggestItem, el: HTMLElement): void {
+    if (item.kind === 'search-help') {
+      this.renderSearchHelp(el, item.helpVariant ?? 'full');
+      return;
+    }
+    if (item.kind === 'hint-toggle') {
+      el.addClass('variable-links-suggest-help-toggle');
+      const checkbox = el.createEl('input', {
+        type: 'checkbox',
+        attr: { tabindex: '-1', 'aria-hidden': 'true' },
+      });
+      checkbox.checked = item.toggleChecked === true;
+      el.createSpan({
+        text: item.helpVariant === 'opening'
+          ? `Don't show this hint after ${getTokenSyntax(this.registry.plugin.settings).prefix}`
+          : `Show this hint after ${getTokenSyntax(this.registry.plugin.settings).prefix}`,
+      });
+      return;
+    }
+    if (item.kind === 'mode-message') {
+      el.addClass('variable-links-suggest-message');
+      if (item.searchMode) {
+        el.createDiv({
+          text: `${suggestionSearchModeLabel(item.searchMode)} search`,
+          cls: 'variable-links-suggest-mode',
+        });
+      }
+      el.createDiv({ text: item.message ?? 'No matches found.', cls: 'suggest-sub' });
+      return;
+    }
+    if (item.searchMode && item.searchMode !== 'all') {
+      el.createDiv({
+        text: `${suggestionSearchModeLabel(item.searchMode)} search`,
+        cls: 'variable-links-suggest-mode',
+      });
+    }
     el.createDiv({
       text: item.kind === 'creation' || item.kind === 'capture'
         ? `Create ${item.name}`
@@ -249,6 +348,18 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   selectSuggestion(item: SuggestItem, _event: MouseEvent | KeyboardEvent): void {
     const context = this.context;
     if (!context) return;
+    if (item.kind === 'hint-toggle') {
+      void this.setSuggestionSearchHint(
+        item.toggleTargetEnabled === true,
+        context.editor,
+      );
+      return;
+    }
+    if (item.kind === 'search-help' || item.kind === 'mode-message') {
+      this.close();
+      context.editor.focus();
+      return;
+    }
     void this.applySuggestion(item, context);
   }
 
@@ -402,6 +513,72 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       } catch {
         new Notice('Variable links: the variable was created, but the properties panel could not be refreshed.');
       }
+    }
+  }
+
+  private renderSearchHelp(el: HTMLElement, variant: 'opening' | 'full'): void {
+    el.addClass('variable-links-suggest-help');
+    el.createDiv({
+      text: variant === 'opening' ? 'Variable Links search' : 'Variable Links search help',
+      cls: 'variable-links-suggest-help-title',
+    });
+    el.createDiv({
+      text: variant === 'opening'
+        ? 'Type a letter to search everything, or begin with a focused search symbol.'
+        : 'A symbol immediately after the token prefix limits which suggestions are searched.',
+      cls: 'variable-links-suggest-help-description',
+    });
+
+    const modes = el.createDiv({ cls: 'variable-links-suggest-help-modes' });
+    const entries: Array<[string, string]> = [
+      ['@', 'Existing Variable Links'],
+      [';', 'Note properties'],
+      ['!', 'Resolved values'],
+      ['~', 'Shortcuts'],
+      ['?', 'Search help'],
+    ];
+    for (const [symbol, label] of entries) {
+      const row = modes.createDiv({ cls: 'variable-links-suggest-help-mode' });
+      row.createEl('code', { text: symbol });
+      row.createSpan({ text: label });
+    }
+    if (variant === 'full') {
+      el.createDiv({
+        text: 'The existing * value-search symbol remains supported. Prefix a reserved symbol with \\ to search for it literally.',
+        cls: 'variable-links-suggest-help-description',
+      });
+    }
+  }
+
+  private getSearchHelpItems(variant: 'opening' | 'full'): SuggestItem[] {
+    const enabled = this.registry.plugin.settings.showSuggestionSearchHint;
+    return [
+      {
+        name: '',
+        kind: 'search-help',
+        helpVariant: variant,
+        searchMode: variant === 'full' ? 'help' : undefined,
+      },
+      {
+        name: '',
+        kind: 'hint-toggle',
+        helpVariant: variant,
+        toggleChecked: variant === 'full' ? enabled : false,
+        toggleTargetEnabled: variant === 'full' ? !enabled : false,
+      },
+    ];
+  }
+
+  private async setSuggestionSearchHint(enabled: boolean, editor: Editor): Promise<void> {
+    const previous = this.registry.plugin.settings.showSuggestionSearchHint;
+    this.registry.plugin.settings.showSuggestionSearchHint = enabled;
+    try {
+      await this.registry.plugin.saveSettings();
+      this.close();
+      editor.focus();
+    } catch (error) {
+      this.registry.plugin.settings.showSuggestionSearchHint = previous;
+      new Notice(`Variable links: could not save the suggestion hint setting: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

@@ -2,6 +2,13 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
+## 1.4.0 - Unreleased
+
+### Added
+
+- Added focused suggestion searches for existing Variable Links, note properties, and resolved values using `@`, `;`, and `!`, while retaining `*` value search compatibility.
+- Added a compact search-symbol hint after the token prefix, complete `?` help, and a saved option for hiding or restoring the opening hint.
+
 ## 1.3.1 - 2026-09-01
 
 ### Changed

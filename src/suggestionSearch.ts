@@ -3,6 +3,59 @@ export interface ParsedSuggestionQuery {
   terms: string[];
 }
 
+export type SuggestionSearchMode =
+  | 'all'
+  | 'variables'
+  | 'properties'
+  | 'values'
+  | 'shortcuts'
+  | 'help';
+
+export interface ParsedSuggestionSearchMode {
+  mode: SuggestionSearchMode;
+  query: string;
+  escapedPrefix: boolean;
+}
+
+const SUGGESTION_SEARCH_PREFIXES: Readonly<Record<string, SuggestionSearchMode>> = {
+  '@': 'variables',
+  ';': 'properties',
+  '!': 'values',
+  '*': 'values',
+  '~': 'shortcuts',
+  '?': 'help',
+};
+
+export function parseSuggestionSearchMode(query: string): ParsedSuggestionSearchMode {
+  const escapedMode = query.length >= 2 && query[0] === '\\'
+    ? SUGGESTION_SEARCH_PREFIXES[query[1] ?? '']
+    : undefined;
+  if (escapedMode) {
+    return {
+      mode: 'all',
+      query: query.slice(1),
+      escapedPrefix: true,
+    };
+  }
+
+  const mode = SUGGESTION_SEARCH_PREFIXES[query[0] ?? ''];
+  if (!mode) return { mode: 'all', query, escapedPrefix: false };
+  return {
+    mode,
+    query: query.slice(1),
+    escapedPrefix: false,
+  };
+}
+
+export function suggestionSearchModeLabel(mode: SuggestionSearchMode): string {
+  if (mode === 'variables') return 'Variable Link';
+  if (mode === 'properties') return 'Property';
+  if (mode === 'values') return 'Value';
+  if (mode === 'shortcuts') return 'Shortcut';
+  if (mode === 'help') return 'Search help';
+  return 'All';
+}
+
 export function parseSuggestionQuery(query: string): ParsedSuggestionQuery {
   const valueMode = query.startsWith('*');
   const searchText = valueMode ? query.slice(1) : query;
