@@ -1,5 +1,5 @@
 import { App, TFile, parseYaml } from 'obsidian';
-import Registry, { getVariableType } from './registry';
+import Registry, { getVariableShape, getVariableType } from './registry';
 
 export interface ResolveResult {
   ok: boolean;
@@ -26,10 +26,11 @@ export class Resolver {
     }
 
     if (getVariableType(def) === 'fixed') {
+      const list = getVariableShape(def) === 'list';
       return {
         ok: true,
-        value: def.value ?? '',
-        type: 'string',
+        value: list ? (def.fixedItems ?? []).map((item) => item.value) : def.value ?? '',
+        type: list ? 'array' : 'string',
         sourceFile: null,
       };
     }
@@ -74,6 +75,24 @@ export class Resolver {
     const value = frontmatter[prop];
     if (typeof value === 'undefined') {
       return { ok: false, error: `Property '${prop}' not found in ${path}`, sourceFile: file, property: prop };
+    }
+
+    const declaredShape = getVariableShape(def);
+    if (declaredShape === 'list' && !Array.isArray(value)) {
+      return {
+        ok: false,
+        error: `Property '${prop}' in ${path} is not a list`,
+        sourceFile: file,
+        property: prop,
+      };
+    }
+    if (declaredShape === 'single' && Array.isArray(value)) {
+      return {
+        ok: false,
+        error: `Property '${prop}' in ${path} is a list`,
+        sourceFile: file,
+        property: prop,
+      };
     }
 
     const res: ResolveResult = { ok: true, value, sourceFile: file, property: prop };

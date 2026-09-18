@@ -8,6 +8,8 @@ All notable user-visible changes to Variable Links are recorded here.
 
 - Added focused suggestion searches for existing Variable Links, note properties, and resolved values using `@`, `;`, and `!`, while retaining `*` value search compatibility.
 - Added a compact search-symbol hint after the token prefix, complete `?` help, and a saved option for hiding or restoring the opening hint.
+- Added Fixed value, Fixed list, Note property, and Note property list choices, including ordered fixed-list editing and optional permanent keys and display names for list items.
+- Preserved existing property-backed variables with automatic scalar or list behavior until the user explicitly saves a new value shape.
 
 ## 1.3.1 - 2026-09-01
 

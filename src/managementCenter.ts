@@ -9,6 +9,7 @@ import {
 } from 'obsidian';
 import type VariableLinksPlugin from './main';
 import {
+  getVariableShape,
   getVariableType,
   type VariableDefinition,
   type VariableRename,
@@ -494,7 +495,7 @@ export class ManagementCenterView extends ItemView {
       });
       const badges = row.createDiv({ cls: 'variable-links-management-center-badges' });
       badges.createSpan({
-        text: getVariableType(entry.definition) === 'fixed' ? 'Fixed' : 'Property',
+        text: this.getVariableTypeLabel(entry.definition),
         cls: 'variable-links-management-center-badge',
       });
       if (entry.definition.managed) {
@@ -547,6 +548,11 @@ export class ManagementCenterView extends ItemView {
         definition.file,
         definition.property,
         definition.value ?? '',
+        ...(definition.fixedItems ?? []).flatMap((item) => [
+          item.value,
+          item.key ?? '',
+          item.display ?? '',
+        ]),
         definition.link ?? '',
         definition.managed?.profileId ?? '',
         this.getProfileName(definition.managed?.profileId),
@@ -560,7 +566,10 @@ export class ManagementCenterView extends ItemView {
     return [...entries].sort((left, right) => {
       if (this.state.sort === 'name-descending') return compareText(right.name, left.name);
       if (this.state.sort === 'type') {
-        return compareText(getVariableType(left.definition), getVariableType(right.definition))
+        return compareText(
+          this.getVariableTypeLabel(left.definition),
+          this.getVariableTypeLabel(right.definition),
+        )
           || compareText(left.name, right.name);
       }
       if (this.state.sort === 'source') {
@@ -588,10 +597,20 @@ export class ManagementCenterView extends ItemView {
   }
 
   private getSourceText(definition: VariableDefinition): string {
-    if (getVariableType(definition) === 'fixed') return definition.value ?? '';
+    if (getVariableType(definition) === 'fixed') {
+      return getVariableShape(definition) === 'list'
+        ? (definition.fixedItems ?? []).map((item) => item.value).join(', ')
+        : definition.value ?? '';
+    }
     const file = definition.file.trim();
     const property = definition.property.trim();
     return property ? `${file}#${property}` : file;
+  }
+
+  private getVariableTypeLabel(definition: VariableDefinition): string {
+    const list = getVariableShape(definition) === 'list';
+    if (getVariableType(definition) === 'fixed') return list ? 'Fixed list' : 'Fixed value';
+    return list ? 'Property list' : 'Property';
   }
 
   private addSummaryItem(parent: HTMLElement, label: string, value: number): void {

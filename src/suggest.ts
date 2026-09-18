@@ -9,7 +9,12 @@ import {
   TFile,
 } from 'obsidian';
 import Indexer from './indexer';
-import Registry, { getVariableType, type VariableType } from './registry';
+import Registry, {
+  getVariableShape,
+  getVariableType,
+  type VariableShape,
+  type VariableType,
+} from './registry';
 import Resolver from './resolver';
 import {
   automaticCapturedTimeNameBase,
@@ -61,6 +66,7 @@ interface SuggestItem {
   property?: string;
   value?: string;
   variableType?: VariableType;
+  variableShape?: VariableShape;
   textCase?: VariableTextCase;
   creationType?: NamedCreationType;
   creationSource?: string;
@@ -174,6 +180,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       file: entry.filePath,
       property: getVariableType(entry.def) === 'property' ? entry.def.property : undefined,
       variableType: getVariableType(entry.def),
+      variableShape: getVariableShape(entry.def),
       searchMode: itemSearchMode,
     }));
 
@@ -308,8 +315,8 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
         : `Create ${item.creationType === 'fixed' ? 'fixed value' : 'property mapping'}`
       : item.kind === 'variable'
       ? item.variableType === 'fixed'
-        ? `Fixed value${item.file ? ` · ${item.file}` : ''}`
-        : `Property value · ${item.file ?? ''}${item.property ? ` • ${item.property}` : ''}`
+        ? `${item.variableShape === 'list' ? 'Fixed list' : 'Fixed value'}${item.file ? ` · ${item.file}` : ''}`
+        : `${item.variableShape === 'list' ? 'Property list' : 'Property value'} · ${item.file ?? ''}${item.property ? ` • ${item.property}` : ''}`
       : `Property · ${item.file ?? ''}`;
     el.createDiv({ text: detail, cls: 'suggest-meta' });
     if (item.creationError) {
@@ -445,6 +452,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
           if (!parsed.ok) throw new Error(parsed.error);
           await this.registry.saveVariable(variableName, {
             type: 'fixed',
+            shape: 'single',
             file: '',
             property: '',
             value: parsed.value,
@@ -453,6 +461,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
           const propertyLink = parsePropertyLink(item.creationSource);
           await this.registry.saveVariable(variableName, {
             type: 'property',
+            shape: 'single',
             file: propertyLink.file,
             property: propertyLink.property,
           });
@@ -483,6 +492,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       try {
         await this.registry.saveVariable(variableName, {
           type: 'property',
+          shape: 'single',
           file: item.file ?? '',
           property: item.property ?? item.name,
           display: item.property ?? item.name,
@@ -724,6 +734,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
     try {
       await this.registry.saveVariable(item.name, {
         type: 'fixed',
+        shape: 'single',
         file: '',
         property: '',
         value: item.value ?? '',

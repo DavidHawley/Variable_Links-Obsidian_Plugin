@@ -29,6 +29,14 @@ import {
 } from './textCase';
 
 export type VariableType = 'property' | 'fixed';
+export type VariableShape = 'single' | 'list';
+
+export interface VariableListItem {
+  id: string;
+  value: string;
+  key?: string;
+  display?: string;
+}
 
 const REGISTRY_POLL_INTERVAL_MS = 1000;
 
@@ -83,6 +91,9 @@ export interface VariableDefinition {
   file: string; // vault path or wiki-link raw
   property: string;
   value?: string;
+  shape?: VariableShape;
+  fixedItems?: VariableListItem[];
+  propertyItems?: VariableListItem[];
   link?: string;
   display?: string;
   textCase?: VariableTextCase;
@@ -126,6 +137,50 @@ export interface VariableRenameResult {
 
 export function getVariableType(definition: VariableDefinition): VariableType {
   return definition.type === 'fixed' ? 'fixed' : 'property';
+}
+
+export function getVariableShape(definition: VariableDefinition): VariableShape | undefined {
+  return definition.shape === 'single' || definition.shape === 'list'
+    ? definition.shape
+    : undefined;
+}
+
+export function createVariableListItem(value = ''): VariableListItem {
+  return { id: createStableId(), value };
+}
+
+export function normalizeVariableListItems(value: unknown): VariableListItem[] {
+  if (!Array.isArray(value)) return [];
+  const usedIds = new Set<string>();
+  return value.flatMap((candidate): VariableListItem[] => {
+    if (!isUnknownRecord(candidate)) return [];
+    let id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
+    if (!id || usedIds.has(id)) id = createStableId();
+    usedIds.add(id);
+    const item: VariableListItem = {
+      id,
+      value: toListItemText(candidate.value),
+    };
+    const key = typeof candidate.key === 'string' ? candidate.key.trim() : '';
+    const display = typeof candidate.display === 'string' ? candidate.display.trim() : '';
+    if (key) item.key = key;
+    if (display) item.display = display;
+    return [item];
+  });
+}
+
+export function validateVariableListItems(items: readonly VariableListItem[]): void {
+  const keys = new Set<string>();
+  for (const item of items) {
+    const key = item.key?.trim();
+    if (!key) continue;
+    if (!/^[\p{L}\p{N}_-]+$/u.test(key)) {
+      throw new Error(`List item key “${key}” may only contain letters, numbers, underscores, and hyphens.`);
+    }
+    const normalized = key.toLocaleLowerCase();
+    if (keys.has(normalized)) throw new Error(`List item key “${key}” is used more than once.`);
+    keys.add(normalized);
+  }
 }
 
 export class Registry {
@@ -249,6 +304,13 @@ export class Registry {
           file: typeof raw.file === 'string' ? raw.file : '',
           property: typeof raw.property === 'string' ? raw.property : '',
           value: this.toFixedValue(raw.value),
+          shape: raw.shape === 'single' || raw.shape === 'list' ? raw.shape : undefined,
+          fixedItems: Array.isArray(raw.fixedItems)
+            ? normalizeVariableListItems(raw.fixedItems)
+            : undefined,
+          propertyItems: Array.isArray(raw.propertyItems)
+            ? normalizeVariableListItems(raw.propertyItems)
+            : undefined,
           link: typeof raw.link === 'string' ? raw.link : undefined,
           display: typeof raw.display === 'string' ? raw.display : undefined,
           textCase: normalizeVariableTextCase(raw.textCase),
@@ -690,6 +752,21 @@ export class Registry {
       file: definition.file.trim(),
       property: definition.property.trim()
     };
+    if (Object.prototype.hasOwnProperty.call(definition, 'shape')) {
+      normalized.shape = getVariableShape(definition);
+    }
+    if (Object.prototype.hasOwnProperty.call(definition, 'fixedItems')) {
+      normalized.fixedItems = normalizeVariableListItems(definition.fixedItems);
+    }
+    if (Object.prototype.hasOwnProperty.call(definition, 'propertyItems')) {
+      normalized.propertyItems = normalizeVariableListItems(definition.propertyItems);
+    }
+    if (normalized.shape === 'list') {
+      const activeItems = type === 'fixed'
+        ? normalized.fixedItems ?? existing?.fixedItems ?? []
+        : normalized.propertyItems ?? existing?.propertyItems ?? [];
+      validateVariableListItems(activeItems);
+    }
     if (type === 'fixed') normalized.value = definition.value ?? '';
     else if (Object.prototype.hasOwnProperty.call(definition, 'value')) {
       normalized.value = definition.value;
@@ -741,6 +818,9 @@ export class Registry {
         }
         if (Object.prototype.hasOwnProperty.call(definition, 'value')
           && definition.value === undefined) delete updated.value;
+        if (Object.prototype.hasOwnProperty.call(definition, 'shape') && !normalized.shape) {
+          delete updated.shape;
+        }
         if (Object.prototype.hasOwnProperty.call(definition, 'favorite') && !definition.favorite) delete updated.favorite;
         if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card) delete updated.card;
         if (Object.prototype.hasOwnProperty.call(definition, 'appearance') && !normalized.appearance) {
@@ -1116,3 +1196,28 @@ export class Registry {
 }
 
 export default Registry;
+
+function createStableId(): string {
+  if (typeof window.crypto?.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
+    const random = Math.random() * 16 | 0;
+    return (character === 'x' ? random : (random & 0x3 | 0x8)).toString(16);
+  });
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toListItemText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  if (value === null || value === undefined) return '';
+  try {
+    return JSON.stringify(value) ?? '';
+  } catch {
+    return '';
+  }
+}

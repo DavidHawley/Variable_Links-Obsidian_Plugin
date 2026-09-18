@@ -44,8 +44,13 @@ import {
 } from './linkSyntax';
 import type VariableLinksPlugin from './main';
 import {
+  createVariableListItem,
+  getVariableShape,
   getVariableType,
+  normalizeVariableListItems,
   type VariableDefinition,
+  type VariableListItem,
+  type VariableShape,
   type VariableType,
 } from './registry';
 import type { ResolveResult } from './resolver';
@@ -58,9 +63,13 @@ import { addContextHelpButton } from './contextHelp';
 
 export const VIEW_TYPE_VARIABLE_PANEL = 'variable-links-panel';
 
-const CREATE_FIXED_VALUE = 'create:fixed';
-const CREATE_PROPERTY_VALUE = 'create:property';
+const CREATE_FIXED_VALUE = 'create:fixed-single';
+const CREATE_FIXED_LIST = 'create:fixed-list';
+const CREATE_PROPERTY_VALUE = 'create:property-single';
+const CREATE_PROPERTY_LIST = 'create:property-list';
 const VARIABLE_OPTION_PREFIX = 'variable:';
+
+type VariableKind = 'fixed-single' | 'fixed-list' | 'property-single' | 'property-list';
 
 interface CardPropertyAppearanceClipboard {
   labelPosition?: CardPropertyEntry['labelPosition'];
@@ -82,8 +91,41 @@ interface CardAppearanceTarget {
 
 let cardAppearanceClipboard: CardAppearanceClipboard | null = null;
 
-function emptyDefinition(type: VariableType = 'property'): VariableDefinition {
-  return { type, file: '', property: '', value: type === 'fixed' ? '' : undefined };
+function variableKindSource(kind: VariableKind): VariableType {
+  return kind.startsWith('fixed-') ? 'fixed' : 'property';
+}
+
+function variableKindShape(kind: VariableKind): VariableShape {
+  return kind.endsWith('-list') ? 'list' : 'single';
+}
+
+function variableKindLabel(kind: VariableKind): string {
+  if (kind === 'fixed-list') return 'Fixed list';
+  if (kind === 'property-list') return 'Note property list';
+  if (kind === 'property-single') return 'Note property';
+  return 'Fixed value';
+}
+
+function getVariableKind(
+  definition: VariableDefinition,
+  resolvedValue?: unknown,
+): VariableKind {
+  const type = getVariableType(definition);
+  const shape = getVariableShape(definition)
+    ?? (type === 'property' && Array.isArray(resolvedValue) ? 'list' : 'single');
+  return `${type}-${shape}`;
+}
+
+function emptyDefinition(kind: VariableKind = 'property-single'): VariableDefinition {
+  const type = variableKindSource(kind);
+  return {
+    type,
+    shape: variableKindShape(kind),
+    file: '',
+    property: '',
+    value: type === 'fixed' ? '' : undefined,
+    fixedItems: kind === 'fixed-list' ? [createVariableListItem()] : undefined,
+  };
 }
 
 function renderCardHoverOverrideHelp(parent: HTMLElement): void {
@@ -135,8 +177,8 @@ class DeleteVariableModal extends Modal {
 class ChangeVariableTypeModal extends Modal {
   constructor(
     private readonly plugin: VariableLinksPlugin,
-    private readonly currentType: VariableType,
-    private readonly nextType: VariableType,
+    private readonly currentType: VariableKind,
+    private readonly nextType: VariableKind,
     private readonly onConfirm: () => void,
   ) {
     super(plugin.app);
@@ -144,16 +186,16 @@ class ChangeVariableTypeModal extends Modal {
 
   onOpen(): void {
     this.plugin.trackDialog(this);
-    const currentLabel = this.currentType === 'fixed' ? 'Fixed value' : 'Property value';
-    const nextLabel = this.nextType === 'fixed' ? 'Fixed value' : 'Property value';
+    const currentLabel = variableKindLabel(this.currentType);
+    const nextLabel = variableKindLabel(this.nextType);
     this.contentEl.createEl('h3', { text: 'Change variable type?' });
     this.contentEl.createEl('p', {
       text: `Change this variable from ${currentLabel} to ${nextLabel}?`,
     });
     this.contentEl.createEl('p', {
-      text: this.nextType === 'fixed'
-        ? 'It will stop reading its displayed value from a note property after you save.'
-        : 'It will read its displayed value from the configured note property after you save.',
+      text: variableKindSource(this.nextType) === 'fixed'
+        ? 'It will use data stored directly in the Variable Links registry after you save.'
+        : 'It will read its displayed data from the configured note property after you save.',
     });
     this.contentEl.createEl('p', {
       text: 'The inactive settings will be preserved in case you switch back later.',
@@ -2010,7 +2052,7 @@ export class VariablePropertiesView extends ItemView {
   private metadataWaitCleanups = new Set<() => void>();
   private markdownChild: MarkdownRenderChild | null = null;
   private activeTab: PanelTab = 'link';
-  private creatingVariableType: VariableType | null = null;
+  private creatingVariableType: VariableKind | null = null;
   private creatingVariableName = '';
   private creationCompletion: ((name: string) => Promise<void> | void) | null = null;
   private variableEditorOpen = true;
@@ -2078,7 +2120,7 @@ export class VariablePropertiesView extends ItemView {
     name: string,
     onSaved?: (savedName: string) => Promise<void> | void,
   ): Promise<void> {
-    this.creatingVariableType = type;
+    this.creatingVariableType = type === 'fixed' ? 'fixed-single' : 'property-single';
     this.creatingVariableName = name.trim();
     this.creationCompletion = onSaved ?? null;
     this.selectedVariableName = null;
@@ -2113,7 +2155,7 @@ export class VariablePropertiesView extends ItemView {
     const storedDefinition = activeName && !this.creatingVariableType
       ? registry.getVariable(activeName)
       : undefined;
-    const definition = storedDefinition ?? emptyDefinition(this.creatingVariableType ?? 'property');
+    const definition = storedDefinition ?? emptyDefinition(this.creatingVariableType ?? 'property-single');
 
     const header = container.createDiv({ cls: 'variable-links-panel-header' });
     header.createEl('h2', { text: 'Variable link properties' });
@@ -2137,18 +2179,20 @@ export class VariablePropertiesView extends ItemView {
     });
     const createGroup = select.createEl('optgroup', { attr: { label: 'Create' } });
     createGroup.createEl('option', { text: 'New fixed value', value: CREATE_FIXED_VALUE });
-    createGroup.createEl('option', { text: 'New property value', value: CREATE_PROPERTY_VALUE });
+    createGroup.createEl('option', { text: 'New fixed list', value: CREATE_FIXED_LIST });
+    createGroup.createEl('option', { text: 'New note property', value: CREATE_PROPERTY_VALUE });
+    createGroup.createEl('option', { text: 'New note property list', value: CREATE_PROPERTY_LIST });
     const variableGroup = select.createEl('optgroup', { attr: { label: 'Variables' } });
     for (const name of names) {
       variableGroup.createEl('option', { text: name, value: `${VARIABLE_OPTION_PREFIX}${name}` });
     }
     select.value = this.creatingVariableType
-      ? this.creatingVariableType === 'fixed' ? CREATE_FIXED_VALUE : CREATE_PROPERTY_VALUE
+      ? `create:${this.creatingVariableType}`
       : storedDefinition ? `${VARIABLE_OPTION_PREFIX}${activeName}` : '';
     select.addEventListener('change', () => {
       const value = select.value;
-      if (value === CREATE_FIXED_VALUE || value === CREATE_PROPERTY_VALUE) {
-        this.creatingVariableType = value === CREATE_FIXED_VALUE ? 'fixed' : 'property';
+      if ([CREATE_FIXED_VALUE, CREATE_FIXED_LIST, CREATE_PROPERTY_VALUE, CREATE_PROPERTY_LIST].includes(value)) {
+        this.creatingVariableType = value.slice('create:'.length) as VariableKind;
         this.creatingVariableName = '';
         this.creationCompletion = null;
         this.selectedVariableName = null;
@@ -2229,7 +2273,7 @@ export class VariablePropertiesView extends ItemView {
     showTab(this.activeTab);
 
     if (this.creatingVariableType) {
-      const label = this.creatingVariableType === 'fixed' ? 'fixed value' : 'property value';
+      const label = variableKindLabel(this.creatingVariableType).toLocaleLowerCase();
       this.renderVariableForm(
         propertiesContent,
         activeName,
@@ -2337,8 +2381,14 @@ export class VariablePropertiesView extends ItemView {
     saveHost: HTMLElement,
   ): void {
     const existingVariable = name ? this.plugin.registry?.getVariable(name) : undefined;
-    let activeType = getVariableType(definition);
+    const existingKind = getVariableKind(definition, resolvedResult?.value);
+    let activeKind = existingKind;
     let hasFixedValue = definition.value !== undefined;
+    let fixedItems = normalizeVariableListItems(definition.fixedItems);
+    let propertyItems = this.reconcilePropertyListItems(
+      Array.isArray(resolvedResult?.value) ? resolvedResult.value : [],
+      definition.propertyItems,
+    );
     let markFormDirty = (): void => {};
     const typeRow = parent.createDiv({ cls: 'variable-links-panel-field variable-links-panel-type-field' });
     const typeLabel = typeRow.createEl('label', { text: 'Variable type:' });
@@ -2349,9 +2399,16 @@ export class VariablePropertiesView extends ItemView {
       (helpParent) => this.renderVariableTypeHelp(helpParent),
     );
     const typeInput = typeRow.createEl('select');
-    typeInput.createEl('option', { text: 'Fixed value', value: 'fixed' });
-    typeInput.createEl('option', { text: 'Property value', value: 'property' });
-    typeInput.value = activeType;
+    const variableKinds: VariableKind[] = [
+      'fixed-single',
+      'fixed-list',
+      'property-single',
+      'property-list',
+    ];
+    for (const kind of variableKinds) {
+      typeInput.createEl('option', { text: variableKindLabel(kind), value: kind });
+    }
+    typeInput.value = activeKind;
     const typeStatus = parent.createDiv({
       cls: 'variable-links-panel-type-status',
       text: 'Unsaved change — save properties to apply.',
@@ -2385,6 +2442,8 @@ export class VariablePropertiesView extends ItemView {
       'Value displayed by this variable',
     );
     const fixedValueRow = fixedValueInput.parentElement;
+    const fixedListEditor = editControls.createDiv({ cls: 'variable-links-panel-list-editor' });
+    const propertyListEditor = editControls.createDiv({ cls: 'variable-links-panel-list-editor' });
     const linkedValueRow = editControls.createDiv({
       cls: 'variable-links-panel-linked-value',
       attr: { 'data-variable-links-ignore-dirty': 'true' },
@@ -2399,7 +2458,7 @@ export class VariablePropertiesView extends ItemView {
       editControls,
       'File link',
       toFileLink(
-        definition.link ?? (activeType === 'property' ? definition.file : ''),
+        definition.link ?? (variableKindSource(activeKind) === 'property' ? definition.file : ''),
       ),
       '[[People/John Smith]]',
     );
@@ -2428,35 +2487,73 @@ export class VariablePropertiesView extends ItemView {
       textCaseInput.createEl('option', { value: option.value, text: option.label });
     }
     textCaseInput.value = definition.textCase ?? '';
-    const updateTypeFields = (): void => {
-      if (propertyLinkRow) propertyLinkRow.hidden = activeType !== 'property';
-      if (fixedValueRow) fixedValueRow.hidden = activeType !== 'fixed';
-      linkedValueRow.hidden = activeType !== 'property';
-      typeInput.value = activeType;
-      typeStatus.hidden = !existingVariable || activeType === getVariableType(existingVariable);
+    const renderListEditors = (): void => {
+      this.renderVariableListEditor(
+        fixedListEditor,
+        fixedItems,
+        true,
+        'Add list item',
+        (items) => {
+          fixedItems = items;
+          markFormDirty();
+        },
+      );
+      this.renderVariableListEditor(
+        propertyListEditor,
+        propertyItems,
+        false,
+        Array.isArray(resolvedResult?.value)
+          ? 'The values come from the linked note property.'
+          : 'The linked property is not currently a list. Save the mapping, or change the source property to a YAML list.',
+        (items) => {
+          propertyItems = items;
+          markFormDirty();
+        },
+      );
     };
-    const applyType = (nextType: VariableType): void => {
-      if (nextType === 'fixed' && !hasFixedValue) {
+    renderListEditors();
+    const updateTypeFields = (): void => {
+      const source = variableKindSource(activeKind);
+      const shape = variableKindShape(activeKind);
+      if (propertyLinkRow) propertyLinkRow.hidden = source !== 'property';
+      if (fixedValueRow) fixedValueRow.hidden = source !== 'fixed' || shape !== 'single';
+      fixedListEditor.hidden = source !== 'fixed' || shape !== 'list';
+      propertyListEditor.hidden = source !== 'property' || shape !== 'list';
+      linkedValueRow.hidden = source !== 'property';
+      typeInput.value = activeKind;
+      typeStatus.hidden = !existingVariable || activeKind === existingKind;
+    };
+    const applyType = (nextType: VariableKind): void => {
+      if (nextType === 'fixed-single' && !hasFixedValue) {
         fixedValueInput.value = resolvedResult?.ok
           ? this.formatResolvedValue(resolvedResult.value)
           : '';
         hasFixedValue = true;
       }
-      activeType = nextType;
+      if (nextType === 'fixed-list' && !fixedItems.length) {
+        const seed = Array.isArray(resolvedResult?.value)
+          ? resolvedResult.value.map((value) => this.formatResolvedValue(value))
+          : [fixedValueInput.value];
+        fixedItems = seed.map((value) => createVariableListItem(value));
+        renderListEditors();
+      }
+      activeKind = nextType;
       updateTypeFields();
       markFormDirty();
     };
     typeInput.addEventListener('change', () => {
-      const nextType: VariableType = typeInput.value === 'fixed' ? 'fixed' : 'property';
-      typeInput.value = activeType;
-      if (nextType === activeType) return;
+      const nextType = variableKinds.includes(typeInput.value as VariableKind)
+        ? typeInput.value as VariableKind
+        : 'property-single';
+      typeInput.value = activeKind;
+      if (nextType === activeKind) return;
       if (!existingVariable) {
         applyType(nextType);
         return;
       }
       new ChangeVariableTypeModal(
         this.plugin,
-        activeType,
+        activeKind,
         nextType,
         () => applyType(nextType),
       ).open();
@@ -2686,8 +2783,10 @@ export class VariablePropertiesView extends ItemView {
         const propertyLinkText = propertyLinkInput.value.trim();
         let propertyLink = { file: '', property: '' };
         if (propertyLinkText) propertyLink = parsePropertyLink(propertyLinkText);
-        else if (activeType === 'property') {
-          throw new Error('A property link is required for a Property value variable.');
+        const activeType = variableKindSource(activeKind);
+        const activeShape = variableKindShape(activeKind);
+        if (!propertyLinkText && activeType === 'property') {
+          throw new Error(`A property link is required for a ${variableKindLabel(activeKind)} variable.`);
         }
         const nextAppearance = getAppearanceControls();
         const favorite = existingVariable
@@ -2695,9 +2794,12 @@ export class VariablePropertiesView extends ItemView {
           : favoriteInput?.checked === true;
         await registry.saveVariable(newName, {
           type: activeType,
+          shape: activeShape,
           file: propertyLink.file,
           property: propertyLink.property,
           value: hasFixedValue ? fixedValueInput.value : undefined,
+          fixedItems,
+          propertyItems,
           link: fileLinkInput.value.trim() ? toFileLink(fileLinkInput.value) : undefined,
           display: displayInput.value,
           textCase: normalizeVariableTextCase(textCaseInput.value),
@@ -3119,6 +3221,134 @@ export class VariablePropertiesView extends ItemView {
     });
   }
 
+  private renderVariableListEditor(
+    parent: HTMLElement,
+    items: VariableListItem[],
+    editableValues: boolean,
+    footerText: string,
+    onChanged: (items: VariableListItem[]) => void,
+  ): void {
+    parent.empty();
+    const heading = parent.createDiv({ cls: 'variable-links-panel-list-heading' });
+    heading.createEl('strong', { text: editableValues ? 'List items' : 'Linked list items' });
+    if (editableValues) {
+      heading.createEl('button', {
+        text: 'Add item',
+        attr: { type: 'button' },
+      }).addEventListener('click', () => {
+        items.push(createVariableListItem());
+        onChanged(items);
+        this.renderVariableListEditor(parent, items, editableValues, footerText, onChanged);
+      });
+    }
+    const list = parent.createDiv({ cls: 'variable-links-panel-list-items' });
+    if (!items.length) {
+      list.createDiv({
+        cls: 'variable-links-hint-text variable-links-panel-list-empty',
+        text: editableValues ? 'No items yet.' : 'No list items are currently available.',
+      });
+    }
+    items.forEach((item, index) => {
+      const row = list.createDiv({ cls: 'variable-links-panel-list-item' });
+      const valueField = row.createDiv({ cls: 'variable-links-panel-list-item-value' });
+      valueField.createEl('label', { text: `Value ${index + 1}:` });
+      if (editableValues) {
+        const valueInput = valueField.createEl('input', { type: 'text' });
+        valueInput.value = item.value;
+        valueInput.addEventListener('input', () => {
+          item.value = valueInput.value;
+          onChanged(items);
+        });
+      } else {
+        valueField.createDiv({
+          cls: 'variable-links-panel-list-source-value',
+          text: item.value || '(Empty)',
+          attr: { title: item.value },
+        });
+      }
+      const keyField = row.createDiv({ cls: 'variable-links-panel-list-item-key' });
+      keyField.createEl('label', { text: 'Key:' });
+      const keyInput = keyField.createEl('input', {
+        type: 'text',
+        placeholder: 'optional-key',
+        attr: { 'aria-label': `Permanent key for list item ${index + 1}` },
+      });
+      keyInput.value = item.key ?? '';
+      keyInput.addEventListener('input', () => {
+        item.key = keyInput.value.trim() || undefined;
+        onChanged(items);
+      });
+      const displayField = row.createDiv({ cls: 'variable-links-panel-list-item-display' });
+      displayField.createEl('label', { text: 'Display name:' });
+      const displayInput = displayField.createEl('input', {
+        type: 'text',
+        placeholder: 'Optional name',
+        attr: { 'aria-label': `Display name for list item ${index + 1}` },
+      });
+      displayInput.value = item.display ?? '';
+      displayInput.addEventListener('input', () => {
+        item.display = displayInput.value.trim() || undefined;
+        onChanged(items);
+      });
+      if (editableValues) {
+        const actions = row.createDiv({ cls: 'variable-links-panel-list-item-actions' });
+        const up = actions.createEl('button', {
+          text: '↑',
+          attr: { type: 'button', title: 'Move up', 'aria-label': `Move item ${index + 1} up` },
+        });
+        up.disabled = index === 0;
+        up.addEventListener('click', () => {
+          if (index === 0) return;
+          [items[index - 1], items[index]] = [items[index], items[index - 1]];
+          onChanged(items);
+          this.renderVariableListEditor(parent, items, editableValues, footerText, onChanged);
+        });
+        const down = actions.createEl('button', {
+          text: '↓',
+          attr: { type: 'button', title: 'Move down', 'aria-label': `Move item ${index + 1} down` },
+        });
+        down.disabled = index === items.length - 1;
+        down.addEventListener('click', () => {
+          if (index >= items.length - 1) return;
+          [items[index], items[index + 1]] = [items[index + 1], items[index]];
+          onChanged(items);
+          this.renderVariableListEditor(parent, items, editableValues, footerText, onChanged);
+        });
+        actions.createEl('button', {
+          text: 'Remove',
+          attr: { type: 'button', 'aria-label': `Remove item ${index + 1}` },
+        }).addEventListener('click', () => {
+          items.splice(index, 1);
+          onChanged(items);
+          this.renderVariableListEditor(parent, items, editableValues, footerText, onChanged);
+        });
+      }
+    });
+    parent.createDiv({
+      cls: 'variable-links-hint-text variable-links-panel-list-hint',
+      text: `${footerText} Keys may contain letters, numbers, underscores, and hyphens. Display names can contain spaces.`,
+    });
+  }
+
+  private reconcilePropertyListItems(
+    values: readonly unknown[],
+    storedValue: unknown,
+  ): VariableListItem[] {
+    const stored = normalizeVariableListItems(storedValue);
+    if (!values.length) return stored;
+    const unused = new Set(stored.map((_, index) => index));
+    return values.map((value) => {
+      const text = this.formatResolvedValue(value);
+      const matching = [...unused].filter((index) => stored[index]?.value === text);
+      const storedIndex = matching.length === 1 ? matching[0] : undefined;
+      if (storedIndex !== undefined) {
+        unused.delete(storedIndex);
+        return { ...stored[storedIndex], value: text };
+      }
+      return createVariableListItem(text);
+    });
+  }
+
   private formatResolvedValue(value: unknown): string {
     if (Array.isArray(value)) return value.map(String).join(', ');
     if (value === undefined || value === null) return '';
@@ -3192,10 +3422,16 @@ export class VariablePropertiesView extends ItemView {
       text: 'Fixed value stores the displayed value directly in the variable links registry. Its optional file link controls where clicking the rendered value opens.',
     });
     types.createEl('li', {
-      text: 'Property value reads the displayed value from a note property and updates when that property changes. It requires a property link.',
+      text: 'Fixed list stores an ordered set of values directly in the registry.',
+    });
+    types.createEl('li', {
+      text: 'Note property reads one displayed value from an Obsidian property and updates when that property changes.',
+    });
+    types.createEl('li', {
+      text: 'Note property list requires the linked Obsidian property to contain a YAML list.',
     });
     parent.createEl('p', {
-      text: 'Changing an existing variable type requires confirmation. Inactive fixed-value or property-link settings are preserved in case you switch back later.',
+      text: 'Changing an existing variable type requires confirmation. Inactive fixed-value, list, and property-link settings are preserved in case you switch back later.',
       cls: 'variable-links-hint-text',
     });
   }

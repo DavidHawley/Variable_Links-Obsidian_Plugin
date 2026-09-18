@@ -829,9 +829,85 @@ input[type="checkbox"]:disabled:where([class^="variable-links-"], [class*=" vari
 .variable-links-panel-linked-value-display[hidden],
 .variable-links-panel-linked-value-editor[hidden],
 .variable-links-panel-linked-value[hidden],
+.variable-links-panel-list-editor[hidden],
 .variable-links-panel-field[hidden],
 .variable-links-panel-type-status[hidden] {
   display: none;
+}
+
+.variable-links-panel-list-editor {
+  margin: 10px 0 14px;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary-alt);
+}
+
+.variable-links-panel-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.variable-links-panel-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.variable-links-panel-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+}
+
+.variable-links-panel-list-item-value {
+  grid-column: 1 / -1;
+}
+
+.variable-links-panel-list-item-value,
+.variable-links-panel-list-item-key,
+.variable-links-panel-list-item-display {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.variable-links-panel-list-item input {
+  width: 100%;
+  min-width: 0;
+}
+
+.variable-links-panel-list-item label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.variable-links-panel-list-source-value {
+  min-height: var(--input-height);
+  padding: var(--size-4-1) var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--input-radius);
+  background: var(--background-modifier-form-field);
+  overflow-wrap: anywhere;
+}
+
+.variable-links-panel-list-item-actions {
+  display: flex;
+  align-items: end;
+  gap: 4px;
+}
+
+.variable-links-panel-list-hint,
+.variable-links-panel-list-empty {
+  margin-top: 8px;
 }
 
 @container (max-width: 320px) {
@@ -850,6 +926,17 @@ input[type="checkbox"]:disabled:where([class^="variable-links-"], [class*=" vari
 
   .variable-links-panel-linked-value > label {
     padding-top: 0;
+  }
+
+  .variable-links-panel-list-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .variable-links-panel-list-item-value,
+  .variable-links-panel-list-item-key,
+  .variable-links-panel-list-item-display,
+  .variable-links-panel-list-item-actions {
+    grid-column: 1;
   }
 }
 
