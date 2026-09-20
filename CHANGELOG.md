@@ -2,6 +2,17 @@
 
 All notable user-visible changes to Variable Links are recorded here.
 
+## 1.3.2 - Unreleased
+
+### Added
+
+- Added a registry backup command and Settings action that exports a timestamped copy into the vault.
+
+### Fixed
+
+- Moved the default registry outside the community plugin installation directory so uninstalling Variable Links does not delete user data.
+- Safely copied existing default registries to the new location while retaining the original as a backup, and warned users about custom registries stored inside plugin installation folders.
+
 ## 1.3.1 - 2026-09-01
 
 ### Changed

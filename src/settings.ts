@@ -266,11 +266,69 @@ export class VariableLinksSettingTab extends PluginSettingTab {
         items: [
           {
             name: 'Registry file',
-            desc: 'JSON, YAML, or Markdown registry. The default is a hidden registry.json in this plugin folder.',
+            desc: 'JSON, YAML, or Markdown registry. The default is stored in a hidden Variable Links data folder that remains when the plugin is uninstalled.',
             control: {
               type: 'file',
               key: 'registryFilePath',
               placeholder: 'Select a registry file',
+            },
+          },
+          {
+            name: 'Registry location warning',
+            render: (setting) => {
+              if (!this.variableLinksPlugin.isRegistryInsidePluginDirectory()) {
+                setting.settingEl.remove();
+                return;
+              }
+              setting.setDesc(
+                'This registry is inside the community plugin installation directory. Obsidian may permanently delete it when a plugin is uninstalled.',
+              );
+              setting.settingEl.addClass('mod-warning');
+              const button = setting.controlEl.createEl('button', {
+                text: 'Move to safe location',
+                attr: { type: 'button' },
+              });
+              const onClick = async (): Promise<void> => {
+                button.disabled = true;
+                try {
+                  await this.variableLinksPlugin.moveRegistryToSafeLocation();
+                  this.update();
+                } catch (error) {
+                  new Notice(
+                    `Variable Links: could not move the registry: ${error instanceof Error ? error.message : String(error)}`,
+                  );
+                } finally {
+                  button.disabled = false;
+                }
+              };
+              const onButtonClick = (): void => void onClick();
+              button.addEventListener('click', onButtonClick);
+              return () => button.removeEventListener('click', onButtonClick);
+            },
+          },
+          {
+            name: 'Registry backup',
+            desc: 'Save a timestamped copy in the vault’s Variable Links Backups folder.',
+            render: (setting) => {
+              const button = setting.controlEl.createEl('button', {
+                text: 'Export backup',
+                attr: { type: 'button' },
+              });
+              const onClick = async (): Promise<void> => {
+                button.disabled = true;
+                try {
+                  await this.variableLinksPlugin.exportRegistryBackup();
+                } catch (error) {
+                  new Notice(
+                    `Variable Links: could not export the registry backup: ${error instanceof Error ? error.message : String(error)}`,
+                  );
+                } finally {
+                  button.disabled = false;
+                }
+              };
+              const onButtonClick = (): void => void onClick();
+              button.addEventListener('click', onButtonClick);
+              return () => button.removeEventListener('click', onButtonClick);
             },
           },
           {
@@ -649,6 +707,7 @@ export class VariableLinksSettingTab extends PluginSettingTab {
       } catch (error) {
         new Notice(`Failed to load registry: ${error instanceof Error ? error.message : String(error)}`);
       }
+      this.update();
     }
   }
 
