@@ -189,6 +189,13 @@ export default class VariableLinksPlugin extends Plugin {
         void this.openManagementCenter();
       });
       this.addCommand({
+        id: 'export-registry-backup',
+        name: 'Export registry backup',
+        callback: () => void this.exportRegistryBackup().catch((error: unknown) => {
+          new Notice(`Variable Links: could not export the registry backup: ${this.errorMessage(error)}`);
+        }),
+      });
+      this.addCommand({
         id: 'preview-autolinks-current-file',
         name: 'Preview autolinks for current file',
         checkCallback: (checking) => {
@@ -352,7 +359,16 @@ export default class VariableLinksPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const loaded: unknown = await this.loadData();
     const saved = this.isRecord(loaded) ? loaded : {};
-    const defaultRegistryPath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/registry.json`;
+    const legacyDefaultRegistryPath = this.getLegacyDefaultRegistryPath();
+    const safeDefaultRegistryPath = this.getSafeDefaultRegistryPath();
+    const savedRegistryPath = typeof saved.registryFilePath === 'string'
+      ? saved.registryFilePath
+      : null;
+    const registryPathResult = await this.resolveRegistryPath(
+      savedRegistryPath,
+      legacyDefaultRegistryPath,
+      safeDefaultRegistryPath,
+    );
     let tokenPrefix = normalizeTokenDelimiter(
       saved.tokenPrefix,
       DEFAULT_SETTINGS.tokenPrefix,
@@ -367,9 +383,7 @@ export default class VariableLinksPlugin extends Plugin {
     }
     const activeTokenSyntax = { prefix: tokenPrefix, suffix: tokenSuffix };
     this.settings = {
-      registryFilePath: typeof saved.registryFilePath === 'string'
-        ? saved.registryFilePath
-        : defaultRegistryPath,
+      registryFilePath: registryPathResult.path,
       tokenPrefix,
       tokenSuffix,
       legacyTokenSyntaxes: normalizeLegacyTokenSyntaxes(
@@ -431,10 +445,76 @@ export default class VariableLinksPlugin extends Plugin {
         saved.infoCardEditorCollapsedItems,
       ),
     };
+    if (registryPathResult.migrated) await this.saveSettings();
   }
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  isRegistryInsidePluginDirectory(path = this.settings.registryFilePath): boolean {
+    const normalizedPath = this.normalizeVaultPath(path).toLocaleLowerCase();
+    const pluginDirectory = this.normalizeVaultPath(
+      `${this.app.vault.configDir}/plugins`,
+    ).toLocaleLowerCase();
+    return normalizedPath === pluginDirectory
+      || normalizedPath.startsWith(`${pluginDirectory}/`);
+  }
+
+  async moveRegistryToSafeLocation(): Promise<string> {
+    const sourcePath = this.normalizeVaultPath(this.settings.registryFilePath);
+    if (!sourcePath) throw new Error('The registry file path is not set.');
+    if (!this.isRegistryInsidePluginDirectory(sourcePath)) {
+      throw new Error('The registry is already outside the plugin installation directory.');
+    }
+
+    const adapter = this.app.vault.adapter;
+    if (!await adapter.exists(sourcePath)) throw new Error('The registry file does not exist.');
+    const content = await adapter.read(sourcePath);
+    const parsed = this.registry?.parseRegistryFromContent(content, sourcePath);
+    if (!parsed || !this.isRecord(parsed['variable-links'])) {
+      throw new Error('The registry is not valid, so it was not moved.');
+    }
+
+    const destinationPath = this.safeRegistryDestination(sourcePath);
+    await this.copyFileWithoutOverwrite(sourcePath, destinationPath, content);
+    this.settings.registryFilePath = destinationPath;
+    await this.saveSettings();
+    await this.registry?.load();
+    await this.refreshAfterRegistryReload();
+    new Notice(
+      `Variable Links: using the safe registry at ${destinationPath}. The original was retained as a backup.`,
+    );
+    return destinationPath;
+  }
+
+  async exportRegistryBackup(): Promise<string> {
+    const sourcePath = this.normalizeVaultPath(this.settings.registryFilePath);
+    if (!sourcePath) throw new Error('The registry file path is not set.');
+    const adapter = this.app.vault.adapter;
+    if (!await adapter.exists(sourcePath)) throw new Error('The registry file does not exist.');
+    const content = await adapter.read(sourcePath);
+    const sourceName = sourcePath.slice(sourcePath.lastIndexOf('/') + 1) || 'registry.json';
+    const extensionIndex = sourceName.lastIndexOf('.');
+    const baseName = extensionIndex > 0 ? sourceName.slice(0, extensionIndex) : sourceName;
+    const extension = extensionIndex > 0 ? sourceName.slice(extensionIndex) : '.json';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupDirectory = 'Variable Links Backups';
+    const destinationBase = `${backupDirectory}/${baseName}-${timestamp}`;
+    let destinationPath = `${destinationBase}${extension}`;
+    let duplicate = 2;
+    while (await adapter.exists(destinationPath)) {
+      destinationPath = `${destinationBase}-${duplicate}${extension}`;
+      duplicate += 1;
+    }
+    await this.ensureAdapterFolders(destinationPath);
+    await adapter.write(destinationPath, content);
+    const copiedContent = await adapter.read(destinationPath);
+    if (copiedContent !== content) {
+      throw new Error('The backup could not be verified.');
+    }
+    new Notice(`Variable Links: exported registry backup to ${destinationPath}`);
+    return destinationPath;
   }
 
   async saveInfoCardEditorSize(width: number, height: number): Promise<void> {
@@ -1339,6 +1419,117 @@ export default class VariableLinksPlugin extends Plugin {
         await leaf.view.refresh();
       }
     }
+  }
+
+  private getLegacyDefaultRegistryPath(): string {
+    return `${this.app.vault.configDir}/plugins/${this.manifest.id}/registry.json`;
+  }
+
+  private getSafeDefaultRegistryPath(): string {
+    return `${this.app.vault.configDir}/${this.manifest.id}/registry.json`;
+  }
+
+  private async resolveRegistryPath(
+    savedPath: string | null,
+    legacyPath: string,
+    safePath: string,
+  ): Promise<{ path: string; migrated: boolean }> {
+    const requestedPath = savedPath === null ? legacyPath : savedPath;
+    if (!this.sameVaultPath(requestedPath, legacyPath)) {
+      return { path: requestedPath, migrated: false };
+    }
+
+    const adapter = this.app.vault.adapter;
+    if (!await adapter.exists(legacyPath)) {
+      return {
+        path: safePath,
+        migrated: savedPath !== null,
+      };
+    }
+
+    try {
+      const content = await adapter.read(legacyPath);
+      if (!this.isValidJsonRegistry(content)) {
+        new Notice(
+          'Variable links: the existing default registry is not valid JSON, so it was left in its original location.',
+        );
+        return { path: legacyPath, migrated: false };
+      }
+      await this.copyFileWithoutOverwrite(legacyPath, safePath, content);
+      const copiedContent = await adapter.read(safePath);
+      if (!this.isValidJsonRegistry(copiedContent)) {
+        throw new Error('The copied registry is not valid.');
+      }
+      new Notice(
+        `Variable Links: copied the registry to the uninstall-safe location ${safePath}. The original was retained as a backup.`,
+      );
+      return { path: safePath, migrated: true };
+    } catch (error) {
+      new Notice(
+        `Variable Links: could not move the registry to its uninstall-safe location: ${this.errorMessage(error)}`,
+      );
+      return { path: legacyPath, migrated: false };
+    }
+  }
+
+  private safeRegistryDestination(sourcePath: string): string {
+    if (this.sameVaultPath(sourcePath, this.getLegacyDefaultRegistryPath())) {
+      return this.getSafeDefaultRegistryPath();
+    }
+    const fileName = sourcePath.slice(sourcePath.lastIndexOf('/') + 1) || 'registry.json';
+    return `${this.app.vault.configDir}/${this.manifest.id}/${fileName}`;
+  }
+
+  private async copyFileWithoutOverwrite(
+    sourcePath: string,
+    destinationPath: string,
+    content: string,
+  ): Promise<void> {
+    if (this.sameVaultPath(sourcePath, destinationPath)) {
+      throw new Error('The safe registry path matches the current path.');
+    }
+    const adapter = this.app.vault.adapter;
+    if (await adapter.exists(destinationPath)) {
+      const existingContent = await adapter.read(destinationPath);
+      if (existingContent === content) return;
+      throw new Error(`A different registry already exists at ${destinationPath}; no file was overwritten.`);
+    }
+    await this.ensureAdapterFolders(destinationPath);
+    await adapter.write(destinationPath, content);
+    const copiedContent = await adapter.read(destinationPath);
+    if (copiedContent !== content) throw new Error('The copied registry could not be verified.');
+  }
+
+  private async ensureAdapterFolders(path: string): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    const parts = this.normalizeVaultPath(path).split('/').slice(0, -1);
+    let current = '';
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!await adapter.exists(current)) await adapter.mkdir(current);
+    }
+  }
+
+  private isValidJsonRegistry(content: string): boolean {
+    try {
+      const parsed: unknown = JSON.parse(content);
+      return this.isRecord(parsed) && this.isRecord(parsed['variable-links']);
+    } catch {
+      return false;
+    }
+  }
+
+  private sameVaultPath(left: string, right: string): boolean {
+    return this.normalizeVaultPath(left).toLocaleLowerCase()
+      === this.normalizeVaultPath(right).toLocaleLowerCase();
+  }
+
+  private normalizeVaultPath(path: string): string {
+    return path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {

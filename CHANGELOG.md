@@ -14,6 +14,17 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added chainable selector pipelines with one-based, reverse, and named list selection; multi-position `word()` and `char()` selection; and whole-value or targeted `upper()` and `lower()` transformations. Selector suggestions preview each stage, while renaming and token-format migration preserve the complete pipeline.
 - Added persistent suggestion shortcuts with a searchable Management Center activity, inline list-item creation, editable duplication, enabled states, exact-code completion, focused `~` search, and expansion into canonical Variable Link tokens that continue following variable renames.
 
+## 1.3.2 - 2026-09-19
+
+### Added
+
+- Added a registry backup command and Settings action that exports a timestamped copy into the vault.
+
+### Fixed
+
+- Moved the default registry outside the community plugin installation directory so uninstalling Variable Links does not delete user data.
+- Safely copied existing default registries to the new location while retaining the original as a backup, and warned users about custom registries stored inside plugin installation folders.
+
 ## 1.3.1 - 2026-09-01
 
 ### Changed
