@@ -4,6 +4,12 @@ import {
   type VariableAppearance,
 } from './appearance';
 import type { CardConfig } from './card';
+import { normalizeTemporalValue, type TemporalValue } from './temporal';
+import {
+  normalizeComputedPrecision,
+  parseComputedExpression,
+  type ComputedDependency,
+} from './computed';
 import { updateCardPropertyReferences } from './cardPresets';
 import {
   normalizeAutolinkProfiles,
@@ -21,23 +27,49 @@ import {
 import type VariableLinksPlugin from './main';
 import type { VariableLinksSettings } from './settings';
 import { filePathFromLink } from './linkSyntax';
-import { getTokenSyntax } from './tokenSyntax';
+import { valuesEqual } from './valueEditing';
+import { formatVariableSelector, getTokenSyntax, parseVariableSelector } from './tokenSyntax';
+import type { VariableSelector } from './tokenSyntax';
+import {
+  normalizeShortcutSearchTerms,
+  normalizeVariableShortcuts,
+  serializeVariableShortcuts,
+  validateShortcutCode,
+  type VariableShortcut,
+} from './shortcuts';
 import {
   normalizeVariableTextCase,
   parseVariableTextCaseMarker,
   type VariableTextCase,
 } from './textCase';
 
-export type VariableType = 'property' | 'fixed';
+export type VariableType = 'property' | 'fixed' | 'computed';
+export type VariableShape = 'single' | 'list';
+
+export interface VariableListItem {
+  id: string;
+  value: string;
+  key?: string;
+  display?: string;
+}
+
+export interface InlinePromotionPlan {
+  name: string;
+  expression: string;
+  sourcePath: string;
+  additions: { name: string; definition: VariableDefinition }[];
+  inputs: { name: string; targetName: string; guid: string; selector?: string; shortcut?: VariableShortcut }[];
+}
 
 const REGISTRY_POLL_INTERVAL_MS = 1000;
 
-class ReservedTextCaseNameModal extends Modal {
+class ReservedVariableNameModal extends Modal {
   private settled = false;
 
   constructor(
     private readonly plugin: VariableLinksPlugin,
     private readonly variableName: string,
+    private readonly syntaxKind: 'selector' | 'text-case',
     private readonly settle: (confirmed: boolean) => void,
   ) {
     super(plugin.app);
@@ -47,7 +79,9 @@ class ReservedTextCaseNameModal extends Modal {
     this.plugin.trackDialog(this);
     this.contentEl.createEl('h3', { text: 'Use a reserved-looking variable name?' });
     this.contentEl.createEl('p', {
-      text: `“${this.variableName}” begins and ends like token text-case syntax. Exact-name compatibility means it can take priority over a formatted token with the same text.`,
+      text: this.syntaxKind === 'selector'
+        ? `“${this.variableName}” looks like selector-pipeline syntax. Exact-name compatibility means it can take priority over a selected token with the same text.`
+        : `“${this.variableName}” begins and ends like token text-case syntax. Exact-name compatibility means it can take priority over a formatted token with the same text.`,
     });
     this.contentEl.createEl('p', {
       text: 'Use a different name unless this punctuation is intentional.',
@@ -83,7 +117,12 @@ export interface VariableDefinition {
   file: string; // vault path or wiki-link raw
   property: string;
   value?: string;
+  shape?: VariableShape;
+  fixedItems?: VariableListItem[];
+  propertyItems?: VariableListItem[];
+  hidden?: boolean;
   link?: string;
+  linkEnabled?: boolean;
   display?: string;
   textCase?: VariableTextCase;
   favorite?: boolean;
@@ -92,6 +131,10 @@ export interface VariableDefinition {
   card?: CardConfig;
   format?: string;
   managed?: ManagedAutolinkEntry;
+  expression?: string;
+  dependencies?: ComputedDependency[];
+  precision?: number;
+  temporal?: TemporalValue;
 }
 
 export interface ManagedAutolinkAddition {
@@ -125,7 +168,67 @@ export interface VariableRenameResult {
 }
 
 export function getVariableType(definition: VariableDefinition): VariableType {
-  return definition.type === 'fixed' ? 'fixed' : 'property';
+  if (definition.type === 'fixed' || definition.type === 'computed') return definition.type;
+  return 'property';
+}
+
+export function normalizeComputedDependencies(value: unknown): ComputedDependency[] {
+  if (!Array.isArray(value)) return [];
+  const names = new Set<string>();
+  return value.flatMap((candidate): ComputedDependency[] => {
+    if (!isUnknownRecord(candidate)) return [];
+    const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
+    const guid = typeof candidate.guid === 'string' ? candidate.guid.trim() : '';
+    if (!name || !guid || names.has(name)) return [];
+    names.add(name);
+    const selector = typeof candidate.selector === 'string' ? candidate.selector : undefined;
+    if (selector && !parseVariableSelector(`Dependency${selector}`).selector) return [];
+    return [{ name, guid, ...(selector ? { selector } : {}) }];
+  });
+}
+
+export function getVariableShape(definition: VariableDefinition): VariableShape | undefined {
+  return definition.shape === 'single' || definition.shape === 'list'
+    ? definition.shape
+    : undefined;
+}
+
+export function createVariableListItem(value = ''): VariableListItem {
+  return { id: createStableId(), value };
+}
+
+export function normalizeVariableListItems(value: unknown): VariableListItem[] {
+  if (!Array.isArray(value)) return [];
+  const usedIds = new Set<string>();
+  return value.flatMap((candidate): VariableListItem[] => {
+    if (!isUnknownRecord(candidate)) return [];
+    let id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
+    if (!id || usedIds.has(id)) id = createStableId();
+    usedIds.add(id);
+    const item: VariableListItem = {
+      id,
+      value: toListItemText(candidate.value),
+    };
+    const key = typeof candidate.key === 'string' ? candidate.key.trim() : '';
+    const display = typeof candidate.display === 'string' ? candidate.display.trim() : '';
+    if (key) item.key = key;
+    if (display) item.display = display;
+    return [item];
+  });
+}
+
+export function validateVariableListItems(items: readonly VariableListItem[]): void {
+  const keys = new Set<string>();
+  for (const item of items) {
+    const key = item.key?.trim();
+    if (!key) continue;
+    if (!/^[\p{L}\p{N}_-]+$/u.test(key)) {
+      throw new Error(`List item key “${key}” may only contain letters, numbers, underscores, and hyphens.`);
+    }
+    const normalized = key.toLocaleLowerCase();
+    if (keys.has(normalized)) throw new Error(`List item key “${key}” is used more than once.`);
+    keys.add(normalized);
+  }
 }
 
 export class Registry {
@@ -134,6 +237,7 @@ export class Registry {
   settings: VariableLinksSettings;
   data: Map<string, VariableDefinition> = new Map();
   autolinkProfiles: AutolinkProfile[] = [];
+  shortcuts: VariableShortcut[] = [];
   registryFile: TFile | null = null;
   registryPath: string = '';
   private modifyEvent: EventRef | null = null;
@@ -231,6 +335,7 @@ export class Registry {
     }
 
     this.autolinkProfiles = normalizeAutolinkProfiles(parsed['autolink-profiles']);
+    this.shortcuts = normalizeVariableShortcuts(parsed.shortcuts);
 
     this.data.clear();
     const generatedGuids = new Map<string, string>();
@@ -243,22 +348,7 @@ export class Registry {
           generatedGuids.set(String(key), guid);
         }
         usedGuids.add(guid);
-        const def: VariableDefinition = {
-          guid,
-          type: raw.type === 'fixed' ? 'fixed' : 'property',
-          file: typeof raw.file === 'string' ? raw.file : '',
-          property: typeof raw.property === 'string' ? raw.property : '',
-          value: this.toFixedValue(raw.value),
-          link: typeof raw.link === 'string' ? raw.link : undefined,
-          display: typeof raw.display === 'string' ? raw.display : undefined,
-          textCase: normalizeVariableTextCase(raw.textCase),
-          favorite: raw.favorite === true,
-          appearance: normalizeVariableAppearance(raw.appearance),
-          customAppearance: normalizeVariableAppearance(raw.customAppearance),
-          card: this.toCardConfig(raw.card),
-          format: typeof raw.format === 'string' ? raw.format : undefined,
-          managed: normalizeManagedAutolinkEntry(raw.managed),
-        };
+        const def = this.normalizeDefinition(raw, guid);
         this.data.set(String(key), def);
       }
     }
@@ -366,6 +456,90 @@ export class Registry {
 
   getVariable(name: string) {
     return this.data.get(name) ?? null;
+  }
+
+  getVariableNameByGuid(guid: string): string | null {
+    for (const [name, definition] of this.data) {
+      if (definition.guid === guid) return name;
+    }
+    return null;
+  }
+
+  getVariableByGuid(guid: string): { name: string; definition: VariableDefinition } | null {
+    const name = this.getVariableNameByGuid(guid);
+    if (!name) return null;
+    const definition = this.data.get(name);
+    return definition ? { name, definition } : null;
+  }
+
+  getShortcutByCode(code: string): VariableShortcut | null {
+    const normalized = code.trim().toLocaleLowerCase();
+    return this.shortcuts.find((shortcut) =>
+      shortcut.enabled && shortcut.code.toLocaleLowerCase() === normalized
+    ) ?? null;
+  }
+
+  getShortcutsForVariableGuid(guid: string): VariableShortcut[] {
+    return this.shortcuts.filter((shortcut) => shortcut.targetGuid === guid);
+  }
+
+  async saveShortcut(
+    shortcut: Omit<VariableShortcut, 'id' | 'searchTerms'> & {
+      id?: string;
+      searchTerms: string | readonly string[];
+    },
+  ): Promise<VariableShortcut> {
+    if (!this.registryFile && !this.registryPath) throw new Error('The registry file is not loaded.');
+    const code = shortcut.code.trim();
+    validateShortcutCode(code);
+    const targetName = this.getVariableNameByGuid(shortcut.targetGuid);
+    if (!targetName) {
+      throw new Error('The shortcut target no longer exists.');
+    }
+    if (shortcut.selector && this.plugin.resolver) {
+      const resolved = await this.plugin.resolver.resolve(targetName, shortcut.selector);
+      if (!resolved.ok) {
+        throw new Error(`The shortcut selector is not valid for “${targetName}”: ${resolved.error ?? 'unknown selector error'}`);
+      }
+    }
+    const existing = shortcut.id
+      ? this.shortcuts.find((candidate) => candidate.id === shortcut.id)
+      : undefined;
+    const duplicate = this.shortcuts.find((candidate) =>
+      candidate.id !== shortcut.id && candidate.code.toLocaleLowerCase() === code.toLocaleLowerCase()
+    );
+    if (duplicate) throw new Error(`Shortcut code “${code}” is already in use.`);
+    const saved: VariableShortcut = {
+      id: existing?.id ?? this.createGuid(),
+      code,
+      targetGuid: shortcut.targetGuid,
+      selector: shortcut.selector,
+      displayName: shortcut.displayName?.trim() || undefined,
+      searchTerms: normalizeShortcutSearchTerms(shortcut.searchTerms),
+      enabled: shortcut.enabled,
+    };
+    const next = existing
+      ? this.shortcuts.map((candidate) => candidate.id === saved.id ? saved : candidate)
+      : [...this.shortcuts, saved];
+    await this.mutateRegistryDocument((registry) => {
+      registry.shortcuts = serializeVariableShortcuts(next);
+      if (!this.isRecord(registry['variable-links'])) registry['variable-links'] = {};
+    });
+    await this.load();
+    await this.plugin.refreshManagementCenterViews();
+    return this.shortcuts.find((candidate) => candidate.id === saved.id) ?? saved;
+  }
+
+  async deleteShortcut(id: string): Promise<boolean> {
+    const next = this.shortcuts.filter((shortcut) => shortcut.id !== id);
+    if (next.length === this.shortcuts.length) return false;
+    await this.mutateRegistryDocument((registry) => {
+      registry.shortcuts = serializeVariableShortcuts(next);
+      if (!this.isRecord(registry['variable-links'])) registry['variable-links'] = {};
+    });
+    await this.load();
+    await this.plugin.refreshManagementCenterViews();
+    return true;
   }
 
   async updateFileReferences(oldPath: string, newPath: string): Promise<number> {
@@ -658,7 +832,7 @@ export class Registry {
   }
 
   /** Persist a mapping. A rename keeps the GUID and updates verified token references. */
-  async saveVariable(name: string, definition: VariableDefinition, previousName?: string) {
+  async saveVariable(name: string, definition: VariableDefinition, previousName?: string, expectedDefinition?: VariableDefinition) {
     const variableName = name.trim();
     const oldName = previousName?.trim();
     const type = getVariableType(definition);
@@ -677,19 +851,78 @@ export class Registry {
     }
 
     const existing = this.data.get(oldName || variableName);
+    const reservedNameKind = parseVariableTextCaseMarker(variableName)
+      ? 'text-case'
+      : parseVariableSelector(variableName).selector ? 'selector' : null;
     if (!this.data.has(variableName)
       && variableName !== oldName
-      && parseVariableTextCaseMarker(variableName)
-      && !await this.confirmReservedTextCaseName(variableName)) {
+      && reservedNameKind
+      && !await this.confirmReservedVariableName(variableName, reservedNameKind)) {
       throw new Error('The variable name change was cancelled.');
     }
     const guid = existing?.guid || definition.guid || this.createGuid();
+    let computedDependencies: ComputedDependency[] | undefined;
+    if (type === 'computed') {
+      const expression = definition.expression?.trim() ?? '';
+      const parsed = parseComputedExpression(expression);
+      if (definition.precision !== undefined
+        && normalizeComputedPrecision(definition.precision) === undefined) {
+        throw new Error('Computed decimal places must be a whole number from 0 to 12.');
+      }
+      const previousDependencies = new Map(
+        (existing?.dependencies ?? []).map((dependency) => [dependency.name, dependency]),
+      );
+      computedDependencies = parsed.references.map(({ name: referenceName }) => {
+        const previous = previousDependencies.get(referenceName);
+        // Saving display or expression settings must not substitute unrelated
+        // same-name data after the originally bound input has been deleted.
+        if (previous) {
+          return previous;
+        }
+        if (referenceName === variableName || referenceName === oldName) {
+          return { name: referenceName, guid };
+        }
+        const shortcut = this.getShortcutByCode(referenceName);
+        const targetGuid = this.data.get(referenceName)?.guid ?? shortcut?.targetGuid;
+        if (!targetGuid) {
+          throw new Error(`Computed expression references missing Variable Link “${referenceName}”.`);
+        }
+        return { name: referenceName, guid: targetGuid, selector: this.data.has(referenceName) ? undefined : formatVariableSelector(shortcut?.selector) || undefined };
+      });
+    }
     const normalized: Partial<VariableDefinition> = {
       guid,
       type,
-      file: definition.file.trim(),
-      property: definition.property.trim()
+      file: definition.file?.trim() ?? '',
+      property: definition.property?.trim() ?? ''
     };
+    if (type === 'computed') {
+      normalized.expression = definition.expression?.trim() ?? '';
+      normalized.dependencies = computedDependencies;
+      normalized.precision = normalizeComputedPrecision(definition.precision);
+    }
+    if (Object.prototype.hasOwnProperty.call(definition, 'temporal')) {
+      normalized.temporal = normalizeTemporalValue(definition.temporal);
+      if (definition.temporal !== undefined && !normalized.temporal) throw new Error('Invalid date/time value or display format.');
+    }
+    if (Object.prototype.hasOwnProperty.call(definition, 'shape')) {
+      normalized.shape = getVariableShape(definition);
+    }
+    if (Object.prototype.hasOwnProperty.call(definition, 'fixedItems')) {
+      normalized.fixedItems = normalizeVariableListItems(definition.fixedItems);
+    }
+    if (Object.prototype.hasOwnProperty.call(definition, 'propertyItems')) {
+      normalized.propertyItems = normalizeVariableListItems(definition.propertyItems);
+    }
+    if (Object.prototype.hasOwnProperty.call(definition, 'hidden')) {
+      normalized.hidden = definition.hidden === true;
+    }
+    if (normalized.shape === 'list') {
+      const activeItems = type === 'fixed'
+        ? normalized.fixedItems ?? existing?.fixedItems ?? []
+        : normalized.propertyItems ?? existing?.propertyItems ?? [];
+      validateVariableListItems(activeItems);
+    }
     if (type === 'fixed') normalized.value = definition.value ?? '';
     else if (Object.prototype.hasOwnProperty.call(definition, 'value')) {
       normalized.value = definition.value;
@@ -697,6 +930,7 @@ export class Registry {
     if (Object.prototype.hasOwnProperty.call(definition, 'link')) {
       normalized.link = definition.link?.trim() || undefined;
     }
+    if (Object.prototype.hasOwnProperty.call(definition, 'linkEnabled')) normalized.linkEnabled = definition.linkEnabled !== false;
     if (Object.prototype.hasOwnProperty.call(definition, 'textCase')) {
       normalized.textCase = normalizeVariableTextCase(definition.textCase);
     }
@@ -720,17 +954,40 @@ export class Registry {
     }
     const rename = !!oldName && oldName !== variableName;
     const tokenCache = this.plugin.tokenCache;
+    const selectorKeyRenames = [
+      ...this.findListKeyRenames(existing?.fixedItems, normalized.fixedItems),
+      ...this.findListKeyRenames(existing?.propertyItems, normalized.propertyItems),
+    ];
+    const removedSelectorKeys = [
+      ...this.findRemovedListKeys(existing?.fixedItems, normalized.fixedItems),
+      ...this.findRemovedListKeys(existing?.propertyItems, normalized.propertyItems),
+    ];
+    if (rename && selectorKeyRenames.length) {
+      throw new Error('Rename the variable and its list-item keys in separate saves.');
+    }
     if (rename && !tokenCache) {
       throw new Error('The token cache is unavailable, so the rename was cancelled.');
     }
+    if (selectorKeyRenames.length && !tokenCache) {
+      throw new Error('The token cache is unavailable, so the list-item key rename was cancelled.');
+    }
     const renamePlan = rename && tokenCache ? await tokenCache.prepareRename(guid, oldName, variableName) : null;
+    const selectorRenamePlan = selectorKeyRenames.length && tokenCache
+      ? await tokenCache.prepareSelectorKeyRenames(guid, variableName, selectorKeyRenames)
+      : null;
 
     if (renamePlan) await renamePlan.apply();
+    if (selectorRenamePlan) await selectorRenamePlan.apply();
     try {
-      await this.mutateRegistryLinks((links) => {
+      await this.mutateRegistryDocument((registry) => {
+        const links = this.isRecord(registry['variable-links']) ? registry['variable-links'] : {};
+        registry['variable-links'] = links;
         const current = links[oldName || variableName];
+        if (expectedDefinition && (!this.isRecord(current) || !valuesEqual(this.normalizeDefinition(current), expectedDefinition))) throw new Error('This variable changed while editing. Cancel and reopen it before saving.');
+        if (rename && Object.prototype.hasOwnProperty.call(links, variableName)) throw new Error(`A Variable Link named “${variableName}” was created while editing.`);
         const stored: Record<string, unknown> = this.isRecord(current) ? current : {};
         const updated: Record<string, unknown> = { ...stored, ...normalized };
+        if (Object.prototype.hasOwnProperty.call(definition, 'temporal') && !normalized.temporal) delete updated.temporal;
         if (definition.display?.trim()) updated.display = definition.display.trim();
         else delete updated.display;
         if (Object.prototype.hasOwnProperty.call(definition, 'link') && !definition.link?.trim()) {
@@ -741,6 +998,12 @@ export class Registry {
         }
         if (Object.prototype.hasOwnProperty.call(definition, 'value')
           && definition.value === undefined) delete updated.value;
+        if (Object.prototype.hasOwnProperty.call(definition, 'shape') && !normalized.shape) {
+          delete updated.shape;
+        }
+        if (Object.prototype.hasOwnProperty.call(definition, 'hidden') && !normalized.hidden) {
+          delete updated.hidden;
+        }
         if (Object.prototype.hasOwnProperty.call(definition, 'favorite') && !definition.favorite) delete updated.favorite;
         if (Object.prototype.hasOwnProperty.call(definition, 'card') && !definition.card) delete updated.card;
         if (Object.prototype.hasOwnProperty.call(definition, 'appearance') && !normalized.appearance) {
@@ -751,11 +1014,27 @@ export class Registry {
         if (Object.prototype.hasOwnProperty.call(definition, 'managed') && !normalized.managed) {
           delete updated.managed;
         }
+        if (type === 'computed' && normalized.precision === undefined) delete updated.precision;
         links[variableName] = updated;
         if (rename) delete links[oldName];
+        if (selectorKeyRenames.length || removedSelectorKeys.length) {
+          const renamedShortcuts = this.renameShortcutSelectorKeys(
+            normalizeVariableShortcuts(registry.shortcuts),
+            guid,
+            selectorKeyRenames,
+          );
+          const removed = new Set(removedSelectorKeys.map((key) => key.toLocaleLowerCase()));
+          registry.shortcuts = serializeVariableShortcuts(renamedShortcuts.filter((shortcut) =>
+            shortcut.targetGuid !== guid
+            || !shortcut.selector?.steps.some((step) =>
+              step.type === 'item' && removed.has(step.key.toLocaleLowerCase())
+            )
+          ));
+        }
       });
     } catch (error) {
       if (renamePlan) await renamePlan.rollback();
+      if (selectorRenamePlan) await selectorRenamePlan.rollback();
       throw error;
     }
 
@@ -790,6 +1069,15 @@ export class Registry {
           // A later vault event will retry the cache rebuild.
         }
       }
+    } else if (selectorRenamePlan) {
+      try {
+        await selectorRenamePlan.commit();
+      } catch {
+        try { await tokenCache?.rebuild(); }
+        catch {
+          // A later vault event will retry the cache rebuild.
+        }
+      }
     } else if (!existing && tokenCache) {
       try { await tokenCache.rebuild(); }
       catch {
@@ -798,6 +1086,146 @@ export class Registry {
     }
     this.plugin.livePreviewRenderer?.refresh();
     await this.plugin.refreshManagementCenterViews();
+  }
+
+  async updateVariableFlags(
+    snapshots: readonly { name: string; definition: VariableDefinition }[],
+    patch: Partial<Pick<VariableDefinition, 'favorite' | 'hidden' | 'linkEnabled'>>,
+  ): Promise<void> {
+    const fields = (['favorite', 'hidden', 'linkEnabled'] as const).filter((field) => patch[field] !== undefined);
+    if (!fields.length) throw new Error('Choose at least one field to change');
+    await this.mutateRegistryLinks((links) => {
+      for (const { name, definition } of snapshots) {
+        const current = links[name];
+        if (!this.isRecord(current) || current.guid !== definition.guid) throw new Error(`“${name}” was renamed or deleted after the preview`);
+        for (const field of fields) {
+          const currentFlag = field === 'linkEnabled' ? current[field] !== false : current[field] === true;
+          const originalFlag = field === 'linkEnabled' ? definition[field] !== false : definition[field] === true;
+          if (currentFlag !== originalFlag) throw new Error(`“${name}” changed after the preview`);
+        }
+      }
+      for (const { name } of snapshots) {
+        const current = links[name] as Record<string, unknown>;
+        for (const field of fields) current[field] = patch[field];
+      }
+    });
+    await this.load();
+    await this.plugin.indexer?.build();
+    this.plugin.livePreviewRenderer?.refresh();
+    await this.plugin.refreshManagementCenterViews();
+  }
+
+  async prepareInlinePromotion(name: string, expression: string, sourcePath: string): Promise<InlinePromotionPlan> {
+    const syntax = getTokenSyntax(this.plugin.settings);
+    name = name.trim();
+    if (!name || this.getVariable(name) || name.startsWith('=') || name.includes(syntax.prefix) || name.includes(syntax.suffix)) throw new Error('Choose an unused permanent name without token delimiters or a leading equals sign');
+    if (parseVariableTextCaseMarker(name) || parseVariableSelector(name).selector) throw new Error('Choose a name that does not resemble case or selector syntax');
+    const parsed = parseComputedExpression(expression);
+    const file = this.app.vault.getFileByPath(sourcePath);
+    const fm = file ? this.plugin.resolver?.extractFrontmatter(await this.app.vault.read(file)) ?? {} : {};
+    const additions = new Map<string, VariableDefinition>();
+    const inputs: InlinePromotionPlan['inputs'] = [];
+    for (const reference of parsed.references) {
+      let definition = this.getVariable(reference.name);
+      const shortcut = definition ? null : this.getShortcutByCode(reference.name);
+      const targetName = shortcut ? this.getVariableNameByGuid(shortcut.targetGuid) : reference.name;
+      if (shortcut) {
+        if (!targetName) throw new Error(`Shortcut '${reference.name}' has a missing target`);
+        definition = this.getVariable(targetName);
+      }
+      if (!definition) {
+        if (reference.name.includes(syntax.prefix) || reference.name.includes(syntax.suffix) || reference.name.startsWith('=') || parseVariableTextCaseMarker(reference.name) || parseVariableSelector(reference.name).selector) throw new Error(`Input '${reference.name}' needs an explicitly named property Variable Link before promotion`);
+        if (!file || !Object.prototype.hasOwnProperty.call(fm, reference.name)) throw new Error(`Missing property '${reference.name}' in this note`);
+        if (reference.name === name) throw new Error('The computed variable name conflicts with one of its inputs');
+        definition = { guid: this.createGuid(), type: 'property', file: `[[${file.path.replace(/\.md$/iu, '')}]]`, property: reference.name };
+        additions.set(reference.name, definition);
+      }
+      if (!definition.guid) throw new Error(`Input '${reference.name}' has no stable ID`);
+      inputs.push({ name: reference.name, targetName: targetName!, guid: definition.guid, selector: formatVariableSelector(shortcut?.selector) || undefined, shortcut: shortcut ? JSON.parse(JSON.stringify(shortcut)) as VariableShortcut : undefined });
+    }
+    return { name, expression: expression.trim(), sourcePath, additions: [...additions].map(([inputName, definition]) => ({ name: inputName, definition })), inputs };
+  }
+
+  async promoteInlineExpression(plan: InlinePromotionPlan): Promise<void> {
+    const { name, expression, sourcePath, inputs } = plan;
+    const additions = new Map(plan.additions.map((entry) => [entry.name, entry.definition]));
+    if (additions.size) {
+      const file = this.app.vault.getFileByPath(sourcePath);
+      const fm = file ? this.plugin.resolver?.extractFrontmatter(await this.app.vault.read(file)) ?? {} : {};
+      for (const inputName of additions.keys()) if (!Object.prototype.hasOwnProperty.call(fm, inputName)) throw new Error(`Property '${inputName}' changed after the review; review again`);
+    }
+    await this.mutateRegistryDocument((document) => {
+      const links = this.isRecord(document['variable-links']) ? document['variable-links'] : {};
+      document['variable-links'] = links;
+      const shortcuts = normalizeVariableShortcuts(document.shortcuts);
+      if (Object.prototype.hasOwnProperty.call(links, name)) throw new Error('That name was created while the promotion dialog was open');
+      for (const [inputName] of additions) if (Object.prototype.hasOwnProperty.call(links, inputName)) throw new Error(`Input '${inputName}' was created elsewhere; reopen the promotion dialog`);
+      for (const input of inputs) {
+        const shortcut = shortcuts.find((candidate) => candidate.enabled && candidate.code.toLocaleLowerCase() === input.name.toLocaleLowerCase());
+        if (input.shortcut) {
+          if (Object.prototype.hasOwnProperty.call(links, input.name) || !shortcut || shortcut.targetGuid !== input.guid || formatVariableSelector(shortcut.selector) !== (input.selector ?? '')) throw new Error(`Shortcut '${input.name}' changed after the review; review again`);
+        } else if (additions.has(input.name) && shortcut) throw new Error(`Input '${input.name}' now has a shortcut; review again`);
+        if (additions.has(input.name)) continue;
+        const current = links[input.targetName];
+        if (!this.isRecord(current) || current.guid !== input.guid) throw new Error(`Input '${input.name}' changed after the review; review again`);
+      }
+      const dependencies: ComputedDependency[] = inputs.map(({ name: inputName, guid, selector }) => ({ name: inputName, guid, selector }));
+      for (const [inputName, definition] of additions) links[inputName] = definition;
+      links[name] = { guid: this.createGuid(), type: 'computed', file: '', property: '', expression, dependencies };
+    });
+    await this.load();
+    await this.plugin.indexer?.build();
+    await this.plugin.tokenCache?.rebuild();
+    this.plugin.livePreviewRenderer?.refresh();
+    await this.plugin.refreshManagementCenterViews();
+  }
+
+  private findListKeyRenames(
+    previous: readonly VariableListItem[] | undefined,
+    next: readonly VariableListItem[] | undefined,
+  ): Array<{ newKey: string; oldKey: string }> {
+    if (!previous?.length || !next?.length) return [];
+    const previousById = new Map(previous.map((item) => [item.id, item]));
+    return next.flatMap((item) => {
+      const oldKey = previousById.get(item.id)?.key?.trim();
+      const newKey = item.key?.trim();
+      return oldKey && newKey && oldKey.toLocaleLowerCase() !== newKey.toLocaleLowerCase()
+        ? [{ oldKey, newKey }]
+        : [];
+    });
+  }
+
+  private findRemovedListKeys(
+    previous: readonly VariableListItem[] | undefined,
+    next: readonly VariableListItem[] | undefined,
+  ): string[] {
+    if (!previous?.length) return [];
+    const nextIds = new Set((next ?? []).map((item) => item.id));
+    return previous.flatMap((item) =>
+      !nextIds.has(item.id) && item.key?.trim() ? [item.key.trim()] : []
+    );
+  }
+
+  private renameShortcutSelectorKeys(
+    shortcuts: readonly VariableShortcut[],
+    targetGuid: string,
+    renames: readonly { newKey: string; oldKey: string }[],
+  ): VariableShortcut[] {
+    const replacements = new Map(renames.map(({ oldKey, newKey }) => [
+      oldKey.toLocaleLowerCase(),
+      newKey,
+    ]));
+    return shortcuts.map((shortcut) => {
+      if (shortcut.targetGuid !== targetGuid || !shortcut.selector) return shortcut;
+      const selector: VariableSelector = {
+        steps: shortcut.selector.steps.map((step) => {
+          if (step.type !== 'item') return step;
+          const key = replacements.get(step.key.toLocaleLowerCase());
+          return key ? { type: 'item' as const, key } : step;
+        }),
+      };
+      return { ...shortcut, selector };
+    });
   }
 
   async renameVariables(renames: readonly VariableRename[]): Promise<VariableRenameResult> {
@@ -830,6 +1258,9 @@ export class Registry {
       }
       if (parseVariableTextCaseMarker(rename.newName)) {
         throw new Error(`“${rename.newName}” resembles reserved token text-case syntax. Rename it individually instead.`);
+      }
+      if (parseVariableSelector(rename.newName).selector) {
+        throw new Error(`“${rename.newName}” resembles reserved selector-pipeline syntax. Rename it individually instead.`);
       }
     }
     for (const { newName } of normalized) {
@@ -917,8 +1348,14 @@ export class Registry {
     const guids = variableNames
       .map((name) => this.data.get(name)?.guid)
       .filter((guid): guid is string => Boolean(guid));
-    await this.mutateRegistryLinks((links) => {
+    await this.mutateRegistryDocument((registry) => {
+      const links = this.isRecord(registry['variable-links']) ? registry['variable-links'] : {};
+      registry['variable-links'] = links;
       for (const variableName of variableNames) delete links[variableName];
+      registry.shortcuts = serializeVariableShortcuts(
+        normalizeVariableShortcuts(registry.shortcuts)
+          .filter((shortcut) => !guids.includes(shortcut.targetGuid)),
+      );
     });
     try {
       await this.load();
@@ -957,9 +1394,12 @@ export class Registry {
     return variableNames.length;
   }
 
-  private confirmReservedTextCaseName(variableName: string): Promise<boolean> {
+  private confirmReservedVariableName(
+    variableName: string,
+    syntaxKind: 'selector' | 'text-case',
+  ): Promise<boolean> {
     return new Promise((resolve) => {
-      new ReservedTextCaseNameModal(this.plugin, variableName, resolve).open();
+      new ReservedVariableNameModal(this.plugin, variableName, syntaxKind, resolve).open();
     });
   }
 
@@ -1077,6 +1517,34 @@ export class Registry {
     return undefined;
   }
 
+  private normalizeDefinition(raw: Record<string, unknown>, guid = typeof raw.guid === 'string' ? raw.guid.trim() : ''): VariableDefinition {
+    return {
+      guid,
+      type: raw.type === 'fixed' || raw.type === 'computed' ? raw.type : 'property',
+      file: typeof raw.file === 'string' ? raw.file : '',
+      property: typeof raw.property === 'string' ? raw.property : '',
+      value: this.toFixedValue(raw.value),
+      shape: raw.shape === 'single' || raw.shape === 'list' ? raw.shape : undefined,
+      fixedItems: Array.isArray(raw.fixedItems) ? normalizeVariableListItems(raw.fixedItems) : undefined,
+      propertyItems: Array.isArray(raw.propertyItems) ? normalizeVariableListItems(raw.propertyItems) : undefined,
+      hidden: raw.hidden === true,
+      link: typeof raw.link === 'string' ? raw.link : undefined,
+      linkEnabled: raw.linkEnabled !== false,
+      display: typeof raw.display === 'string' ? raw.display : undefined,
+      textCase: normalizeVariableTextCase(raw.textCase),
+      favorite: raw.favorite === true,
+      appearance: normalizeVariableAppearance(raw.appearance),
+      customAppearance: normalizeVariableAppearance(raw.customAppearance),
+      card: this.toCardConfig(raw.card),
+      format: typeof raw.format === 'string' ? raw.format : undefined,
+      managed: normalizeManagedAutolinkEntry(raw.managed),
+      expression: typeof raw.expression === 'string' ? raw.expression : undefined,
+      dependencies: normalizeComputedDependencies(raw.dependencies),
+      precision: normalizeComputedPrecision(raw.precision),
+      temporal: normalizeTemporalValue(raw.temporal),
+    };
+  }
+
   private isRegistryDocument(value: unknown): value is Record<string, unknown> {
     return this.isRecord(value) && this.isRecord(value['variable-links']);
   }
@@ -1116,3 +1584,28 @@ export class Registry {
 }
 
 export default Registry;
+
+function createStableId(): string {
+  if (typeof window.crypto?.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
+    const random = Math.random() * 16 | 0;
+    return (character === 'x' ? random : (random & 0x3 | 0x8)).toString(16);
+  });
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toListItemText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  if (value === null || value === undefined) return '';
+  try {
+    return JSON.stringify(value) ?? '';
+  } catch {
+    return '';
+  }
+}

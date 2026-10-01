@@ -30,4 +30,18 @@ export default defineConfig(
     },
   },
   ...obsidianmd.configs.recommended,
+  {
+    files: ['tests/**/*.ts'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'off',
+      'obsidianmd/no-nodejs-modules': 'off',
+      // Node host tests install DOM globals; there is no Obsidian window here.
+      'obsidianmd/no-global-this': 'off',
+    },
+  },
 );

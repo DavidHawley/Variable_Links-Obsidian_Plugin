@@ -1,6 +1,6 @@
 {
   "name": "variable-links",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "description": "Obsidian plugin Variable Links",
   "license": "MIT",
   "repository": {
@@ -13,6 +13,7 @@
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
     "lint": "eslint .",
+    "test": "tsx --test tests/**/*.test.ts",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
   },
   "devDependencies": {
@@ -27,6 +28,7 @@
     "globals": "^17.11.0",
     "jiti": "^2.7.0",
     "obsidian": "^1.13.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.67.0"
   },

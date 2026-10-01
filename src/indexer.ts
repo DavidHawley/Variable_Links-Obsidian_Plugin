@@ -26,7 +26,7 @@ export class Indexer {
 
     for (const [name, def] of Array.from(this.registry.data.entries())) {
       const type = getVariableType(def);
-      const filePath = this.normalizeFile(type === 'fixed' ? def.link : def.file);
+      const filePath = this.normalizeFile(type === 'property' ? def.file : def.link);
       const entry: VariableIndexEntry = { name, def, filePath };
       this.byName.set(name, entry);
 

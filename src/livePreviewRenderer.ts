@@ -1,4 +1,4 @@
-import { App, Editor, editorLivePreviewField, MarkdownView } from 'obsidian';
+import { App, Editor, editorInfoField, editorLivePreviewField, MarkdownView } from 'obsidian';
 import { syntaxTree } from '@codemirror/language';
 import { EditorState, Extension, RangeSetBuilder, StateEffect } from '@codemirror/state';
 import {
@@ -10,9 +10,15 @@ import {
   WidgetType,
 } from '@codemirror/view';
 import Resolver from './resolver';
+import { resolutionErrorText } from './resolutionError';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 import { isCompleteVariableCreationExpression } from './creationSyntax';
-import { findVariableTokens, getRecognizedTokenSyntaxes } from './tokenSyntax';
+import {
+  findVariableTokens,
+  formatVariableSelector,
+  getRecognizedTokenSyntaxes,
+  type VariableSelector,
+} from './tokenSyntax';
 import { applyVariableTextCase, type VariableTextCase } from './textCase';
 const refreshVariableLinks = StateEffect.define<void>();
 
@@ -128,19 +134,22 @@ export default class LivePreviewRenderer {
     const renderVariable = (
       name: string,
       textCase: VariableTextCase | undefined,
+      selector: VariableSelector | undefined,
       el: HTMLElement,
     ): void => {
-      void this.resolveInto(name, textCase, el);
+      void this.resolveInto(name, textCase, selector, el);
     };
 
     class VariableWidget extends WidgetType {
       constructor(
         private readonly name: string,
         private readonly textCase: VariableTextCase | undefined,
+        private readonly selector: VariableSelector | undefined,
         private readonly revision: number,
         private readonly render: (
           name: string,
           textCase: VariableTextCase | undefined,
+          selector: VariableSelector | undefined,
           el: HTMLElement,
         ) => void,
       ) {
@@ -150,16 +159,18 @@ export default class LivePreviewRenderer {
       eq(other: VariableWidget): boolean {
         return other.name === this.name
           && other.textCase === this.textCase
+          && formatVariableSelector(other.selector) === formatVariableSelector(this.selector)
           && other.revision === this.revision;
       }
 
-      toDOM(): HTMLElement {
+      toDOM(view: EditorView): HTMLElement {
         const el = createSpan({
           cls: 'variable-links-token variable-links-token-live-preview',
           text: '…',
         });
         el.dataset.var = this.name;
-        this.render(this.name, this.textCase, el);
+        el.dataset.sourcePath = view.state.field(editorInfoField, false)?.file?.path ?? '';
+        this.render(this.name, this.textCase, this.selector, el);
         return el;
       }
 
@@ -197,7 +208,13 @@ export default class LivePreviewRenderer {
           if (selection.from <= to && selection.to >= from) continue;
           if (!shouldRenderToken(view.state, from, to)) continue;
           builder.add(from, to, Decoration.replace({
-            widget: new VariableWidget(name, match.textCase, this.revision, renderVariable),
+            widget: new VariableWidget(
+              name,
+              match.textCase,
+              match.selector,
+              this.revision,
+              renderVariable,
+            ),
           }));
         }
       }
@@ -232,20 +249,29 @@ export default class LivePreviewRenderer {
   private async resolveInto(
     name: string,
     tokenTextCase: VariableTextCase | undefined,
+    selector: VariableSelector | undefined,
     el: HTMLElement,
   ): Promise<void> {
+    const definition = this.resolver.registry.getVariable(name);
+    if (definition?.hidden) {
+      el.textContent = '&';
+      el.classList.add('is-hidden-value');
+      el.setAttribute('aria-label', `Hidden Variable Link: ${name}`);
+      el.setAttribute('data-tooltip-position', 'top');
+      return;
+    }
     applyVariableAppearance(
       el,
       getEffectiveVariableAppearance(
-        this.resolver.registry.getVariable(name)?.appearance,
+        definition?.appearance,
         this.resolver.registry.plugin.settings,
       ),
     );
     try {
-      const result = await this.resolver.resolve(name);
+      const result = await this.resolver.resolve(name, selector, el.dataset.sourcePath);
       if (!this.active) return;
       if (!result.ok) {
-        el.textContent = `[Missing: ${name}]`;
+        el.textContent = resolutionErrorText(name, definition);
         el.classList.add('missing');
         el.title = result.error ?? '';
         return;
@@ -255,11 +281,11 @@ export default class LivePreviewRenderer {
         : String(result.value);
       el.textContent = applyVariableTextCase(
         value,
-        tokenTextCase ?? this.resolver.registry.getVariable(name)?.textCase,
+        tokenTextCase ?? definition?.textCase,
       );
     } catch {
       if (!this.active) return;
-      el.textContent = `[Missing: ${name}]`;
+      el.textContent = resolutionErrorText(name, definition);
       el.classList.add('missing');
     }
   }

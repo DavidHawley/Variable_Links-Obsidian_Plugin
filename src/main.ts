@@ -1,6 +1,7 @@
 import {
   Editor,
   EditorPosition,
+  MarkdownView,
   Menu,
   MenuItem,
   Notice,
@@ -25,6 +26,9 @@ import LivePreviewRenderer, { isProtectedMarkdownRange } from './livePreviewRend
 import { Registry } from './registry';
 import Renderer from './renderer';
 import Resolver from './resolver';
+import { resolutionErrorText } from './resolutionError';
+import { QuickVariableEditor } from './quickEdit';
+import { InlineExpressionEditor, editorExpressionTarget, readingExpressionTarget } from './inlineEdit';
 import {
   DEFAULT_SETTINGS,
   normalizeInfoCardEditorCollapsedItems,
@@ -39,12 +43,14 @@ import TokenCache from './tokenCache';
 import {
   canRepresentVariableTextCase,
   findVariableTokens,
+  formatVariableSelector,
   formatVariableToken,
   getRecognizedTokenSyntaxes,
   getTokenSyntax,
   normalizeLegacyTokenSyntaxes,
   normalizeTokenDelimiter,
   type TokenSyntax,
+  type VariableSelector,
 } from './tokenSyntax';
 import {
   applyVariableTextCase,
@@ -82,6 +88,7 @@ interface VariableTokenContext {
   to: EditorPosition;
   syntax: TokenSyntax;
   textCase?: VariableTextCase;
+  selector?: VariableSelector;
 }
 
 interface CloseableDialog {
@@ -98,6 +105,7 @@ interface MarkdownTokenMatch {
   end: number;
   name: string;
   textCase?: VariableTextCase;
+  selector?: VariableSelector;
 }
 
 interface CapturedTimeEditorExpression {
@@ -119,6 +127,7 @@ export default class VariableLinksPlugin extends Plugin {
   caretTracker: CaretTracker | null = null;
 
   private active = false;
+  private sourceRefreshTimer: number | null = null;
   private timers = new Set<number>();
   private contextMenuCleanups: Array<() => void> = [];
   private lastContextClick: ContextClick | null = null;
@@ -151,9 +160,19 @@ export default class VariableLinksPlugin extends Plugin {
       }));
 
       this.resolver = new Resolver(this.app, this.registry);
+      this.registerEvent(this.app.metadataCache.on('changed', () => {
+        if (this.sourceRefreshTimer !== null) {
+          window.clearTimeout(this.sourceRefreshTimer);
+          this.timers.delete(this.sourceRefreshTimer);
+        }
+        this.sourceRefreshTimer = this.schedule(() => {
+          this.sourceRefreshTimer = null;
+          this.livePreviewRenderer?.refresh();
+        }, 120);
+      }));
       this.renderer = new Renderer(this.app, this.registry, this.resolver, this.indexer);
-      this.registerMarkdownPostProcessor(async (element) => {
-        if (this.renderer) await this.renderer.processElement(element);
+      this.registerMarkdownPostProcessor(async (element, context) => {
+        if (this.renderer) await this.renderer.processElement(element, context.sourcePath, (section) => context.getSectionInfo(section));
       });
 
       this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver);
@@ -172,6 +191,45 @@ export default class VariableLinksPlugin extends Plugin {
         name: 'Open variable properties',
         callback: () => void this.openVariableProperties(),
       });
+      for (const inspector of [false, true]) this.addCommand({
+        id: inspector ? 'inspect-variable-at-cursor' : 'quick-edit-variable-at-cursor',
+        name: inspector ? 'Open compact inspector for variable at cursor' : 'Quick-edit variable at cursor',
+        editorCheckCallback: (checking, editor, info) => {
+          const token = this.getVariableAtPosition(editor, editor.getCursor());
+          if (!token || (!this.registry?.getVariable(token.name) && !token.name.startsWith('='))) return false;
+          if (!checking) {
+            if (this.registry?.getVariable(token.name)) this.openQuickVariableEditor(token.name, inspector);
+            else if (info.file) this.openInlineEditor(editor, token, info.file.path);
+          }
+          return true;
+        },
+      });
+      this.registerDomEvent(document, 'mousedown', (event) => {
+        if (!event.altKey || event.button !== 0) return;
+        const token = event.target instanceof Element ? event.target.closest<HTMLElement>('.variable-links-token[data-var]') : null;
+        const name = token?.dataset.var;
+        if (!token || !name) return;
+        if (!this.registry?.getVariable(name)) {
+          if (!name.startsWith('=')) return;
+          const view = this.app.workspace.getLeavesOfType('markdown').map(({ view }) => view).find((view) => view instanceof MarkdownView && view.contentEl.contains(token));
+          if (!(view instanceof MarkdownView) || !view.file) return;
+          const cm = (view.editor as EditorWithCoordinates).cm;
+          const offset = cm && token.hasClass('variable-links-token-live-preview') ? cm.posAtDOM(token) : undefined;
+          const context = typeof offset === 'number' ? this.getVariableAtPosition(view.editor, view.editor.offsetToPos(offset), name) : null;
+          if (!context) { new Notice('Open this note in editing mode to edit its inline expression'); return; }
+          event.preventDefault(); event.stopImmediatePropagation();
+          this.openInlineEditor(view.editor, context, view.file.path);
+          return;
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.openQuickVariableEditor(name, event.shiftKey, token);
+      }, true);
+      this.registerDomEvent(document, 'click', (event) => {
+        if (event.altKey && event.target instanceof Element && event.target.closest('.variable-links-token')) {
+          event.preventDefault(); event.stopImmediatePropagation();
+        }
+      }, true);
       this.registerView(
         managementModule.VIEW_TYPE_MANAGEMENT_CENTER,
         (leaf) => new managementModule.ManagementCenterView(leaf, this),
@@ -279,6 +337,42 @@ export default class VariableLinksPlugin extends Plugin {
       return;
     }
     this.openDialogs.add(dialog);
+  }
+
+  openQuickVariableEditor(name: string, inspector = false, anchor?: HTMLElement): void {
+    new QuickVariableEditor(this, name, inspector, anchor).open();
+  }
+
+  private openInlineEditor(editor: Editor, token: VariableTokenContext, sourcePath: string, promotionMode = false): void {
+    new InlineExpressionEditor(this, editorExpressionTarget(editor, token.from, token.to, sourcePath, token.syntax), token.name.slice(1), promotionMode).open();
+  }
+
+  private async openReadingInlineEditor(name: string, anchor: HTMLElement): Promise<void> {
+    try {
+      const file = this.app.vault.getFileByPath(anchor.dataset.sourcePath ?? '');
+      if (!file || !this.tokenCache) throw new Error('The source note is unavailable. Open the original note to convert this expression.');
+      const original = await this.app.vault.read(file);
+      if (!this.active) return;
+      const startLine = Number(anchor.dataset.sourceLineStart);
+      const endLine = Number(anchor.dataset.sourceLineEnd);
+      const candidates = this.tokenCache.getInlineExpressionOccurrences(original, name)
+        .filter((entry) => !Number.isFinite(startLine) || !Number.isFinite(endLine) || (entry.line >= startLine && entry.line <= endLine));
+      if (!candidates.length) throw new Error('The expression changed or its source location is unavailable. Reopen the note.');
+      const open = (entry: typeof candidates[number]): void => {
+        new InlineExpressionEditor(this, readingExpressionTarget(this.app, file, original, entry.start, entry.end, entry.syntax), name.slice(1), true).open();
+      };
+      if (candidates.length === 1) { open(candidates[0]); return; }
+      // Identical expressions in one rendered section require an explicit choice.
+      const menu = new Menu();
+      const lines = original.split(/\r\n|\n|\r/u);
+      for (const entry of candidates) menu.addItem((item) => item
+        .setTitle(`Line ${entry.line}, column ${entry.ch}: ${(lines[entry.line - 1] ?? '').trim().slice(0, 100)}`)
+        .onClick(() => open(entry)));
+      const bounds = anchor.getBoundingClientRect();
+      menu.showAtPosition({ x: bounds.left, y: bounds.bottom });
+    } catch (error) {
+      new Notice(`Variable links: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   releaseDialog(dialog: CloseableDialog): void {
@@ -423,6 +517,9 @@ export default class VariableLinksPlugin extends Plugin {
       suggestionFuzzy: typeof saved.suggestionFuzzy === 'boolean'
         ? saved.suggestionFuzzy
         : DEFAULT_SETTINGS.suggestionFuzzy,
+      showSuggestionSearchHint: typeof saved.showSuggestionSearchHint === 'boolean'
+        ? saved.showSuggestionSearchHint
+        : DEFAULT_SETTINGS.showSuggestionSearchHint,
       defaultDateFormat: typeof saved.defaultDateFormat === 'string'
         ? saved.defaultDateFormat
         : DEFAULT_SETTINGS.defaultDateFormat,
@@ -610,6 +707,19 @@ export default class VariableLinksPlugin extends Plugin {
       });
     }
     await this.app.workspace.revealLeaf(leaf);
+  }
+
+  async openShortcutEditor(variableName: string, selector?: VariableSelector): Promise<void> {
+    if (!this.active) return;
+    await this.openManagementCenter();
+    const managementModule = await import('./managementCenter');
+    if (!this.active) return;
+    const leaf = this.app.workspace
+      .getLeavesOfType(managementModule.VIEW_TYPE_MANAGEMENT_CENTER)[0];
+    if (leaf?.view instanceof managementModule.ManagementCenterView) {
+      leaf.view.showActivity('shortcuts');
+      leaf.view.openShortcutEditor(variableName, selector);
+    }
   }
 
   async openCombinedAutolinkPreview(
@@ -881,9 +991,25 @@ export default class VariableLinksPlugin extends Plugin {
         target: event.target instanceof Element ? event.target : null,
         time: Date.now(),
       };
+      const readingToken = event.target instanceof Element ? event.target.closest<HTMLElement>('.variable-links-token-reading[data-var]') : null;
+      const name = readingToken?.dataset.var;
+      if (readingToken && name && !this.registry?.getVariable(name) && name.startsWith('=')) {
+        event.preventDefault(); event.stopPropagation();
+        const menu = new Menu();
+        menu.addItem((item) => item.setTitle('Make into variable link').setIcon('braces')
+          .onClick(() => void this.openReadingInlineEditor(name, readingToken)));
+        menu.showAtMouseEvent(event);
+      } else if (readingToken && name && this.registry?.getVariable(name)) {
+        event.preventDefault(); event.stopPropagation();
+        const menu = new Menu();
+        menu.addItem((item) => item.setTitle('Quick edit').setIcon('pencil').onClick(() => this.openQuickVariableEditor(name, false, readingToken)));
+        menu.addItem((item) => item.setTitle('Compact inspector').setIcon('list').onClick(() => this.openQuickVariableEditor(name, true, readingToken)));
+        menu.addItem((item) => item.setTitle('Full variable properties').setIcon('settings').onClick(() => void this.openVariableProperties(name)));
+        menu.showAtMouseEvent(event);
+      }
     }, true);
 
-    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor) => {
+    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, info) => {
       if (!this.active) return;
       this.clearContextMenuResources();
       const insertionPosition = this.getContextEditorPosition(editor);
@@ -892,6 +1018,11 @@ export default class VariableLinksPlugin extends Plugin {
       const variableName = tokenContext?.name ?? null;
       const insideVariableToken = tokenContext !== null;
       const definition = variableName ? this.registry?.getVariable(variableName) : null;
+      if (tokenContext && !definition && variableName?.startsWith('=') && info.file) {
+        const sourcePath = info.file.path;
+        menu.addItem((item) => item.setTitle('Make into variable link').setIcon('braces')
+          .onClick(() => this.openInlineEditor(editor, tokenContext, sourcePath, true)));
+      }
       const favorites = Array.from(this.registry?.data.entries() ?? [])
         .filter(([, item]) => item.favorite)
         .map(([name]) => name)
@@ -910,6 +1041,12 @@ export default class VariableLinksPlugin extends Plugin {
         }
 
         const submenu = parentItem.setSubmenu();
+        for (const inspector of [false, true]) submenu.addItem((item) => {
+          const inline = Boolean(variableName?.startsWith('=') && !definition && info.file);
+          item.setTitle(inspector ? 'Compact inspector' : 'Quick edit').setIcon('pencil').setDisabled(!definition && !inline);
+          if (definition && variableName) item.onClick(() => this.openQuickVariableEditor(variableName, inspector));
+          else if (inline && tokenContext && info.file) item.onClick(() => this.openInlineEditor(editor, tokenContext, info.file!.path));
+        });
         submenu.addItem((item) => {
           item.setTitle('Properties').setIcon('list').setDisabled(!variableName);
           if (variableName) item.onClick(() => void this.openVariableProperties(variableName));
@@ -1050,6 +1187,7 @@ export default class VariableLinksPlugin extends Plugin {
           tokenContext.name,
           textCase,
           (name) => Boolean(this.registry?.getVariable(name)),
+          tokenContext.selector,
         );
         submenu.addItem((caseItem) => {
           caseItem
@@ -1095,6 +1233,7 @@ export default class VariableLinksPlugin extends Plugin {
         to: { line: position.line, ch: match.end },
         syntax: match.syntax,
         textCase: match.textCase,
+        selector: match.selector,
       };
       if (position.ch >= match.start && position.ch <= match.end) return token;
       if (expectedName) matchingTokens.push(token);
@@ -1142,6 +1281,7 @@ export default class VariableLinksPlugin extends Plugin {
       variableName,
       getTokenSyntax(this.settings),
       tokenContext.textCase,
+      tokenContext.selector,
     );
     editor.replaceRange(token, tokenContext.from, tokenContext.to);
     editor.setCursor({
@@ -1160,13 +1300,22 @@ export default class VariableLinksPlugin extends Plugin {
       tokenContext.name,
       textCase,
       (name) => Boolean(this.registry?.getVariable(name)),
+      tokenContext.selector,
     );
     if (!representable) {
-      const conflictingName = wrapVariableNameWithTextCase(tokenContext.name, textCase);
+      const conflictingName = wrapVariableNameWithTextCase(
+        `${tokenContext.name}${formatVariableSelector(tokenContext.selector)}`,
+        textCase,
+      );
       new Notice(`Variable links: cannot apply this text case because ${conflictingName} conflicts with an existing variable name.`);
       return;
     }
-    const token = formatVariableToken(tokenContext.name, tokenContext.syntax, textCase);
+    const token = formatVariableToken(
+      tokenContext.name,
+      tokenContext.syntax,
+      textCase,
+      tokenContext.selector,
+    );
     editor.replaceRange(token, tokenContext.from, tokenContext.to);
     editor.setCursor({
       line: tokenContext.from.line,
@@ -1186,10 +1335,10 @@ export default class VariableLinksPlugin extends Plugin {
     const matches = this.findMarkdownTokenMatches(source);
     const cache = new Map<string, Promise<string>>();
     const replacements = await Promise.all(matches.map((match) => {
-      const cacheKey = `${match.name}\u0000${match.textCase ?? ''}`;
+      const cacheKey = `${match.name}\u0000${match.textCase ?? ''}\u0000${formatVariableSelector(match.selector)}`;
       let replacement = cache.get(cacheKey);
       if (!replacement) {
-        replacement = this.renderCopiedVariableMarkdown(match.name, match.textCase);
+        replacement = this.renderCopiedVariableMarkdown(match.name, match.textCase, match.selector);
         cache.set(cacheKey, replacement);
       }
       return replacement;
@@ -1257,18 +1406,19 @@ export default class VariableLinksPlugin extends Plugin {
   private async renderCopiedVariableMarkdown(
     variableName: string,
     tokenTextCase?: VariableTextCase,
+    selector?: VariableSelector,
   ): Promise<string> {
     const definition = this.registry?.getVariable(variableName);
-    const result = await this.resolver?.resolve(variableName).catch(() => null);
+    const result = await this.resolver?.resolve(variableName, selector, this.app.workspace.getActiveFile()?.path).catch(() => null);
     const rawValue = result?.ok
       ? this.formatCopiedValue(result.value)
-      : `[Missing: ${variableName}]`;
+      : resolutionErrorText(variableName, definition);
     const value = result?.ok
       ? applyVariableTextCase(rawValue, tokenTextCase ?? definition?.textCase)
       : rawValue;
     const explicitLink = filePathFromLink(definition?.link ?? '');
     const resolvedLink = result?.sourceFile?.path.replace(/\.md$/i, '') ?? '';
-    const link = explicitLink || resolvedLink;
+    const link = definition?.linkEnabled === false ? '' : explicitLink || resolvedLink;
     let markdown = link
       ? `[[${this.escapeWikiLinkPart(link)}|${this.escapeWikiLinkPart(value)}]]`
       : this.escapeMarkdownText(value);

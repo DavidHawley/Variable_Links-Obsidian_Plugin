@@ -1,11 +1,13 @@
 import { App, EventRef, Plugin, TAbstractFile, TFile } from 'obsidian';
 import Registry from './registry';
+import { parseComputedExpression, rewriteComputedReferences } from './computed';
 import {
   findVariableTokens,
   formatVariableToken,
   getRecognizedTokenSyntaxes,
   tokenSyntaxEquals,
   type TokenSyntax,
+  type VariableSelector,
 } from './tokenSyntax';
 import { applyVariableTextCase, type VariableTextCase } from './textCase';
 
@@ -24,6 +26,7 @@ type Occurrence = {
   ch: number;
   syntax: TokenSyntax;
   textCase?: VariableTextCase;
+  selector?: VariableSelector;
 };
 type MarkdownProtectionState = {
   htmlComment: boolean;
@@ -55,6 +58,11 @@ export interface TokenRename {
   guid: string;
   newName: string;
   oldName: string;
+}
+
+export interface SelectorKeyRename {
+  newKey: string;
+  oldKey: string;
 }
 
 export interface TokenRenamePlan {
@@ -157,13 +165,15 @@ export default class TokenCache {
     if (!this.active) return { fileCount: 0, tokenCount: 0 };
     await this.synchronize(true);
     const files = new Set<string>();
-    let tokenCount = 0;
+    const tokens = new Set<string>();
     for (const guid of new Set(guids)) {
       const locations = this.data.tokens[guid]?.locations ?? [];
-      tokenCount += locations.length;
-      for (const location of locations) files.add(location.file);
+      for (const location of locations) {
+        files.add(location.file);
+        tokens.add(JSON.stringify([location.file, location.line, location.ch]));
+      }
     }
-    return { fileCount: files.size, tokenCount };
+    return { fileCount: files.size, tokenCount: tokens.size };
   }
 
   async prepareValueReplacement(
@@ -258,6 +268,102 @@ export default class TokenCache {
     return this.prepareBulkRename([{ guid, oldName, newName }]);
   }
 
+  async prepareSelectorKeyRenames(
+    guid: string,
+    variableName: string,
+    renames: readonly SelectorKeyRename[],
+  ): Promise<TokenRenamePlan> {
+    if (!this.active) throw new Error('The token cache is not active.');
+    await this.synchronize(true);
+    const replacements = new Map(renames.map(({ oldKey, newKey }) => [
+      oldKey.toLocaleLowerCase(),
+      newKey,
+    ]));
+    const paths = new Set((this.data.tokens[guid]?.locations ?? []).map(({ file }) => file));
+    const changes: Array<{
+      file: TFile;
+      original: string;
+      updated: string;
+      tokenCount: number;
+    }> = [];
+    for (const path of paths) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) continue;
+      const original = await this.app.vault.read(file);
+      const occurrences = this.findTokens(original).filter((occurrence) =>
+        occurrence.name === variableName
+        && occurrence.selector?.steps.some((step) =>
+          step.type === 'item' && replacements.has(step.key.toLocaleLowerCase())
+        )
+      );
+      if (!occurrences.length) continue;
+      let updated = original;
+      for (const occurrence of occurrences.reverse()) {
+        if (!occurrence.selector) continue;
+        const selector: VariableSelector = {
+          steps: occurrence.selector.steps.map((step) => {
+            if (step.type !== 'item') return step;
+            const key = replacements.get(step.key.toLocaleLowerCase());
+            return key ? { type: 'item' as const, key } : step;
+          }),
+        };
+        const token = formatVariableToken(
+          variableName,
+          occurrence.syntax,
+          occurrence.textCase,
+          selector,
+        );
+        updated = updated.slice(0, occurrence.start) + token + updated.slice(occurrence.end);
+      }
+      changes.push({ file, original, updated, tokenCount: occurrences.length });
+    }
+    const applied: typeof changes = [];
+    const rollback = async (): Promise<void> => {
+      const conflicts: string[] = [];
+      for (const change of [...applied].reverse()) {
+        await this.app.vault.process(change.file, (current) => {
+          if (current === change.updated) return change.original;
+          conflicts.push(change.file.path);
+          return current;
+        });
+      }
+      applied.length = 0;
+      await this.rebuild();
+      if (conflicts.length) {
+        throw new Error(`Could not restore ${conflicts.length} note${conflicts.length === 1 ? '' : 's'} because they changed during list-key renaming.`);
+      }
+    };
+    const apply = async (): Promise<void> => {
+      try {
+        for (const change of changes) {
+          await this.app.vault.process(change.file, (current) => {
+            if (current !== change.original) {
+              throw new Error(`${change.file.path} changed after list-key renaming was prepared.`);
+            }
+            return change.updated;
+          });
+          applied.push(change);
+        }
+      } catch (error) {
+        await rollback();
+        throw error;
+      }
+    };
+    const commit = async (): Promise<void> => {
+      for (const change of applied) await this.indexFile(change.file);
+      applied.length = 0;
+      this.syncTokenNames();
+      await this.persist();
+    };
+    return {
+      fileCount: changes.length,
+      tokenCount: changes.reduce((total, change) => total + change.tokenCount, 0),
+      apply,
+      rollback,
+      commit,
+    };
+  }
+
   async prepareBulkRename(renames: readonly TokenRename[]): Promise<TokenRenamePlan> {
     if (!this.active) throw new Error('The token cache is not active.');
     await this.synchronize(true);
@@ -278,13 +384,25 @@ export default class TokenCache {
       if (!(abstractFile instanceof TFile)) continue;
       const original = await this.app.vault.read(abstractFile);
       const occurrences = this.findTokens(original)
-        .filter((occurrence) => replacements.has(occurrence.name));
+        .filter((occurrence) => {
+          if (replacements.has(occurrence.name)) return true;
+          if (!occurrence.name.startsWith('=') || this.registry.getVariable(occurrence.name)) return false;
+          try { return parseComputedExpression(occurrence.name.slice(1)).references.some(({ name }) => replacements.has(name)); }
+          catch { return false; }
+        });
       if (!occurrences.length) continue;
       let updated = original;
       for (const occurrence of occurrences.reverse()) {
-        const replacement = replacements.get(occurrence.name);
+        const replacement = occurrence.name.startsWith('=') && !this.registry.getVariable(occurrence.name)
+          ? `=${rewriteComputedReferences(occurrence.name.slice(1), replacements)}`
+          : replacements.get(occurrence.name);
         if (!replacement) continue;
-        const token = formatVariableToken(replacement, occurrence.syntax, occurrence.textCase);
+        const token = formatVariableToken(
+          replacement,
+          occurrence.syntax,
+          occurrence.textCase,
+          occurrence.selector,
+        );
         updated = updated.slice(0, occurrence.start) + token + updated.slice(occurrence.end);
       }
       changes.push({ file: abstractFile, original, updated, tokenCount: occurrences.length });
@@ -354,10 +472,9 @@ export default class TokenCache {
     await this.synchronize(true);
     if (!this.active) throw new Error('The token cache stopped during migration preparation.');
 
-    const paths = new Set<string>();
-    for (const token of Object.values(this.data.tokens)) {
-      for (const location of token.locations) paths.add(location.file);
-    }
+    // Note-local calculations need no registered GUID, so their notes cannot be
+    // discovered through dependency locations alone. Scan the verified file cache.
+    const paths = new Set(Object.keys(this.data.files));
     const changes: Array<{
       file: TFile;
       original: string;
@@ -370,13 +487,21 @@ export default class TokenCache {
       const original = await this.app.vault.read(abstractFile);
       const occurrences = this.findTokens(original, [previousSyntax]).filter((occurrence) => {
         const definition = this.registry.getVariable(occurrence.name);
-        return Boolean(definition?.guid);
+        return Boolean(definition?.guid) || (!definition && occurrence.name.startsWith('='));
       });
       if (!occurrences.length) continue;
       let updated = original;
       for (const occurrence of occurrences.reverse()) {
+        if (occurrence.name.includes(nextSyntax.prefix) || occurrence.name.includes(nextSyntax.suffix)) {
+          throw new Error(`${abstractFile.path} contains a token that cannot use the proposed delimiters. Choose different delimiters or edit that token before migrating.`);
+        }
         updated = updated.slice(0, occurrence.start)
-          + formatVariableToken(occurrence.name, nextSyntax, occurrence.textCase)
+          + formatVariableToken(
+            occurrence.name,
+            nextSyntax,
+            occurrence.textCase,
+            occurrence.selector,
+          )
           + updated.slice(occurrence.end);
       }
       changes.push({
@@ -465,16 +590,23 @@ export default class TokenCache {
     if (!this.isCurrent(generation)) return;
     this.removeFile(file.path);
     for (const occurrence of this.findTokens(content)) {
-      const definition = this.registry.getVariable(occurrence.name);
-      if (!definition?.guid) continue;
-      const token = this.data.tokens[definition.guid] || {
-        guid: definition.guid,
-        name: occurrence.name,
-        locations: []
-      };
-      token.name = occurrence.name;
-      token.locations.push({ file: file.path, line: occurrence.line, ch: occurrence.ch });
-      this.data.tokens[definition.guid] = token;
+      let names = [occurrence.name];
+      if (occurrence.name.startsWith('=') && !this.registry.getVariable(occurrence.name)) {
+        try { names = parseComputedExpression(occurrence.name.slice(1)).references.map(({ name }) => name); }
+        catch { names = []; }
+      }
+      for (const name of names) {
+        const definition = this.registry.getVariable(name);
+        if (!definition?.guid) continue;
+        const token = this.data.tokens[definition.guid] || {
+          guid: definition.guid,
+          name,
+          locations: []
+        };
+        token.name = name;
+        token.locations.push({ file: file.path, line: occurrence.line, ch: occurrence.ch });
+        this.data.tokens[definition.guid] = token;
+      }
     }
     const stat = file.stat;
     this.data.files[file.path] = { mtime: stat.mtime || 0, size: stat.size || content.length };
@@ -497,6 +629,11 @@ export default class TokenCache {
       this.data.tokens[definition.guid] = token;
     }
     for (const guid of Object.keys(this.data.tokens)) if (!validGuids.has(guid)) delete this.data.tokens[guid];
+  }
+
+  getInlineExpressionOccurrences(content: string, name: string): Occurrence[] {
+    if (!name.startsWith('=') || this.registry.getVariable(name)) return [];
+    return this.findTokens(content).filter((occurrence) => occurrence.name === name);
   }
 
   private findTokens(
@@ -562,6 +699,7 @@ export default class TokenCache {
             ch: tokenMatch.start + 1,
             syntax: tokenMatch.syntax,
             textCase: tokenMatch.textCase,
+            selector: tokenMatch.selector,
           });
         }
         const endState = this.scanMarkdownProtection(
