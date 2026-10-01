@@ -310,6 +310,8 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.4.0
 
+> **Scope closed:** The user confirmed the implemented features and smoke tests on October 1, 2026, and requested release preparation. Keep further feature additions and editor redesigns for a later update. The approved additions below are included in this release; publication remains pending.
+
 > **Planning gate:** Review the expression syntax, date arithmetic rules, error behavior, and direct-editing safeguards before their implementation begins. Keep computed values declarative and understandable, use a safe parser rather than executable JavaScript, and build direct editing on the Management Center and validation systems introduced in 1.3.
 
 ### Hidden values, list selectors, and suggestion shortcuts
@@ -370,6 +372,8 @@ This document records planned improvements to Variable Links. Plans may change a
 - Store a canonical temporal value together with its display format so arithmetic does not depend on reparsing formatted text.
 - Use the same date/time parser for Date, Time, and Date-time values; those types differ only in their default format and initial entry behavior.
 - Support pipeline arithmetic such as `{{date::add(2M,3d,2h,15m)}}` and `{{date::sub(2M,3d,2h,15m)}}`.
+- Support the same adjustments while capturing a Date, Time, or Date-time variable, including `{{due=DATE::add(7d)}}`; save the adjusted canonical value and insert a plain named token.
+- Accept compact duration amounts such as `3M5m` alongside comma-separated amounts in creation expressions and date/time selectors.
 - Use unambiguous, case-sensitive units: `y` years, `M` months, `w` weeks, `d` days, `h` hours, `m` minutes, and `s` seconds.
 - Apply years and months as calendar operations with end-of-month clamping, then apply smaller durations in a documented order. Define local-time and daylight-saving behavior explicitly.
 - Keep a compact expression such as `@date + 2M` inside a stored Computed value as a later extension after the canonical `add` and `sub` pipeline is stable.
@@ -377,6 +381,7 @@ This document records planned improvements to Variable Links. Plans may change a
 - Evaluate an inline expression without requiring the user to create and name a permanent Computed variable first. Keep it note-local by default, and provide an explicit action to save or promote it to a permanent Computed variable when reuse is wanted.
 - Resolve inline-expression references against existing Variable Links first. When no Variable Link exists and the current note has an exact matching frontmatter property, bind that property as a note-local input automatically so simple calculations do not require three preliminary Property-variable registrations.
 - Do not silently add note-local bindings to the global registry. Report missing or ambiguous inputs clearly, preserve dependency and circular-reference safeguards, and require explicit confirmation before saving generated bindings as permanent Variable Links.
+- Suggest an unused permanent name for inline-expression promotion and provide a right-click Make into variable link action in editing mode and Reading View, while requiring review and explicit creation.
 - Integrate computed and adjusted values with Live Preview, Reading View, Cards, Copy Markdown, hidden values, shortcuts, token caching, registry reloads, and dependency updates.
 
 #### Computed-value testing
@@ -397,6 +402,7 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ### Direct Management Center editing
 
+- Provide Alt/Option-click quick value editing and Shift+Alt/Option-click compact inspectors, with context-menu actions and assignable commands for values, expressions, and note-property mappings.
 - Extend the 1.3 Variable Link management view with direct editing while preserving its compact single-line collapsed rows.
 - Allow safe, simple values such as Display name and Favorite to be edited inline.
 - Provide an expandable row inspector or adjacent detail editor for variable type, source note, property, fixed value, file link, default text case, appearance, Card, and Autolink ownership information.
