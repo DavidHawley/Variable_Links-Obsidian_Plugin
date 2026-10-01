@@ -3,6 +3,7 @@ import {
   wrapVariableNameWithTextCase,
   type VariableTextCase,
 } from './textCase';
+import { parseDuration, type DurationPart } from './temporal';
 
 export interface TokenSyntax {
   prefix: string;
@@ -19,6 +20,8 @@ export interface VariableTokenMatch {
 }
 
 export type VariableSelectorStep =
+  | { type: 'add'; parts: DurationPart[] }
+  | { type: 'sub'; parts: DurationPart[] }
   | { type: 'index'; index: number }
   | { type: 'item'; key: string }
   | { type: 'word'; indexes: number[] }
@@ -229,6 +232,7 @@ function interpretVariableTokenName(
   exactNameExists?: (name: string) => boolean,
 ): { name: string; textCase?: VariableTextCase; selector?: VariableSelector } {
   if (exactNameExists?.(rawName)) return { name: rawName };
+  if (rawName.startsWith('=')) return { name: rawName };
   const parsed = parseVariableTextCaseMarker(rawName, exactNameExists);
   const selected = parseVariableSelector(parsed?.name ?? rawName, exactNameExists);
   return {
@@ -264,6 +268,11 @@ export function parseVariableSelector(
 
 export function parseVariableSelectorStep(value: string): VariableSelectorStep | null {
   const source = value.trim();
+  const temporal = source.match(/^(add|sub)\(([^()]*)\)$/u);
+  if (temporal) {
+    try { return { type: temporal[1] as 'add' | 'sub', parts: parseDuration(temporal[2]) }; }
+    catch { return null; }
+  }
   const item = source.match(/^item\(([\p{L}\p{N}_-]+)\)$/u);
   if (item?.[1]) return { type: 'item', key: item[1] };
   const operation = source.match(/^(index|word|char|upper|lower)\(([^()]*)\)$/u);
@@ -304,6 +313,7 @@ function parseVariableSelectorSteps(value: string): VariableSelectorStep[] | nul
 
 function formatVariableSelectorStep(step: VariableSelectorStep): string {
   switch (step.type) {
+    case 'add': case 'sub': return `::${step.type}(${step.parts.map((part) => `${part.amount}${part.unit}`).join(',')})`;
     case 'index': return `::index(${step.index})`;
     case 'item': return `::item(${step.key})`;
     case 'word': return `::word(${step.indexes.join(',')})`;

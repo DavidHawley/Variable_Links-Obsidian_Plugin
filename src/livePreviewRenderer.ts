@@ -1,4 +1,4 @@
-import { App, Editor, editorLivePreviewField, MarkdownView } from 'obsidian';
+import { App, Editor, editorInfoField, editorLivePreviewField, MarkdownView } from 'obsidian';
 import { syntaxTree } from '@codemirror/language';
 import { EditorState, Extension, RangeSetBuilder, StateEffect } from '@codemirror/state';
 import {
@@ -10,6 +10,7 @@ import {
   WidgetType,
 } from '@codemirror/view';
 import Resolver from './resolver';
+import { resolutionErrorText } from './resolutionError';
 import { applyVariableAppearance, getEffectiveVariableAppearance } from './appearance';
 import { isCompleteVariableCreationExpression } from './creationSyntax';
 import {
@@ -162,12 +163,13 @@ export default class LivePreviewRenderer {
           && other.revision === this.revision;
       }
 
-      toDOM(): HTMLElement {
+      toDOM(view: EditorView): HTMLElement {
         const el = createSpan({
           cls: 'variable-links-token variable-links-token-live-preview',
           text: '…',
         });
         el.dataset.var = this.name;
+        el.dataset.sourcePath = view.state.field(editorInfoField, false)?.file?.path ?? '';
         this.render(this.name, this.textCase, this.selector, el);
         return el;
       }
@@ -266,10 +268,10 @@ export default class LivePreviewRenderer {
       ),
     );
     try {
-      const result = await this.resolver.resolve(name, selector);
+      const result = await this.resolver.resolve(name, selector, el.dataset.sourcePath);
       if (!this.active) return;
       if (!result.ok) {
-        el.textContent = `[Missing: ${name}]`;
+        el.textContent = resolutionErrorText(name, definition);
         el.classList.add('missing');
         el.title = result.error ?? '';
         return;
@@ -283,7 +285,7 @@ export default class LivePreviewRenderer {
       );
     } catch {
       if (!this.active) return;
-      el.textContent = `[Missing: ${name}]`;
+      el.textContent = resolutionErrorText(name, definition);
       el.classList.add('missing');
     }
   }

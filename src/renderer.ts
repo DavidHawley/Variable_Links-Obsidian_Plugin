@@ -1,6 +1,7 @@
 import { App, MarkdownView } from 'obsidian';
 import Registry, { getVariableType } from './registry';
 import Resolver from './resolver';
+import { resolutionErrorText } from './resolutionError';
 import Indexer from './indexer';
 import InfoCard from './card';
 import { filePathFromLink } from './linkSyntax';
@@ -59,7 +60,7 @@ export class Renderer {
     document.addEventListener('mousemove', this.mouseMoveHandler);
   }
 
-  async processElement(el: HTMLElement): Promise<void> {
+  async processElement(el: HTMLElement, sourcePath?: string): Promise<void> {
     if (!this.enabled) return;
     const syntaxes = getRecognizedTokenSyntaxes(this.registry.plugin.settings);
     // Walk text nodes and replace Variable Link token occurrences.
@@ -102,6 +103,7 @@ export class Renderer {
         placeholder.className = 'variable-links-token variable-links-token-reading';
         placeholder.textContent = '…';
         placeholder.dataset.var = varName;
+        if (sourcePath) placeholder.dataset.sourcePath = sourcePath;
         if (definition?.hidden) {
           placeholder.textContent = '';
           placeholder.classList.add('is-hidden-value');
@@ -125,6 +127,7 @@ export class Renderer {
             placeholder,
             match.textCase,
             match.selector,
+            sourcePath,
           ));
         }
 
@@ -179,10 +182,12 @@ export class Renderer {
 
   private async onClick(event: MouseEvent): Promise<void> {
     if (!this.enabled) return;
+    if (event.altKey) return;
     const token = this.readingTokenFromEvent(event);
     const name = token?.dataset.var?.trim();
     if (!token || !name) return;
     const definition = this.registry.getVariable(name);
+    if (definition?.linkEnabled === false) return;
     const fileLinkTarget = filePathFromLink(definition?.link ?? '');
     if (fileLinkTarget) {
       await this.app.workspace.openLinkText(
@@ -296,12 +301,13 @@ export class Renderer {
     placeholder: HTMLElement,
     tokenTextCase?: VariableTextCase,
     selector?: VariableSelector,
+    sourcePath?: string,
   ): Promise<void> {
     try {
-      const result = await this.resolver.resolve(variableName, selector);
+      const result = await this.resolver.resolve(variableName, selector, sourcePath);
       if (!this.enabled) return;
       if (!result.ok) {
-        placeholder.textContent = `[Missing: ${variableName}]`;
+        placeholder.textContent = resolutionErrorText(variableName, this.registry.getVariable(variableName));
         placeholder.classList.add('missing');
         placeholder.title = result.error ?? 'Unknown error';
         return;
@@ -315,7 +321,7 @@ export class Renderer {
       );
     } catch {
       if (!this.enabled) return;
-      placeholder.textContent = `[Missing: ${variableName}]`;
+      placeholder.textContent = resolutionErrorText(variableName, this.registry.getVariable(variableName));
       placeholder.classList.add('missing');
     }
   }
@@ -330,9 +336,9 @@ export class Renderer {
     const definition = this.registry.getVariable(name);
     if (!definition?.card || !getActiveCardBlocks(definition.card).length) return;
     if (state.livePreview && definition.card.disableLivePreviewHover) return;
-    const rawSource = getVariableType(definition) === 'fixed'
-      ? definition.link ?? ''
-      : definition.file;
+    const rawSource = getVariableType(definition) === 'property'
+      ? definition.file
+      : definition.link ?? '';
     const filePath = filePathFromLink(rawSource);
     const sourcePath = filePath ? `${filePath}.md` : '';
     const card = sourcePath

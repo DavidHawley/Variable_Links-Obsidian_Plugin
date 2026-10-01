@@ -16,6 +16,7 @@ import Registry, {
   type VariableType,
 } from './registry';
 import Resolver from './resolver';
+import { createTemporalValue, type TemporalValue } from './temporal';
 import {
   automaticCapturedTimeNameBase,
   capturedTimeShortcutLabel,
@@ -82,6 +83,7 @@ interface SuggestItem {
   creationError?: string;
   captureType?: CapturedTimeShortcut;
   captureFormat?: string;
+  temporal?: TemporalValue;
   searchMode?: SuggestionSearchMode;
   shortcutCode?: string;
   helpVariant?: 'opening' | 'full';
@@ -144,6 +146,9 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   async getSuggestions(context: EditorSuggestContext): Promise<SuggestItem[]> {
     const generation = ++this.suggestionGeneration;
     const search = parseSuggestionSearchMode(context.query);
+    if (context.query.trimStart().startsWith('=') && !this.registry.getVariable(context.query.trim())) {
+      return [{ name: '', kind: 'mode-message', message: 'Inline expression: use @name or var("name"). Inputs use Variable Links first, then this note’s properties. Close the token to calculate; quick-edit opens a preview.' }];
+    }
     if (context.query.length === 0) {
       return this.registry.plugin.settings.showSuggestionSearchHint
         ? this.getSearchHelpItems('opening')
@@ -352,6 +357,8 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
       : item.kind === 'variable'
       ? item.selector
         ? `${formatVariableSelector(item.selector)}${item.value !== undefined ? ` · ${item.value}` : ''}`
+        : item.variableType === 'computed'
+        ? `Computed value${item.hidden ? ' · Hidden' : ''}${item.file ? ` · ${item.file}` : ''}`
         : item.variableType === 'fixed'
         ? `${item.variableShape === 'list' ? 'Fixed list' : 'Fixed value'}${item.hidden ? ' · Hidden' : ''}${item.file ? ` · ${item.file}` : ''}`
         : `${item.variableShape === 'list' ? 'Property list' : 'Property value'}${item.hidden ? ' · Hidden' : ''} · ${item.file ?? ''}${item.property ? ` • ${item.property}` : ''}`
@@ -769,6 +776,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
             : 'The automatic name conflicts with the active token format. Use Name=DATE, Name=TIME, or Name=DATETIME.';
         }
         const formatted = formatCapturedDateTime(capturedAt, format);
+        const canonical = formatCapturedDateTime(capturedAt, type === 'date' ? 'YYYY-MM-DD' : 'HH:mm:ss.SSS');
         if (!creationError && !formatted.ok) creationError = formatted.error;
         return {
           name,
@@ -777,6 +785,11 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
           value: formatted.ok ? formatted.value : '',
           captureType: type,
           captureFormat: format,
+          temporal: formatted.ok && canonical.ok ? createTemporalValue(
+            type === 'datetime' ? capturedAt.toISOString()
+              : canonical.value,
+            type, format,
+          ) : undefined,
           creationError: creationError || undefined,
           textCase,
         };
@@ -809,6 +822,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
         file: '',
         property: '',
         value: item.value ?? '',
+        temporal: item.temporal,
         link: toFileLink(file.path),
       });
     } catch (error) {
@@ -1020,6 +1034,7 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
   }
 
   private selectorStepLabel(step: VariableSelectorStep): string {
+    if (step.type === 'add' || step.type === 'sub') return `${step.type === 'add' ? 'Add' : 'Subtract'} ${step.parts.map((part) => `${part.amount}${part.unit}`).join(', ')}`;
     if (step.type === 'item') return `Item ${step.key}`;
     if (step.type === 'index') return `Item ${step.index}`;
     if (step.type === 'word') return `Word${step.indexes.length === 1 ? '' : 's'} ${step.indexes.join(', ')}`;

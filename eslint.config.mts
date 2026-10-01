@@ -30,4 +30,16 @@ export default defineConfig(
     },
   },
   ...obsidianmd.configs.recommended,
+  {
+    files: ['tests/**/*.ts'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'off',
+      'obsidianmd/no-nodejs-modules': 'off',
+    },
+  },
 );

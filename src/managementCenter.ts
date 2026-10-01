@@ -8,6 +8,7 @@ import {
   type ViewStateResult,
 } from 'obsidian';
 import type VariableLinksPlugin from './main';
+import { BulkVariableFlagsEditor } from './quickEdit';
 import {
   getVariableShape,
   getVariableType,
@@ -39,7 +40,7 @@ type ManagementActivity = 'variables' | 'shortcuts';
 type MassRenameMode = 'prefix' | 'suffix' | 'replace' | 'pattern' | 'profile-pattern';
 type RenameWordSelection = 'whole' | 'first' | 'last' | 'custom';
 type OwnershipFilter = 'all' | 'manual' | 'managed';
-type VariableTypeFilter = 'all' | 'property' | 'fixed';
+type VariableTypeFilter = 'all' | 'property' | 'fixed' | 'computed';
 type VariableSort = 'name-ascending' | 'name-descending' | 'type' | 'source' | 'property' | 'profile';
 type ManagementPageSize = 20 | 50 | 100 | 250 | 'all';
 
@@ -92,6 +93,8 @@ const DEFAULT_STATE: ManagementCenterState = {
 };
 
 export class ManagementCenterView extends ItemView {
+  private displayDrafts = new Map<string, { value: string; original: string }>();
+  private readonly displaySaves = new Set<string>();
   private active = false;
   private selectionAnchorKey: string | null = null;
   private state: ManagementCenterState = { ...DEFAULT_STATE };
@@ -228,7 +231,7 @@ export class ManagementCenterView extends ItemView {
     const variableType = this.addSelect(
       controls,
       'Variable type',
-      [['all', 'All types'], ['property', 'Property'], ['fixed', 'Fixed value']],
+      [['all', 'All types'], ['property', 'Property'], ['fixed', 'Fixed value'], ['computed', 'Computed value']],
       this.state.variableType,
     );
     const sort = this.addSelect(
@@ -270,6 +273,11 @@ export class ManagementCenterView extends ItemView {
       text: 'Delete selected',
       cls: 'mod-warning',
       attr: { type: 'button' },
+    });
+    bulkActions.createEl('button', { text: 'Edit selected' }).addEventListener('click', () => {
+      const selected = this.getEntries().filter(({ key }) => this.state.selected.includes(key));
+      if (!selected.length) { new Notice('Select variables first'); return; }
+      new BulkVariableFlagsEditor(this.plugin, selected).open();
     });
     deleteSelected.addEventListener('click', () => {
       void this.confirmBulkDelete(entries);
@@ -439,7 +447,7 @@ export class ManagementCenterView extends ItemView {
       const range = visible.length
         ? `${firstIndex + 1}–${firstIndex + pageEntries.length}`
         : '0';
-      status.setText(`Showing ${range} of ${visible.length} matching · ${selected.size} selected`);
+      status.setText(`Showing ${range} of ${visible.length} matching · ${selected.size} selected${this.displayDrafts.size ? ` · ${this.displayDrafts.size} unsaved display name(s)` : ''}`);
       renameSelected.disabled = selected.size === 0;
       renameSelected.setText(selected.size ? `Rename selected (${selected.size})` : 'Rename selected');
       deleteSelected.disabled = selected.size === 0;
@@ -525,6 +533,18 @@ export class ManagementCenterView extends ItemView {
         attr: { title: sourceText },
       });
       const badges = row.createDiv({ cls: 'variable-links-management-center-badges' });
+      const favorite = badges.createEl('input', { type: 'checkbox', attr: { 'aria-label': `Favorite ${entry.name}`, title: 'Favorite' } });
+      favorite.checked = entry.definition.favorite === true;
+      favorite.addEventListener('change', () => {
+        const registry = this.plugin.registry;
+        const current = entry.definition.guid ? registry?.getVariableByGuid(entry.definition.guid) : null;
+        if (!registry || !current) return;
+        favorite.disabled = true;
+        void registry.saveVariable(current.name, { ...current.definition, favorite: favorite.checked }, current.name, current.definition).catch((error: unknown) => {
+          favorite.checked = !favorite.checked;
+          new Notice(getErrorMessage(error));
+        }).finally(() => { favorite.disabled = false; });
+      });
       badges.createSpan({
         text: this.getVariableTypeLabel(entry.definition),
         cls: 'variable-links-management-center-badge',
@@ -543,6 +563,61 @@ export class ManagementCenterView extends ItemView {
       }
 
       const actions = row.createDiv({ cls: 'variable-links-management-center-actions' });
+      const inspect = actions.createEl('button', { cls: 'clickable-icon', attr: { type: 'button', 'aria-label': `Edit ${entry.name}`, title: 'Compact inspector' } });
+      setIcon(inspect, 'pencil');
+      inspect.addEventListener('click', () => this.plugin.openQuickVariableEditor(entry.name, true, inspect));
+      const displayEdit = actions.createEl('button', { cls: 'clickable-icon', attr: { type: 'button', 'aria-label': `Edit display name for ${entry.name}`, title: 'Edit display name inline' } });
+      setIcon(displayEdit, 'text-cursor-input');
+      const displayEditor = list.createDiv({ cls: 'variable-links-management-display-editor' });
+      displayEditor.hidden = !this.displayDrafts.has(entry.key);
+      const displayInput = displayEditor.createEl('input', { type: 'text', attr: { 'aria-label': `Display name for ${entry.name}` } });
+      displayInput.value = this.displayDrafts.get(entry.key)?.value ?? entry.definition.display ?? '';
+      displayInput.addEventListener('input', () => {
+        const draft = this.displayDrafts.get(entry.key);
+        this.displayDrafts.set(entry.key, { value: displayInput.value, original: draft?.original ?? entry.definition.display ?? '' });
+        updateStatus();
+      });
+      displayEdit.addEventListener('click', () => {
+        if (!this.displayDrafts.has(entry.key)) this.displayDrafts.set(entry.key, { value: displayInput.value, original: entry.definition.display ?? '' });
+        displayEditor.hidden = false;
+        displayInput.focus();
+        updateStatus();
+      });
+      const saveDisplay = displayEditor.createEl('button', { text: 'Save display name' });
+      const cancelDisplay = (): void => {
+        this.displayDrafts.delete(entry.key);
+        displayEditor.hidden = true;
+        displayInput.value = entry.definition.display ?? '';
+        updateStatus();
+      };
+      const cancelDisplayButton = displayEditor.createEl('button', { text: 'Cancel' });
+      cancelDisplayButton.addEventListener('click', () => { if (!this.displaySaves.has(entry.key)) cancelDisplay(); });
+      for (const control of [displayInput, saveDisplay, cancelDisplayButton]) control.disabled = this.displaySaves.has(entry.key);
+      const commitDisplay = async (): Promise<void> => {
+        if (this.displaySaves.has(entry.key)) return;
+        const registry = this.plugin.registry;
+        const current = entry.definition.guid ? registry?.getVariableByGuid(entry.definition.guid) : null;
+        const draft = this.displayDrafts.get(entry.key);
+        if (!registry || !current || !draft) return;
+        this.displaySaves.add(entry.key);
+        for (const control of [displayInput, saveDisplay, cancelDisplayButton]) control.disabled = true;
+        try {
+          if ((current.definition.display ?? '') !== draft.original) throw new Error('The display name changed elsewhere. Cancel and reopen its editor.');
+          await registry.saveVariable(current.name, { ...current.definition, display: draft.value }, current.name, current.definition);
+          this.displayDrafts.delete(entry.key);
+        } catch (error) {
+          this.displayDrafts.set(entry.key, draft);
+          new Notice(getErrorMessage(error));
+        } finally {
+          this.displaySaves.delete(entry.key);
+          this.refresh();
+        }
+      };
+      saveDisplay.addEventListener('click', () => void commitDisplay());
+      displayInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); void commitDisplay(); }
+        if (event.key === 'Escape') { event.preventDefault(); cancelDisplay(); }
+      });
       const edit = actions.createEl('button', {
         cls: 'clickable-icon',
         attr: { type: 'button', 'aria-label': `Open settings for ${entry.name}` },
@@ -632,7 +707,9 @@ export class ManagementCenterView extends ItemView {
   }
 
   private getSourceText(definition: VariableDefinition): string {
-    if (getVariableType(definition) === 'fixed') {
+    const type = getVariableType(definition);
+    if (type === 'computed') return definition.expression ?? '';
+    if (type === 'fixed') {
       return getVariableShape(definition) === 'list'
         ? (definition.fixedItems ?? []).map((item) => item.value).join(', ')
         : definition.value ?? '';
@@ -841,7 +918,9 @@ export class ManagementCenterView extends ItemView {
 
   private getVariableTypeLabel(definition: VariableDefinition): string {
     const list = getVariableShape(definition) === 'list';
-    if (getVariableType(definition) === 'fixed') return list ? 'Fixed list' : 'Fixed value';
+    const type = getVariableType(definition);
+    if (type === 'computed') return 'Computed value';
+    if (type === 'fixed') return list ? 'Fixed list' : 'Fixed value';
     return list ? 'Property list' : 'Property';
   }
 
@@ -2095,7 +2174,7 @@ function readRenameWordSelection(value: unknown): RenameWordSelection {
 }
 
 function readVariableTypeFilter(value: unknown): VariableTypeFilter {
-  return value === 'property' || value === 'fixed' ? value : 'all';
+  return value === 'property' || value === 'fixed' || value === 'computed' ? value : 'all';
 }
 
 function readVariableSort(value: unknown): VariableSort {

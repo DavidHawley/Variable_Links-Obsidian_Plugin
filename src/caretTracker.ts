@@ -88,7 +88,7 @@ export default class CaretTracker {
     const token = this.findTokenAtIndex(text, caretIndex);
     if (!token) return;
 
-    const result = await this.resolver.resolve(token.name, token.selector);
+    const result = await this.resolver.resolve(token.name, token.selector, view.file?.path);
     if (!this.running || this.generation !== generation) return;
     this.lastTouched = {
       name: token.name,

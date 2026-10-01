@@ -29,6 +29,9 @@ jobs:
       - name: Lint source
         run: npm run lint
 
+      - name: Run tests
+        run: npm test
+
       - name: Validate release tag
         shell: bash
         run: |

@@ -1,6 +1,7 @@
 import {
   Editor,
   EditorPosition,
+  MarkdownView,
   Menu,
   MenuItem,
   Notice,
@@ -25,6 +26,9 @@ import LivePreviewRenderer, { isProtectedMarkdownRange } from './livePreviewRend
 import { Registry } from './registry';
 import Renderer from './renderer';
 import Resolver from './resolver';
+import { resolutionErrorText } from './resolutionError';
+import { QuickVariableEditor } from './quickEdit';
+import { InlineExpressionEditor } from './inlineEdit';
 import {
   DEFAULT_SETTINGS,
   normalizeInfoCardEditorCollapsedItems,
@@ -123,6 +127,7 @@ export default class VariableLinksPlugin extends Plugin {
   caretTracker: CaretTracker | null = null;
 
   private active = false;
+  private sourceRefreshTimer: number | null = null;
   private timers = new Set<number>();
   private contextMenuCleanups: Array<() => void> = [];
   private lastContextClick: ContextClick | null = null;
@@ -155,9 +160,19 @@ export default class VariableLinksPlugin extends Plugin {
       }));
 
       this.resolver = new Resolver(this.app, this.registry);
+      this.registerEvent(this.app.metadataCache.on('changed', () => {
+        if (this.sourceRefreshTimer !== null) {
+          window.clearTimeout(this.sourceRefreshTimer);
+          this.timers.delete(this.sourceRefreshTimer);
+        }
+        this.sourceRefreshTimer = this.schedule(() => {
+          this.sourceRefreshTimer = null;
+          this.livePreviewRenderer?.refresh();
+        }, 120);
+      }));
       this.renderer = new Renderer(this.app, this.registry, this.resolver, this.indexer);
-      this.registerMarkdownPostProcessor(async (element) => {
-        if (this.renderer) await this.renderer.processElement(element);
+      this.registerMarkdownPostProcessor(async (element, context) => {
+        if (this.renderer) await this.renderer.processElement(element, context.sourcePath);
       });
 
       this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver);
@@ -176,6 +191,45 @@ export default class VariableLinksPlugin extends Plugin {
         name: 'Open variable properties',
         callback: () => void this.openVariableProperties(),
       });
+      for (const inspector of [false, true]) this.addCommand({
+        id: inspector ? 'inspect-variable-at-cursor' : 'quick-edit-variable-at-cursor',
+        name: inspector ? 'Open compact inspector for variable at cursor' : 'Quick-edit variable at cursor',
+        editorCheckCallback: (checking, editor, info) => {
+          const token = this.getVariableAtPosition(editor, editor.getCursor());
+          if (!token || (!this.registry?.getVariable(token.name) && !token.name.startsWith('='))) return false;
+          if (!checking) {
+            if (this.registry?.getVariable(token.name)) this.openQuickVariableEditor(token.name, inspector);
+            else if (info.file) this.openInlineEditor(editor, token, info.file.path);
+          }
+          return true;
+        },
+      });
+      this.registerDomEvent(document, 'mousedown', (event) => {
+        if (!event.altKey || event.button !== 0) return;
+        const token = event.target instanceof Element ? event.target.closest<HTMLElement>('.variable-links-token[data-var]') : null;
+        const name = token?.dataset.var;
+        if (!token || !name) return;
+        if (!this.registry?.getVariable(name)) {
+          if (!name.startsWith('=')) return;
+          const view = this.app.workspace.getLeavesOfType('markdown').map(({ view }) => view).find((view) => view instanceof MarkdownView && view.contentEl.contains(token));
+          if (!(view instanceof MarkdownView) || !view.file) return;
+          const cm = (view.editor as EditorWithCoordinates).cm;
+          const offset = cm && token.hasClass('variable-links-token-live-preview') ? cm.posAtDOM(token) : undefined;
+          const context = typeof offset === 'number' ? this.getVariableAtPosition(view.editor, view.editor.offsetToPos(offset), name) : null;
+          if (!context) { new Notice('Open this note in editing mode to edit its inline expression'); return; }
+          event.preventDefault(); event.stopImmediatePropagation();
+          this.openInlineEditor(view.editor, context, view.file.path);
+          return;
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.openQuickVariableEditor(name, event.shiftKey, token);
+      }, true);
+      this.registerDomEvent(document, 'click', (event) => {
+        if (event.altKey && event.target instanceof Element && event.target.closest('.variable-links-token')) {
+          event.preventDefault(); event.stopImmediatePropagation();
+        }
+      }, true);
       this.registerView(
         managementModule.VIEW_TYPE_MANAGEMENT_CENTER,
         (leaf) => new managementModule.ManagementCenterView(leaf, this),
@@ -283,6 +337,14 @@ export default class VariableLinksPlugin extends Plugin {
       return;
     }
     this.openDialogs.add(dialog);
+  }
+
+  openQuickVariableEditor(name: string, inspector = false, anchor?: HTMLElement): void {
+    new QuickVariableEditor(this, name, inspector, anchor).open();
+  }
+
+  private openInlineEditor(editor: Editor, token: VariableTokenContext, sourcePath: string): void {
+    new InlineExpressionEditor(this, editor, token.from, token.to, editor.getRange(token.from, token.to), token.name.slice(1), sourcePath, token.syntax).open();
   }
 
   releaseDialog(dialog: CloseableDialog): void {
@@ -901,9 +963,19 @@ export default class VariableLinksPlugin extends Plugin {
         target: event.target instanceof Element ? event.target : null,
         time: Date.now(),
       };
+      const readingToken = event.target instanceof Element ? event.target.closest<HTMLElement>('.variable-links-token-reading[data-var]') : null;
+      const name = readingToken?.dataset.var;
+      if (readingToken && name && this.registry?.getVariable(name)) {
+        event.preventDefault(); event.stopPropagation();
+        const menu = new Menu();
+        menu.addItem((item) => item.setTitle('Quick edit').setIcon('pencil').onClick(() => this.openQuickVariableEditor(name, false, readingToken)));
+        menu.addItem((item) => item.setTitle('Compact inspector').setIcon('list').onClick(() => this.openQuickVariableEditor(name, true, readingToken)));
+        menu.addItem((item) => item.setTitle('Full variable properties').setIcon('settings').onClick(() => void this.openVariableProperties(name)));
+        menu.showAtMouseEvent(event);
+      }
     }, true);
 
-    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor) => {
+      this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, info) => {
       if (!this.active) return;
       this.clearContextMenuResources();
       const insertionPosition = this.getContextEditorPosition(editor);
@@ -930,6 +1002,12 @@ export default class VariableLinksPlugin extends Plugin {
         }
 
         const submenu = parentItem.setSubmenu();
+        for (const inspector of [false, true]) submenu.addItem((item) => {
+          const inline = Boolean(variableName?.startsWith('=') && !definition && info.file);
+          item.setTitle(inspector ? 'Compact inspector' : 'Quick edit').setIcon('pencil').setDisabled(!definition && !inline);
+          if (definition && variableName) item.onClick(() => this.openQuickVariableEditor(variableName, inspector));
+          else if (inline && tokenContext && info.file) item.onClick(() => this.openInlineEditor(editor, tokenContext, info.file!.path));
+        });
         submenu.addItem((item) => {
           item.setTitle('Properties').setIcon('list').setDisabled(!variableName);
           if (variableName) item.onClick(() => void this.openVariableProperties(variableName));
@@ -1292,16 +1370,16 @@ export default class VariableLinksPlugin extends Plugin {
     selector?: VariableSelector,
   ): Promise<string> {
     const definition = this.registry?.getVariable(variableName);
-    const result = await this.resolver?.resolve(variableName, selector).catch(() => null);
+    const result = await this.resolver?.resolve(variableName, selector, this.app.workspace.getActiveFile()?.path).catch(() => null);
     const rawValue = result?.ok
       ? this.formatCopiedValue(result.value)
-      : `[Missing: ${variableName}]`;
+      : resolutionErrorText(variableName, definition);
     const value = result?.ok
       ? applyVariableTextCase(rawValue, tokenTextCase ?? definition?.textCase)
       : rawValue;
     const explicitLink = filePathFromLink(definition?.link ?? '');
     const resolvedLink = result?.sourceFile?.path.replace(/\.md$/i, '') ?? '';
-    const link = explicitLink || resolvedLink;
+    const link = definition?.linkEnabled === false ? '' : explicitLink || resolvedLink;
     let markdown = link
       ? `[[${this.escapeWikiLinkPart(link)}|${this.escapeWikiLinkPart(value)}]]`
       : this.escapeMarkdownText(value);

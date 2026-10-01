@@ -1,5 +1,6 @@
 import { App, EventRef, Plugin, TAbstractFile, TFile } from 'obsidian';
 import Registry from './registry';
+import { parseComputedExpression, rewriteComputedReferences } from './computed';
 import {
   findVariableTokens,
   formatVariableToken,
@@ -164,13 +165,15 @@ export default class TokenCache {
     if (!this.active) return { fileCount: 0, tokenCount: 0 };
     await this.synchronize(true);
     const files = new Set<string>();
-    let tokenCount = 0;
+    const tokens = new Set<string>();
     for (const guid of new Set(guids)) {
       const locations = this.data.tokens[guid]?.locations ?? [];
-      tokenCount += locations.length;
-      for (const location of locations) files.add(location.file);
+      for (const location of locations) {
+        files.add(location.file);
+        tokens.add(JSON.stringify([location.file, location.line, location.ch]));
+      }
     }
-    return { fileCount: files.size, tokenCount };
+    return { fileCount: files.size, tokenCount: tokens.size };
   }
 
   async prepareValueReplacement(
@@ -381,11 +384,18 @@ export default class TokenCache {
       if (!(abstractFile instanceof TFile)) continue;
       const original = await this.app.vault.read(abstractFile);
       const occurrences = this.findTokens(original)
-        .filter((occurrence) => replacements.has(occurrence.name));
+        .filter((occurrence) => {
+          if (replacements.has(occurrence.name)) return true;
+          if (!occurrence.name.startsWith('=') || this.registry.getVariable(occurrence.name)) return false;
+          try { return parseComputedExpression(occurrence.name.slice(1)).references.some(({ name }) => replacements.has(name)); }
+          catch { return false; }
+        });
       if (!occurrences.length) continue;
       let updated = original;
       for (const occurrence of occurrences.reverse()) {
-        const replacement = replacements.get(occurrence.name);
+        const replacement = occurrence.name.startsWith('=') && !this.registry.getVariable(occurrence.name)
+          ? `=${rewriteComputedReferences(occurrence.name.slice(1), replacements)}`
+          : replacements.get(occurrence.name);
         if (!replacement) continue;
         const token = formatVariableToken(
           replacement,
@@ -462,10 +472,9 @@ export default class TokenCache {
     await this.synchronize(true);
     if (!this.active) throw new Error('The token cache stopped during migration preparation.');
 
-    const paths = new Set<string>();
-    for (const token of Object.values(this.data.tokens)) {
-      for (const location of token.locations) paths.add(location.file);
-    }
+    // Note-local calculations need no registered GUID, so their notes cannot be
+    // discovered through dependency locations alone. Scan the verified file cache.
+    const paths = new Set(Object.keys(this.data.files));
     const changes: Array<{
       file: TFile;
       original: string;
@@ -478,11 +487,14 @@ export default class TokenCache {
       const original = await this.app.vault.read(abstractFile);
       const occurrences = this.findTokens(original, [previousSyntax]).filter((occurrence) => {
         const definition = this.registry.getVariable(occurrence.name);
-        return Boolean(definition?.guid);
+        return Boolean(definition?.guid) || (!definition && occurrence.name.startsWith('='));
       });
       if (!occurrences.length) continue;
       let updated = original;
       for (const occurrence of occurrences.reverse()) {
+        if (occurrence.name.includes(nextSyntax.prefix) || occurrence.name.includes(nextSyntax.suffix)) {
+          throw new Error(`${abstractFile.path} contains a token that cannot use the proposed delimiters. Choose different delimiters or edit that token before migrating.`);
+        }
         updated = updated.slice(0, occurrence.start)
           + formatVariableToken(
             occurrence.name,
@@ -578,16 +590,23 @@ export default class TokenCache {
     if (!this.isCurrent(generation)) return;
     this.removeFile(file.path);
     for (const occurrence of this.findTokens(content)) {
-      const definition = this.registry.getVariable(occurrence.name);
-      if (!definition?.guid) continue;
-      const token = this.data.tokens[definition.guid] || {
-        guid: definition.guid,
-        name: occurrence.name,
-        locations: []
-      };
-      token.name = occurrence.name;
-      token.locations.push({ file: file.path, line: occurrence.line, ch: occurrence.ch });
-      this.data.tokens[definition.guid] = token;
+      let names = [occurrence.name];
+      if (occurrence.name.startsWith('=') && !this.registry.getVariable(occurrence.name)) {
+        try { names = parseComputedExpression(occurrence.name.slice(1)).references.map(({ name }) => name); }
+        catch { names = []; }
+      }
+      for (const name of names) {
+        const definition = this.registry.getVariable(name);
+        if (!definition?.guid) continue;
+        const token = this.data.tokens[definition.guid] || {
+          guid: definition.guid,
+          name,
+          locations: []
+        };
+        token.name = name;
+        token.locations.push({ file: file.path, line: occurrence.line, ch: occurrence.ch });
+        this.data.tokens[definition.guid] = token;
+      }
     }
     const stat = file.stat;
     this.data.files[file.path] = { mtime: stat.mtime || 0, size: stat.size || content.length };

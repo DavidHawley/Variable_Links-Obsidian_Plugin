@@ -54,6 +54,11 @@ import {
   type VariableType,
 } from './registry';
 import type { ResolveResult } from './resolver';
+import { resolutionErrorText } from './resolutionError';
+import { EditorDrafts } from './editorDrafts';
+import { valuesEqual } from './valueEditing';
+import { createTemporalValue, temporalInputText } from './temporal';
+import { defaultFormatForCapturedTime, type CapturedTimeShortcut } from './dateTime';
 import { formatVariableToken, getTokenSyntax } from './tokenSyntax';
 import {
   normalizeVariableTextCase,
@@ -67,9 +72,10 @@ const CREATE_FIXED_VALUE = 'create:fixed-single';
 const CREATE_FIXED_LIST = 'create:fixed-list';
 const CREATE_PROPERTY_VALUE = 'create:property-single';
 const CREATE_PROPERTY_LIST = 'create:property-list';
+const CREATE_COMPUTED = 'create:computed';
 const VARIABLE_OPTION_PREFIX = 'variable:';
 
-type VariableKind = 'fixed-single' | 'fixed-list' | 'property-single' | 'property-list';
+type VariableKind = 'fixed-single' | 'fixed-list' | 'property-single' | 'property-list' | 'computed';
 
 interface CardPropertyAppearanceClipboard {
   labelPosition?: CardPropertyEntry['labelPosition'];
@@ -92,6 +98,7 @@ interface CardAppearanceTarget {
 let cardAppearanceClipboard: CardAppearanceClipboard | null = null;
 
 function variableKindSource(kind: VariableKind): VariableType {
+  if (kind === 'computed') return 'computed';
   return kind.startsWith('fixed-') ? 'fixed' : 'property';
 }
 
@@ -100,6 +107,7 @@ function variableKindShape(kind: VariableKind): VariableShape {
 }
 
 function variableKindLabel(kind: VariableKind): string {
+  if (kind === 'computed') return 'Computed value';
   if (kind === 'fixed-list') return 'Fixed list';
   if (kind === 'property-list') return 'Note property list';
   if (kind === 'property-single') return 'Note property';
@@ -111,6 +119,7 @@ function getVariableKind(
   resolvedValue?: unknown,
 ): VariableKind {
   const type = getVariableType(definition);
+  if (type === 'computed') return 'computed';
   const shape = getVariableShape(definition)
     ?? (type === 'property' && Array.isArray(resolvedValue) ? 'list' : 'single');
   return `${type}-${shape}`;
@@ -125,6 +134,7 @@ function emptyDefinition(kind: VariableKind = 'property-single'): VariableDefini
     property: '',
     value: type === 'fixed' ? '' : undefined,
     fixedItems: kind === 'fixed-list' ? [createVariableListItem()] : undefined,
+    expression: type === 'computed' ? '' : undefined,
   };
 }
 
@@ -236,9 +246,12 @@ class ChangeVariableTypeModal extends Modal {
     this.contentEl.createEl('p', {
       text: `Change this variable from ${currentLabel} to ${nextLabel}?`,
     });
+    const nextSource = variableKindSource(this.nextType);
     this.contentEl.createEl('p', {
-      text: variableKindSource(this.nextType) === 'fixed'
+      text: nextSource === 'fixed'
         ? 'It will use data stored directly in the Variable Links registry after you save.'
+        : nextSource === 'computed'
+        ? 'It will calculate its displayed value from the saved expression after you save.'
         : 'It will read its displayed data from the configured note property after you save.',
     });
     this.contentEl.createEl('p', {
@@ -2090,6 +2103,7 @@ class InfoCardLayoutModal extends Modal {
 export class VariablePropertiesView extends ItemView {
   private panelContentEl: HTMLElement | null = null;
   private selectedVariableName: string | null = null;
+  private selectedVariableGuid: string | null = null;
   private active = false;
   private refreshGeneration = 0;
   private timers = new Set<number>();
@@ -2102,6 +2116,8 @@ export class VariablePropertiesView extends ItemView {
   private variableEditorOpen = true;
   private variableAppearanceOpen = true;
   private appearanceSettingsRefresh: (() => void) | null = null;
+  private readonly drafts = new EditorDrafts<HTMLElement>();
+  private draftStatus: HTMLElement | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -2139,6 +2155,8 @@ export class VariablePropertiesView extends ItemView {
 
   releasePluginResources(): void {
     this.active = false;
+    this.drafts.clear();
+    this.draftStatus = null;
     this.refreshGeneration++;
     this.appearanceSettingsRefresh = null;
     this.creationCompletion = null;
@@ -2152,10 +2170,12 @@ export class VariablePropertiesView extends ItemView {
   }
 
   async selectVariable(name: string): Promise<void> {
+    if (!this.canChangeSelection()) return;
     this.creatingVariableType = null;
     this.creatingVariableName = '';
     this.creationCompletion = null;
     this.selectedVariableName = name.trim() || null;
+    this.selectedVariableGuid = this.selectedVariableName ? this.plugin.registry?.getVariable(this.selectedVariableName)?.guid ?? null : null;
     await this.refresh();
   }
 
@@ -2164,10 +2184,14 @@ export class VariablePropertiesView extends ItemView {
     name: string,
     onSaved?: (savedName: string) => Promise<void> | void,
   ): Promise<void> {
-    this.creatingVariableType = type === 'fixed' ? 'fixed-single' : 'property-single';
+    if (!this.canChangeSelection()) return;
+    this.creatingVariableType = type === 'fixed'
+      ? 'fixed-single'
+      : type === 'computed' ? 'computed' : 'property-single';
     this.creatingVariableName = name.trim();
     this.creationCompletion = onSaved ?? null;
     this.selectedVariableName = null;
+    this.selectedVariableGuid = null;
     this.activeTab = 'link';
     await this.refresh();
   }
@@ -2180,6 +2204,15 @@ export class VariablePropertiesView extends ItemView {
     const container = this.panelContentEl;
     const registry = this.plugin.registry;
     if (!this.active || !container || !registry) return;
+    if (this.drafts.hasPending) {
+      this.draftStatus?.setText(this.drafts.isSaving ? 'Saving changes…' : 'Unsaved edits are preserved. Save or cancel them before changing variables or refreshing.');
+      return;
+    }
+    if (this.selectedVariableGuid) {
+      const selected = registry.getVariableByGuid(this.selectedVariableGuid);
+      this.selectedVariableName = selected?.name ?? '';
+      if (!selected) { this.selectedVariableGuid = null; new Notice('Variable links: the selected variable was deleted.'); }
+    }
 
     const generation = ++this.refreshGeneration;
     this.appearanceSettingsRefresh = null;
@@ -2203,6 +2236,7 @@ export class VariablePropertiesView extends ItemView {
 
     const header = container.createDiv({ cls: 'variable-links-panel-header' });
     header.createEl('h2', { text: 'Variable link properties' });
+    this.draftStatus = header.createDiv({ cls: 'variable-links-hint-text', attr: { 'aria-live': 'polite' } });
     const tabs = header.createDiv({ cls: 'variable-links-panel-tabs', attr: { role: 'tablist' } });
     const linkTab = tabs.createEl('button', {
       text: 'Link',
@@ -2226,6 +2260,7 @@ export class VariablePropertiesView extends ItemView {
     createGroup.createEl('option', { text: 'New fixed list', value: CREATE_FIXED_LIST });
     createGroup.createEl('option', { text: 'New note property', value: CREATE_PROPERTY_VALUE });
     createGroup.createEl('option', { text: 'New note property list', value: CREATE_PROPERTY_LIST });
+    createGroup.createEl('option', { text: 'New computed value', value: CREATE_COMPUTED });
     const variableGroup = select.createEl('optgroup', { attr: { label: 'Variables' } });
     for (const name of names) {
       variableGroup.createEl('option', { text: name, value: `${VARIABLE_OPTION_PREFIX}${name}` });
@@ -2233,13 +2268,16 @@ export class VariablePropertiesView extends ItemView {
     select.value = this.creatingVariableType
       ? `create:${this.creatingVariableType}`
       : storedDefinition ? `${VARIABLE_OPTION_PREFIX}${activeName}` : '';
+    const selectedOption = select.value;
     select.addEventListener('change', () => {
+      if (!this.canChangeSelection()) { select.value = selectedOption; return; }
       const value = select.value;
-      if ([CREATE_FIXED_VALUE, CREATE_FIXED_LIST, CREATE_PROPERTY_VALUE, CREATE_PROPERTY_LIST].includes(value)) {
+      if ([CREATE_FIXED_VALUE, CREATE_FIXED_LIST, CREATE_PROPERTY_VALUE, CREATE_PROPERTY_LIST, CREATE_COMPUTED].includes(value)) {
         this.creatingVariableType = value.slice('create:'.length) as VariableKind;
         this.creatingVariableName = '';
         this.creationCompletion = null;
         this.selectedVariableName = null;
+        this.selectedVariableGuid = null;
       } else {
         this.creatingVariableType = null;
         this.creatingVariableName = '';
@@ -2247,6 +2285,7 @@ export class VariablePropertiesView extends ItemView {
         this.selectedVariableName = value.startsWith(VARIABLE_OPTION_PREFIX)
           ? value.slice(VARIABLE_OPTION_PREFIX.length)
           : null;
+        this.selectedVariableGuid = this.selectedVariableName ? registry.getVariable(this.selectedVariableName)?.guid ?? null : null;
       }
       void this.refresh();
     });
@@ -2364,12 +2403,22 @@ export class VariablePropertiesView extends ItemView {
     if (storedDefinition) {
       this.renderFavoriteControl(variableHeading, activeName, storedDefinition);
     }
-    const valueText = result?.ok ? this.formatResolvedValue(result.value) : '[Missing]';
+    if (definition.managed) {
+      const profile = registry.autolinkProfiles.find((candidate) => candidate.id === definition.managed?.profileId);
+      const ownershipRow = summaryBody.createEl('tr');
+      ownershipRow.createEl('th', { text: 'Autolink:', attr: { scope: 'row' } });
+      ownershipRow.createEl('td', { text: `${profile?.name ?? definition.managed.profileId} · Managed fields: ${definition.managed.managedFields.join(', ') || 'none'}` });
+    }
+    const valueText = result?.ok ? this.formatResolvedValue(result.value) : resolutionErrorText(activeName, this.plugin.registry?.getVariable(activeName));
     const valueRow = summaryBody.createEl('tr');
     valueRow.createEl('th', { text: 'Value:', attr: { scope: 'row' } });
     const valueEl = valueRow.createEl('td', { cls: 'variable-links-panel-value' });
     if (result?.ok && valueText === '') valueEl.createSpan({ text: '(Empty)', cls: 'mod-muted' });
-    else await MarkdownRenderer.render(this.app, valueText, valueEl, '', markdownChild);
+    else if (result?.ok) await MarkdownRenderer.render(this.app, valueText, valueEl, '', markdownChild);
+    else {
+      valueEl.createSpan({ text: '[Error]', cls: 'mod-warning' });
+      if (result?.error) valueEl.createDiv({ text: result.error, cls: 'variable-links-hint-text' });
+    }
     if (!this.isCurrent(generation)) return;
 
     const actionsRow = summaryBody.createEl('tr');
@@ -2417,11 +2466,18 @@ export class VariablePropertiesView extends ItemView {
         last.value = undefined;
       }
       this.selectedVariableName = null;
+      this.selectedVariableGuid = null;
       new Notice(`Variable Links: deleted ${formatVariableToken(name, getTokenSyntax(this.plugin.settings))}`);
       await this.refresh();
     } catch (error) {
       new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  private canChangeSelection(): boolean {
+    if (!this.drafts.hasPending) return true;
+    new Notice('Variable links: save or cancel the current edits before changing variables.');
+    return false;
   }
 
   private renderVariableForm(
@@ -2456,6 +2512,7 @@ export class VariablePropertiesView extends ItemView {
       'fixed-list',
       'property-single',
       'property-list',
+      'computed',
     ];
     for (const kind of variableKinds) {
       typeInput.createEl('option', { text: variableKindLabel(kind), value: kind });
@@ -2509,15 +2566,156 @@ export class VariablePropertiesView extends ItemView {
     const fixedValueRow = fixedValueInput.parentElement;
     const fixedListEditor = editControls.createDiv({ cls: 'variable-links-panel-list-editor' });
     const propertyListEditor = editControls.createDiv({ cls: 'variable-links-panel-list-editor' });
+    const computedEditor = editControls.createDiv({ cls: 'variable-links-panel-computed-editor' });
+    const expressionLabel = computedEditor.createEl('label', { text: 'Expression:' });
+    addContextHelpButton(
+      expressionLabel,
+      this.plugin,
+      'Computed expressions',
+      (helpParent) => this.renderComputedExpressionHelp(helpParent),
+    );
+    const expressionInput = computedEditor.createEl('textarea', {
+      cls: 'variable-links-panel-computed-expression',
+      attr: {
+        rows: '4',
+        placeholder: '@price * @quantity',
+        'aria-label': 'Computed expression',
+      },
+    });
+    expressionInput.value = definition.expression ?? '';
+    const expressionSuggestions = computedEditor.createDiv({
+      cls: 'variable-links-panel-computed-suggestions',
+    });
+    expressionSuggestions.hidden = true;
+    const precisionRow = computedEditor.createDiv({ cls: 'variable-links-panel-field' });
+    precisionRow.createEl('label', { text: 'Decimal places (optional):' });
+    const precisionInput = precisionRow.createEl('input', {
+      type: 'number',
+      attr: { min: '0', max: '12', step: '1', placeholder: 'Automatic' },
+    });
+    precisionInput.value = definition.precision === undefined ? '' : String(definition.precision);
+    const computedPreview = computedEditor.createDiv({
+      cls: 'variable-links-panel-computed-preview variable-links-hint-text',
+      attr: { 'aria-live': 'polite', 'data-variable-links-ignore-dirty': 'true' },
+    });
+    let previewGeneration = 0;
+    const readPrecision = (): number | undefined => {
+      const text = precisionInput.value.trim();
+      if (!text) return undefined;
+      const precision = Number(text);
+      if (!Number.isInteger(precision) || precision < 0 || precision > 12) {
+        throw new Error('Decimal places must be a whole number from 0 to 12.');
+      }
+      return precision;
+    };
+    const updateComputedPreview = async (): Promise<void> => {
+      const generation = ++previewGeneration;
+      if (activeKind !== 'computed') return;
+      const expression = expressionInput.value.trim();
+      if (!expression) {
+        computedPreview.textContent = 'Enter an expression to preview its value.';
+        return;
+      }
+      try {
+        const result = await this.plugin.resolver?.previewComputed(
+          expression,
+          definition.dependencies,
+          readPrecision(),
+        );
+        if (generation !== previewGeneration || activeKind !== 'computed') return;
+        computedPreview.textContent = result?.ok
+          ? `Preview: ${this.formatResolvedValue(result.value)}`
+          : `Preview unavailable: ${result?.error ?? 'Resolver is unavailable.'}`;
+      } catch (error) {
+        if (generation !== previewGeneration || activeKind !== 'computed') return;
+        computedPreview.textContent = `Preview unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    };
+    const renderExpressionSuggestions = (): void => {
+      expressionSuggestions.empty();
+      const cursor = expressionInput.selectionStart ?? expressionInput.value.length;
+      const beforeCursor = expressionInput.value.slice(0, cursor);
+      const match = beforeCursor.match(/@([\p{L}\p{N}_.]*)$/u);
+      if (!match) {
+        expressionSuggestions.hidden = true;
+        return;
+      }
+      const query = match[1].toLocaleLowerCase();
+      const candidates = [...(this.plugin.registry?.data.keys() ?? [])]
+        .filter((candidate) => candidate.toLocaleLowerCase().includes(query))
+        .sort((left, right) => left.localeCompare(right))
+        .slice(0, 8);
+      if (!candidates.length) {
+        expressionSuggestions.hidden = true;
+        return;
+      }
+      expressionSuggestions.hidden = false;
+      for (const candidate of candidates) {
+        const simple = /^[\p{L}\p{N}_.]+$/u.test(candidate);
+        const inserted = simple ? `@${candidate}` : `var(${JSON.stringify(candidate)})`;
+        expressionSuggestions.createEl('button', {
+          text: inserted,
+          attr: { type: 'button' },
+        }).addEventListener('click', () => {
+          const start = cursor - match[0].length;
+          expressionInput.setRangeText(inserted, start, cursor, 'end');
+          expressionInput.focus();
+          expressionSuggestions.hidden = true;
+          markFormDirty();
+          void updateComputedPreview();
+        });
+      }
+    };
+    expressionInput.addEventListener('input', () => {
+      renderExpressionSuggestions();
+      markFormDirty();
+      void updateComputedPreview();
+    });
+    expressionInput.addEventListener('click', renderExpressionSuggestions);
+    expressionInput.addEventListener('keyup', renderExpressionSuggestions);
+    expressionInput.addEventListener('blur', () => {
+      const timer = window.setTimeout(() => {
+        this.timers.delete(timer);
+        expressionSuggestions.hidden = true;
+      }, 150);
+      this.timers.add(timer);
+    });
+    precisionInput.addEventListener('input', () => {
+      markFormDirty();
+      void updateComputedPreview();
+    });
     const linkedValueRow = editControls.createDiv({
       cls: 'variable-links-panel-linked-value',
       attr: { 'data-variable-links-ignore-dirty': 'true' },
     });
+    const temporalEditor = editControls.createDiv({ cls: 'variable-links-panel-temporal-editor' });
+    const temporalRow = temporalEditor.createDiv({ cls: 'variable-links-panel-field' });
+    temporalRow.createEl('label', { text: 'Date/time:' });
+    const temporalKind = temporalRow.createEl('select', { attr: { 'aria-label': 'Date/time kind' } });
+    for (const option of [
+      { value: '', label: 'Ordinary value' },
+      { value: 'date', label: 'Date' },
+      { value: 'time', label: 'Time' },
+      { value: 'datetime', label: 'Date and time' },
+    ]) temporalKind.createEl('option', { value: option.value, text: option.label });
+    temporalKind.value = definition.temporal?.kind ?? '';
+    const temporalInput = this.addInput(temporalEditor, 'Canonical value', definition.temporal ? temporalInputText(definition.temporal) : '', 'YYYY-MM-DD or HH:mm or YYYY-MM-DDTHH:mm');
+    const temporalFormat = this.addInput(temporalEditor, 'Display format', definition.temporal?.format ?? '', 'YYYY-MM-DD');
+    temporalEditor.createDiv({ cls: 'variable-links-hint-text', text: 'Date arithmetic uses this canonical value. Years and months clamp to month end; weeks/days preserve local clock time; hours/minutes/seconds are elapsed time. Time-only values use January 1, 2000. Existing captured text stays unchanged until you choose a date/time kind.' });
+    temporalKind.addEventListener('change', () => {
+      if (temporalKind.value) temporalFormat.value = defaultFormatForCapturedTime(temporalKind.value as CapturedTimeShortcut, this.plugin.settings);
+      temporalInput.parentElement!.hidden = variableKindSource(activeKind) === 'property' || !temporalKind.value;
+    });
+    let linkedResult = resolvedResult;
+    if (resolvedResult?.sourceFile && definition.temporal) {
+      const fm: unknown = this.app.metadataCache.getFileCache(resolvedResult.sourceFile)?.frontmatter;
+      if (fm && typeof fm === 'object') linkedResult = { ...resolvedResult, value: (fm as Record<string, unknown>)[definition.property] };
+    }
     this.renderLinkedPropertyValue(
       linkedValueRow,
       name,
       existingVariable ?? undefined,
-      resolvedResult,
+      linkedResult,
     );
     const fileLinkInput = this.addInput(
       editControls,
@@ -2531,6 +2729,8 @@ export class VariablePropertiesView extends ItemView {
       if (!fileLinkInput.value.trim()) fileLinkInput.value = fileLink;
     });
     this.attachFileLinkSuggestions(fileLinkInput);
+    const linkEnabledRow = editControls.createDiv({ cls: 'variable-links-panel-checkbox' });
+    const linkEnabledInput = this.addInlineCheckbox(linkEnabledRow, 'Enable click-through link', definition.linkEnabled !== false);
     const displayInput = this.addInput(
       editControls,
       'Display name (optional)',
@@ -2587,8 +2787,12 @@ export class VariablePropertiesView extends ItemView {
       fixedListEditor.hidden = source !== 'fixed' || shape !== 'list';
       propertyListEditor.hidden = source !== 'property' || shape !== 'list';
       linkedValueRow.hidden = source !== 'property';
+      computedEditor.hidden = source !== 'computed';
+      temporalEditor.hidden = source === 'computed' || shape === 'list';
+      temporalInput.parentElement!.hidden = source === 'property' || !temporalKind.value;
       typeInput.value = activeKind;
       typeStatus.hidden = !existingVariable || activeKind === existingKind;
+      if (source === 'computed') void updateComputedPreview();
     };
     const applyType = (nextType: VariableKind): void => {
       if (nextType === 'fixed-single' && !hasFixedValue) {
@@ -2859,9 +3063,22 @@ export class VariablePropertiesView extends ItemView {
         const favorite = existingVariable
           ? registry.getVariable(name)?.favorite === true
           : favoriteInput?.checked === true;
+        let temporal;
+        if (activeType !== 'computed' && activeShape !== 'list' && temporalKind.value) {
+          let canonical = temporalInput.value;
+          if (activeType === 'property') {
+            const sourceFile = this.app.vault.getFileByPath(`${filePathFromLink(propertyLink.file)}.md`);
+            if (!sourceFile) throw new Error('The source note could not be found');
+            const fm = this.plugin.resolver?.extractFrontmatter(await this.app.vault.read(sourceFile)) ?? {};
+            const raw = fm[propertyLink.property];
+            if (typeof raw !== 'string') throw new Error('Date/time properties must contain an ISO text value');
+            canonical = raw;
+          }
+          temporal = createTemporalValue(canonical, temporalKind.value as CapturedTimeShortcut, temporalFormat.value);
+        }
         await registry.saveVariable(newName, {
           type: activeType,
-          shape: activeShape,
+          shape: activeType === 'computed' ? undefined : activeShape,
           file: propertyLink.file,
           property: propertyLink.property,
           value: hasFixedValue ? fixedValueInput.value : undefined,
@@ -2869,12 +3086,17 @@ export class VariablePropertiesView extends ItemView {
           propertyItems,
           hidden: hiddenInput.checked,
           link: fileLinkInput.value.trim() ? toFileLink(fileLinkInput.value) : undefined,
+          linkEnabled: linkEnabledInput.checked,
           display: displayInput.value,
           textCase: normalizeVariableTextCase(textCaseInput.value),
           favorite,
           appearance: useDefaultsInput.checked ? undefined : nextAppearance,
           customAppearance: nextAppearance,
-        }, existingVariable ? name : undefined);
+          expression: activeType === 'computed' ? expressionInput.value.trim() : undefined,
+          dependencies: activeType === 'computed' ? definition.dependencies : undefined,
+          precision: activeType === 'computed' ? readPrecision() : undefined,
+          temporal,
+        }, existingVariable ? name : undefined, existingVariable ?? undefined);
         const touched = this.plugin.caretTracker?.lastTouched;
         if (touched?.name === name && newName !== name) {
           touched.name = newName;
@@ -2885,6 +3107,7 @@ export class VariablePropertiesView extends ItemView {
         this.creatingVariableName = '';
         this.creationCompletion = null;
         this.selectedVariableName = newName;
+        this.selectedVariableGuid = registry.getVariable(newName)?.guid ?? null;
         if (creationCompletion) {
           try {
             await creationCompletion(newName);
@@ -2923,12 +3146,13 @@ export class VariablePropertiesView extends ItemView {
   }
 
   private async saveFavorite(name: string, favorite: boolean): Promise<void> {
+    if (!this.canChangeSelection()) throw new Error('Save or cancel your edits before changing Favorite.');
     const registry = this.plugin.registry;
     const definition = registry?.getVariable(name);
     if (!registry || !definition) {
       throw new Error(`${formatVariableToken(name, getTokenSyntax(this.plugin.settings))} is not configured.`);
     }
-    await registry.saveVariable(name, { ...definition, favorite });
+    await registry.saveVariable(name, { ...definition, favorite }, name, definition);
     new Notice(`Variable Links: ${favorite ? 'favorited' : 'unfavorited'} ${formatVariableToken(name, getTokenSyntax(this.plugin.settings))}`);
   }
 
@@ -2939,8 +3163,8 @@ export class VariablePropertiesView extends ItemView {
     saveHost: HTMLElement,
   ): void {
     const card = definition.card ?? {};
-    const fixedValue = getVariableType(definition) === 'fixed';
-    const cardSourceFile = fixedValue ? definition.link ?? '' : definition.file;
+    const propertyValue = getVariableType(definition) === 'property';
+    const cardSourceFile = propertyValue ? definition.file : definition.link ?? '';
     const hasCardSource = Boolean(filePathFromLink(cardSourceFile));
     const useBlockLayout = card.useBlockLayout === true;
     const modeRow = parent.createDiv({ cls: 'variable-links-panel-checkbox' });
@@ -2964,7 +3188,7 @@ export class VariablePropertiesView extends ItemView {
       await registry.saveVariable(name, {
         ...definition,
         card: hasSimpleContent || hasBlocks || hasOptions ? nextCard : undefined,
-      });
+      }, name, definition);
       new Notice(`Variable Links: Info Card saved for ${formatVariableToken(name, getTokenSyntax(this.plugin.settings))}`);
       await this.refresh();
     };
@@ -2990,7 +3214,7 @@ export class VariablePropertiesView extends ItemView {
       if (!hasCardSource) {
         summary.createDiv({
           cls: 'variable-links-hint-text',
-          text: fixedValue
+          text: !propertyValue
             ? 'Add a file link before using local Property or Source link blocks.'
             : 'The configured source note is unavailable.',
         });
@@ -3000,6 +3224,7 @@ export class VariablePropertiesView extends ItemView {
         cls: 'mod-cta',
         attr: { type: 'button' },
       }).addEventListener('click', () => {
+        if (!this.canChangeSelection()) return;
         new InfoCardLayoutModal(
           this.plugin,
           name,
@@ -3011,6 +3236,7 @@ export class VariablePropertiesView extends ItemView {
       });
       modeInput.addEventListener('change', () => {
         if (modeInput.checked) return;
+        if (!this.canChangeSelection()) { modeInput.checked = true; return; }
         modeInput.disabled = true;
         void saveCard({ ...card, useBlockLayout: false }).catch((error: unknown) => {
           modeInput.checked = true;
@@ -3048,7 +3274,7 @@ export class VariablePropertiesView extends ItemView {
     sourceInput.checked = card.showSourceLink === true;
     sourceInput.disabled = !hasCardSource;
     sourceRow.createEl('label', {
-      text: fixedValue ? 'Show “open file link”' : 'Show “open source” link',
+      text: !propertyValue ? 'Show “open file link”' : 'Show “open source” link',
     });
     const livePreviewRow = form.createDiv({ cls: 'variable-links-panel-checkbox' });
     const livePreviewInput = livePreviewRow.createEl('input', { type: 'checkbox' });
@@ -3084,6 +3310,7 @@ export class VariablePropertiesView extends ItemView {
     });
     modeInput.addEventListener('change', () => {
       if (!modeInput.checked) return;
+      if (!this.canChangeSelection()) { modeInput.checked = false; return; }
       modeInput.disabled = true;
       void saveCard(getSimpleCard(true)).catch((error: unknown) => {
         modeInput.checked = false;
@@ -3188,12 +3415,18 @@ export class VariablePropertiesView extends ItemView {
       attr: { type: 'button' },
     });
     const startEditing = (): void => {
+      if (!this.canChangeSelection()) return;
+      this.drafts.markDirty(editor);
+      this.draftStatus?.setText('Unsaved linked-value edit');
       display.hidden = true;
       editor.hidden = false;
       editorControl.focus();
       if (editorControl instanceof HTMLInputElement) editorControl.select();
     };
     const cancelEditing = (): void => {
+      if (this.drafts.isSaving) return;
+      this.drafts.cancel(editor);
+      this.draftStatus?.setText(this.drafts.hasPending ? 'Unsaved changes' : '');
       editorControl.value = editableType === 'boolean'
         ? originalValue === true ? 'true' : 'false'
         : this.formatResolvedValue(originalValue);
@@ -3202,10 +3435,20 @@ export class VariablePropertiesView extends ItemView {
       editButton.focus();
     };
     const saveLinkedValue = async (): Promise<void> => {
+      if (saveButton.disabled || !this.drafts.beginSave(editor)) return;
       saveButton.disabled = true;
       cancelButton.disabled = true;
+      const restoreControls = this.freezeControls();
+      this.draftStatus?.setText('Saving linked value…');
+      let saved = false;
       try {
+        const current = storedDefinition.guid ? this.plugin.registry?.getVariableByGuid(storedDefinition.guid) : null;
+        if (!current || current.name !== variableName || !valuesEqual(current.definition, storedDefinition)) throw new Error('This variable changed while editing. Cancel and reopen it before saving.');
         const nextValue = this.parseLinkedPropertyValue(editorControl.value, editableType);
+        if (storedDefinition.temporal) {
+          if (typeof nextValue !== 'string') throw new Error('Date/time properties must contain an ISO text value');
+          createTemporalValue(nextValue, storedDefinition.temporal.kind, storedDefinition.temporal.format);
+        }
         await this.updateLinkedPropertyValue(
           sourceFile,
           property,
@@ -3214,11 +3457,20 @@ export class VariablePropertiesView extends ItemView {
         );
         new Notice(`Variable Links: updated linked value for ${formatVariableToken(variableName, getTokenSyntax(this.plugin.settings))}`);
         this.plugin.livePreviewRenderer?.refresh();
-        await this.refresh();
+        saved = true;
       } catch (error) {
         new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
         saveButton.disabled = false;
         cancelButton.disabled = false;
+      } finally {
+        restoreControls();
+        this.drafts.finishSave(editor, saved);
+        saveButton.disabled = saved;
+        cancelButton.disabled = false;
+        if (this.active) {
+          if (saved) { editor.hidden = true; display.hidden = false; await this.refresh(); }
+          else this.draftStatus?.setText('Save failed. Your linked-value edit is preserved.');
+        }
       }
     };
     value.addEventListener('dblclick', startEditing);
@@ -3535,8 +3787,23 @@ export class VariablePropertiesView extends ItemView {
     });
     button.disabled = true;
     const markDirty = (): void => {
+      this.drafts.markDirty(form);
+      this.draftStatus?.setText('Unsaved changes');
       button.disabled = false;
     };
+    const cancel = saveHost.createEl('button', { text: 'Cancel edits', attr: { type: 'button', title: 'Discard unsaved properties and simple card edits for this variable' } });
+    cancel.addEventListener('click', () => {
+      if (this.drafts.isSaving) return;
+      this.drafts.clear();
+      if (this.creatingVariableType) {
+        this.creatingVariableType = null;
+        this.creatingVariableName = '';
+        this.creationCompletion = null;
+        this.selectedVariableName = '';
+        this.selectedVariableGuid = null;
+      }
+      void this.refresh();
+    });
     const markDirtyFromEvent = (event: Event): void => {
       const target = event.target;
       if (target instanceof HTMLElement
@@ -3547,17 +3814,33 @@ export class VariablePropertiesView extends ItemView {
     form.addEventListener('change', markDirtyFromEvent);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
-      if (button.disabled) return;
+      if (button.disabled || !this.drafts.beginSave(form)) return;
       button.disabled = true;
-      void save()
+      const restoreControls = this.freezeControls();
+      this.draftStatus?.setText('Saving changes…');
+      let saved = false;
+      void save().then(() => { saved = true; })
         .catch((error: unknown) => {
           new Notice(`Variable Links: ${error instanceof Error ? error.message : String(error)}`);
         })
         .finally(() => {
-          button.disabled = false;
+          restoreControls();
+          this.drafts.finishSave(form, saved);
+          button.disabled = saved;
+          if (this.active) {
+            if (saved) void this.refresh();
+            else this.draftStatus?.setText('Save failed. Your unsaved edits are preserved.');
+          }
         });
     });
     return markDirty;
+  }
+
+  private freezeControls(): () => void {
+    const controls = this.panelContentEl?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement>('input, textarea, select, button') ?? [];
+    const disabled = new Map([...controls].map((control) => [control, control.disabled]));
+    for (const control of controls) control.disabled = true;
+    return () => { for (const [control, wasDisabled] of disabled) control.disabled = wasDisabled; };
   }
 
   private addInput(
@@ -3589,9 +3872,32 @@ export class VariablePropertiesView extends ItemView {
     types.createEl('li', {
       text: 'Note property list requires the linked Obsidian property to contain a YAML list.',
     });
+    types.createEl('li', {
+      text: 'Computed value calculates a number from other variable links using a safe expression. Dependency links continue working when referenced variables are renamed.',
+    });
     parent.createEl('p', {
-      text: 'Changing an existing variable type requires confirmation. Inactive fixed-value, list, and property-link settings are preserved in case you switch back later.',
+      text: 'Changing an existing variable type requires confirmation. Inactive fixed-value, list, property-link, and expression settings are preserved in case you switch back later.',
       cls: 'variable-links-hint-text',
+    });
+  }
+
+  private renderComputedExpressionHelp(parent: HTMLElement): void {
+    parent.createEl('p', {
+      text: 'Computed values use arithmetic expressions without executing JavaScript.',
+    });
+    const details = parent.createEl('ul');
+    details.createEl('li', { text: 'Reference simple names with @price or names containing spaces with var("tax rate").' });
+    details.createEl('li', { text: 'Selectors work on references, for example @prices::index(1).' });
+    details.createEl('li', { text: 'Operators: +, -, *, /, %, and ^. Parentheses control grouping.' });
+    details.createEl('li', {
+      text: 'Functions: abs, round, floor, ceil, min, max, sum, average, clamp, sqrt, and pow.',
+    });
+    details.createEl('li', {
+      text: 'Values must be numbers or strictly numeric text. Missing dependencies, invalid values, division by zero, and circular references show an error.',
+    });
+    const example = parent.createDiv({ cls: 'variable-links-context-help-example' });
+    example.createEl('code', {
+      text: ['round', '(@subtotal * (1 + var("tax rate")), 2)'].join(''),
     });
   }
 

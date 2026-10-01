@@ -13,6 +13,21 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added an option to hide any Variable Link’s rendered value, showing a subdued `&` editing marker in Live Preview and no output in Reading View while keeping the value available to plugin tools.
 - Added chainable selector pipelines with one-based, reverse, and named list selection; multi-position `word()` and `char()` selection; and whole-value or targeted `upper()` and `lower()` transformations. Selector suggestions preview each stage, while renaming and token-format migration preserve the complete pipeline.
 - Added persistent suggestion shortcuts with a searchable Management Center activity, inline list-item creation, editable duplication, enabled states, exact-code completion, focused `~` search, and expansion into canonical Variable Link tokens that continue following variable renames.
+- Added computed Variable Links with safe arithmetic expressions, rename-safe variable references, selectors, common math functions, live previews, optional decimal precision, and clear dependency or calculation errors.
+- Added canonical Date, Time, and Date-time values with independent display formats and calendar-aware `add()` and `sub()` selector pipelines.
+- Added inline `{{=...}}` calculations that automatically use current-note properties, with a preview editor and reviewed creation of permanent computed variables and their property links.
+- The inline expression editor suggests an unused permanent name when left blank, while still waiting for explicit review and creation.
+- Added Alt/Option-click quick editing and Shift+Alt/Option-click compact inspectors for values, expressions, and note-property mappings, plus context-menu actions and assignable commands.
+- Added inline Management Center display-name and Favorite editing, compact inspectors, and previewed bulk changes to Favorite, visibility, and click-through links.
+- Editor saves and reviewed permanent-expression creation detect changed inputs and settings before writing, helping prevent accidental overwrites during simultaneous edits.
+- The adjacent Properties editor keeps unsaved drafts during refreshes, provides Cancel edits, and shows Autolink ownership and click-through-link controls.
+- Token-format migration includes inline calculations with note-local inputs, preserves literal code examples, and rejects delimiters that would split a calculation.
+- Computed variables keep deleted input bindings when edited instead of silently using an unrelated replacement with the same name.
+- Bulk-deletion previews count each affected inline calculation once, even when several selected variables are used by it.
+
+### Changed
+
+- Failed computed values now display `[Expression error]`, with the detailed cause available in the editor and token hover text.
 
 ## 1.3.2 - 2026-09-19
 

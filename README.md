@@ -24,13 +24,47 @@ Variable Links can also open a related note when clicked and show a customizable
 - Generate and maintain Variable Links for files or folders with Autolink profiles.
 - Search, sort, rename, or delete Variable Links from a workspace Management Center.
 - Customize the characters used around Variable Link tokens.
+- Calculate stored or inline expressions, including values from the current note's properties.
+- Add or subtract calendar durations from canonical date/time values.
+- Quickly edit values or source mappings with Alt/Option-click, or open a compact inspector with Shift+Alt/Option-click.
+
+## Calculations and date arithmetic
+
+Create a **Computed value** in Variable Properties, enter an expression such as `round(@price * @qty * (1 + var("tax")), 2)`, then reference its permanent name with `{{total}}`. Registered dependencies follow their stable IDs when their names change. Supported functions include `abs`, `round`, `floor`, `ceil`, `min`, `max`, `sum`, `average`, `clamp`, `sqrt`, and `pow`. Values must be numbers or strictly numeric text. Invalid calculations display `[Expression error]`; the token hover text and editor preview explain the cause.
+
+For a calculation directly in a note, start the token with `=`:
+
+```markdown
+{{=round(@price * @qty * (1 + @tax), 2)}}
+```
+
+Inline references use an existing Variable Link first, followed by an enabled shortcut, then an exact frontmatter property in the note containing the expression. No permanent entries are created during rendering. The inline quick editor provides a preview and suggests an unused permanent name such as `math_01` when the name field is blank. You can change the name; **Review permanent creation** lists the property links that would be added, and nothing is created until you explicitly confirm with **Create reviewed variable and property links**. Saving the inline expression alone does not create permanent entries. Renaming registered inputs updates their references in valid inline expressions. Code blocks and inline code remain literal.
+
+Choose **Date**, **Time**, or **Date and time** in the variable's Date/time field. Fixed values store their canonical value separately from their display format. Note-property dates read ISO text from the source property. Use `YYYY-MM-DD`, `HH:mm[:ss]`, or `YYYY-MM-DDTHH:mm[:ss]` as the canonical input; Date-time also accepts an explicit ISO offset. New captured date/time variables retain their canonical values automatically. Older captured text remains usable; select its date/time kind and enter a canonical value to enable arithmetic.
+
+```markdown
+{{deadline::add(2M,3d,2h,15m)}}
+{{deadline::sub(1w)}}
+```
+
+Units are case-sensitive: `y` years, `M` months, `w` weeks, `d` days, `h` hours, `m` minutes, and `s` seconds. Duration amounts are signed whole numbers. Each operation combines repeated units and applies years, then months, then weeks/days, then elapsed hours/minutes/seconds. Years and months clamp to the last valid day of the target month. Calendar operations use the device's local time and preserve the clock time; nonexistent times at daylight-saving transitions produce an error. Repeated local times choose the earlier occurrence. Hours/minutes/seconds measure elapsed time. Time-only inputs use January 1, 2000 as their calendar anchor. Month clamping means addition and subtraction are not always exact inverses.
+
+## Quick editing
+
+**Alt-click** on Windows/Linux or **Option-click** on macOS opens a small value editor. Add **Shift** to open the compact inspector for the name, display name, source mapping, value or expression, Favorite, and click-through link. For a note property, choose **Source property value** to update the note itself or **Variable definition / source mapping** to change which property the Variable Link reads. Saving a definition affects all uses of that variable; saving a source value affects every reference to that note property.
+
+Enter saves single-line fields; Ctrl/Cmd+Enter saves a multiline value or expression. Escape or Cancel discards the draft. Editors reject stale saves if the definition or source property changed while editing. List values use JSON; the full editor handles structural fixed-list changes, stable keys, type changes, appearance, and Info Cards. Inline expression editing is available in editing mode.
+
+The same actions are available through context menus and the **Quick-edit variable at cursor** and **Open compact inspector for variable at cursor** commands, which accept user-assigned hotkeys. These also provide access when a Linux window manager intercepts Alt-click. In Management Center, the pencil opens the compact inspector, the text-cursor button edits Display name inline, and Favorite is directly editable. **Edit selected** previews changes to Favorite, hidden rendering, or click-through links for all selected entries, including selections hidden by filters.
 
 ## Quick start
 
-Open the Command Palette and run **Variable Links: Open Variable Properties**. Choose or create a variable, then select one of the two value types:
+Open the Command Palette and run **Variable Links: Open Variable Properties**. Choose or create a variable, then select its value source and shape:
 
 - **Fixed value** — enter the displayed value directly. You may also choose a file for the variable to open.
 - **Property value** — link to a property using `[[File path]]#property`. The displayed value follows the property in that note.
+- **Computed value** — enter a safe expression that calculates a value from other Variable Links.
+- Choose a Fixed list or Note property list when the source contains multiple items; stable keys let tokens select named items across reordering.
 
 For example, if `People/John Smith.md` contains:
 
@@ -125,6 +159,10 @@ Insert actions are disabled while the cursor is already inside a Variable Link t
 
 The panel has **Link** and **Card** tabs beneath the **Variable Link Properties** heading.
 
+The Management Center's settings button opens this same detailed editor beside the list, including the shared type-change confirmation, property suggestions, appearance controls, and Card editor. Managed entries show their Autolink profile and managed fields.
+
+Unsaved properties, simple Card fields, and linked-value drafts remain in place during background refreshes. Save or use **Cancel edits** before selecting another variable. Cancel edits discards the current variable's unsaved properties and simple Card fields; the Card Designer has its own Save and Cancel. Saves reject changed registry entries instead of overwriting newer settings.
+
 ### Link
 
 Use the Link tab to manage:
@@ -133,6 +171,7 @@ Use the Link tab to manage:
 - Fixed value or Property value type.
 - Property link and its current linked value.
 - File link opened when the variable is clicked.
+- Whether click-through links are enabled.
 - Display name and default text case.
 - Bold, italic, decoration, color, and opacity.
 

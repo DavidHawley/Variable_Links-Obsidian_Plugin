@@ -27,7 +27,7 @@ export function parseCapturedTimeCreationQuery(
   const rawType = (sourceSeparator === -1
     ? expression
     : expression.slice(0, sourceSeparator)).trim();
-  const typeQuery = rawType.toLocaleLowerCase();
+  const typeQuery = rawType.toLowerCase();
   const type = typeQuery === 'date' || typeQuery === 'time' || typeQuery === 'datetime'
     ? typeQuery
     : undefined;

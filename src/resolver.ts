@@ -1,7 +1,15 @@
 import { App, TFile, parseYaml } from 'obsidian';
+import {
+  evaluateComputedExpression,
+  formatComputedNumber,
+  parseComputedExpression,
+  type ComputedDependency,
+} from './computed';
 import Registry, { getVariableShape, getVariableType } from './registry';
 import type { VariableSelector, VariableSelectorStep } from './tokenSyntax';
+import { parseVariableSelector } from './tokenSyntax';
 import { splitGraphemes } from './selectorUtils';
+import { adjustTemporalValue, createTemporalValue, formatTemporalValue, type TemporalValue } from './temporal';
 
 export interface ResolveResult {
   ok: boolean;
@@ -10,7 +18,14 @@ export interface ResolveResult {
   sourceFile?: TFile | null;
   property?: string;
   error?: string;
+  temporal?: TemporalValue;
 }
+
+interface ResolutionContext {
+  stack: string[];
+}
+
+const MAX_COMPUTED_DEPTH = 32;
 
 export class Resolver {
   app: App;
@@ -21,19 +36,146 @@ export class Resolver {
     this.registry = registry;
   }
 
-  async resolve(variableName: string, selector?: VariableSelector): Promise<ResolveResult> {
+  async resolve(variableName: string, selector?: VariableSelector, sourcePath?: string): Promise<ResolveResult> {
+    if (variableName.startsWith('=') && !this.registry.getVariable(variableName)) return this.resolveInline(variableName.slice(1), sourcePath);
+    return this.resolveInternal(variableName, selector, { stack: [] });
+  }
+
+  async resolveInline(expression: string, sourcePath?: string): Promise<ResolveResult> {
+    try {
+      const parsed = parseComputedExpression(expression);
+      const file = sourcePath ? this.app.vault.getFileByPath(sourcePath) : null;
+      const frontmatter = file ? this.extractFrontmatter(await this.app.vault.read(file)) ?? {} : {};
+      const value = await evaluateComputedExpression(parsed.ast, async (reference) => {
+        const direct = this.registry.getVariable(reference.name);
+        const shortcut = direct ? null : this.registry.getShortcutByCode(reference.name);
+        const target = direct
+          ? reference.name
+          : shortcut?.enabled ? this.registry.getVariableNameByGuid(shortcut.targetGuid) : null;
+        if (shortcut && !target) throw new Error(`Shortcut '${reference.name}' has a missing target`);
+        let result: ResolveResult;
+        if (target) result = await this.resolve(target, reference.selector ?? shortcut?.selector);
+        else {
+          if (!Object.prototype.hasOwnProperty.call(frontmatter, reference.name)) throw new Error(`Input '${reference.name}' was not found in Variable Links or this note's properties`);
+          result = this.applySelector(reference.name, { type: 'property', file: sourcePath ?? '', property: reference.name }, {
+            ok: true, value: frontmatter[reference.name], sourceFile: file, property: reference.name,
+          }, reference.selector);
+        }
+        if (!result.ok) throw new Error(result.error ?? `Could not resolve '${reference.name}'`);
+        return result.value;
+      });
+      return { ok: true, value, type: 'number', sourceFile: null };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async previewComputed(
+    expression: string,
+    savedDependencies: readonly ComputedDependency[] = [],
+    precision?: number,
+  ): Promise<ResolveResult> {
+    try {
+      const parsed = parseComputedExpression(expression);
+      const dependencies = new Map(savedDependencies.map((dependency) => [dependency.name, dependency]));
+      const value = await evaluateComputedExpression(parsed.ast, async (reference) => {
+        const saved = dependencies.get(reference.name);
+        const direct = saved ? null : this.registry.getVariable(reference.name);
+        const shortcut = saved || direct ? null : this.registry.getShortcutByCode(reference.name);
+        const savedGuid = saved?.guid ?? shortcut?.targetGuid;
+        const target = savedGuid
+          ? this.registry.getVariableByGuid(savedGuid)
+          : null;
+        const targetName = savedGuid ? target?.name : direct ? reference.name : null;
+        if (!targetName) throw new Error(`Variable '${reference.name}' was not found`);
+        const savedSelector = saved ? (saved.selector ? parseVariableSelector(`Dependency${saved.selector}`).selector : undefined) : shortcut?.selector;
+        const result = await this.resolve(targetName, reference.selector ?? savedSelector);
+        if (!result.ok) throw new Error(result.error ?? `Could not resolve '${targetName}'`);
+        return result.value;
+      });
+      return {
+        ok: true,
+        value: formatComputedNumber(value, precision),
+        type: precision === undefined ? 'number' : 'string',
+        sourceFile: null,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        sourceFile: null,
+      };
+    }
+  }
+
+  private async resolveInternal(
+    variableName: string,
+    selector: VariableSelector | undefined,
+    context: ResolutionContext,
+  ): Promise<ResolveResult> {
     const def = this.registry.getVariable(variableName);
     if (!def) {
       return { ok: false, error: `Variable '${variableName}' not found in registry` };
+    }
+
+    if (getVariableType(def) === 'computed') {
+      const guid = def.guid;
+      if (!guid) return { ok: false, error: `Computed variable '${variableName}' has no stable ID` };
+      const cycleStart = context.stack.indexOf(guid);
+      if (cycleStart !== -1) {
+        const cycle = [...context.stack.slice(cycleStart), guid]
+          .map((entry) => this.registry.getVariableNameByGuid(entry) ?? entry)
+          .join(' → ');
+        return { ok: false, error: `Circular computed dependency: ${cycle}` };
+      }
+      if (context.stack.length >= MAX_COMPUTED_DEPTH) {
+        return { ok: false, error: `Computed dependency depth exceeds ${MAX_COMPUTED_DEPTH} variables` };
+      }
+      try {
+        const parsed = parseComputedExpression(def.expression ?? '');
+        const dependencies = new Map((def.dependencies ?? []).map((dependency) => [dependency.name, dependency]));
+        const value = await evaluateComputedExpression(parsed.ast, async (reference) => {
+          const dependency = dependencies.get(reference.name);
+          const dependencyGuid = dependency?.guid;
+          if (!dependencyGuid) {
+            throw new Error(`Computed dependency '${reference.name}' is not bound to a Variable Link`);
+          }
+          const target = this.registry.getVariableByGuid(dependencyGuid);
+          if (!target) {
+            throw new Error(`Computed dependency '${reference.name}' no longer exists`);
+          }
+          const result = await this.resolveInternal(
+            target.name,
+            reference.selector ?? (dependency?.selector ? parseVariableSelector(`Dependency${dependency.selector}`).selector : undefined),
+            { stack: [...context.stack, guid] },
+          );
+          if (!result.ok) throw new Error(result.error ?? `Could not resolve '${target.name}'`);
+          return result.value;
+        });
+        const result: ResolveResult = {
+          ok: true,
+          value: formatComputedNumber(value, def.precision),
+          type: def.precision === undefined ? 'number' : 'string',
+          sourceFile: null,
+        };
+        return this.applySelector(variableName, def, result, selector);
+      } catch (error) {
+        return {
+          ok: false,
+          error: `Computed variable '${variableName}': ${error instanceof Error ? error.message : String(error)}`,
+          sourceFile: null,
+        };
+      }
     }
 
     if (getVariableType(def) === 'fixed') {
       const list = getVariableShape(def) === 'list';
       const result: ResolveResult = {
         ok: true,
-        value: list ? (def.fixedItems ?? []).map((item) => item.value) : def.value ?? '',
+        value: list ? (def.fixedItems ?? []).map((item) => item.value) : def.temporal ? formatTemporalValue(def.temporal) : def.value ?? '',
         type: list ? 'array' : 'string',
         sourceFile: null,
+        temporal: list ? undefined : def.temporal,
       };
       return this.applySelector(variableName, def, result, selector);
     }
@@ -99,6 +241,15 @@ export class Resolver {
     }
 
     const res: ResolveResult = { ok: true, value, sourceFile: file, property: prop };
+    if (def.temporal && !Array.isArray(value)) {
+      try {
+        if (typeof value !== 'string') throw new Error('Date/time properties must contain an ISO text value');
+        res.temporal = createTemporalValue(value, def.temporal.kind, def.temporal.format);
+        res.value = formatTemporalValue(res.temporal);
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error), sourceFile: file, property: prop };
+      }
+    }
 
     // derive type
     if (Array.isArray(value)) res.type = 'array';
@@ -148,6 +299,15 @@ export class Resolver {
     result: ResolveResult,
     selector: VariableSelectorStep,
   ): ResolveResult {
+    if (selector.type === 'add' || selector.type === 'sub') {
+      if (!result.temporal) return this.selectorError(result, 'Date arithmetic requires a canonical date/time value; set Date/time in the variable editor first');
+      try {
+        const temporal = adjustTemporalValue(result.temporal, selector.parts, selector.type === 'sub');
+        return { ...result, temporal, value: formatTemporalValue(temporal), type: 'string' };
+      } catch (error) {
+        return this.selectorError(result, error instanceof Error ? error.message : String(error));
+      }
+    }
     if (selector.type === 'word' || selector.type === 'char') {
       if (Array.isArray(result.value)) {
         return this.selectorError(
