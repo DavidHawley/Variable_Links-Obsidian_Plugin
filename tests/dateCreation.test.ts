@@ -72,8 +72,21 @@ test('typed date creation supports automatic names, custom formats and time arit
   assert.equal(time.definitions.get('clock')?.temporal?.kind, 'time');
 });
 
+test('the requested compact DATETIME creation syntax saves and inserts the named variable', async () => {
+  const view = fixture('ad = DATETIME::sub(3M5m)');
+  const before = captureTemporalValue(new Date(), 'datetime', 'YYYY-MM-DD HH:mm', '::sub(3M,5m)');
+  await view.complete();
+  const after = captureTemporalValue(new Date(), 'datetime', 'YYYY-MM-DD HH:mm', '::sub(3M,5m)');
+  const saved = view.definitions.get('ad');
+  assert.ok(saved?.temporal);
+  assert.equal(saved.temporal.kind, 'datetime');
+  assert.ok(Date.parse(saved.temporal.iso) >= Date.parse(before.iso));
+  assert.ok(Date.parse(saved.temporal.iso) <= Date.parse(after.iso));
+  assert.equal(view.text(), '{{ad}}');
+});
+
 test('malformed creation adjustments leave the original token unchanged without registry writes', async () => {
-  for (const expression of ['due=DATE::add(1x)', 'due=DATE::add(', 'due=DATETIME::sub(1.5M)', 'due=DATE::upper()']) {
+  for (const expression of ['due=DATE::add(1x)', 'due=DATE::add(', 'due=DATETIME::sub(1.5M)', 'due=DATE::upper()', 'due=DATETIME::sub(3M5x)', 'due=DATETIME::sub(3M5)']) {
     const view = fixture(expression);
     assert.equal(await view.complete(), true);
     assert.equal(view.text(), view.original);

@@ -18,6 +18,7 @@ All notable user-visible changes to Variable Links are recorded here.
 - Added inline `{{=...}}` calculations that automatically use current-note properties, with a preview editor and reviewed creation of permanent computed variables and their property links.
 - The inline expression editor suggests an unused permanent name when left blank, while still waiting for explicit review and creation.
 - Typed Date, Time, and Date-time creation accepts chained `add()` and `sub()` adjustments, saving the adjusted canonical value immediately.
+- Date/time adjustments accept compact durations such as `3M5m` as well as comma-separated amounts, both during creation and in token selectors.
 - Right-click inline calculations in editing mode or Reading View to make them into permanent Variable Links through explicit review and confirmation.
 - Added Alt/Option-click quick editing and Shift+Alt/Option-click compact inspectors for values, expressions, and note-property mappings, plus context-menu actions and assignable commands.
 - Added inline Management Center display-name and Favorite editing, compact inspectors, and previewed bulk changes to Favorite, visibility, and click-through links.

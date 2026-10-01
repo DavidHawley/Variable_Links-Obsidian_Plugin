@@ -45,9 +45,10 @@ Choose **Date**, **Time**, or **Date and time** in the variable's Date/time fiel
 ```markdown
 {{deadline::add(2M,3d,2h,15m)}}
 {{deadline::sub(1w)}}
+{{deadline::sub(3M5m)}}
 ```
 
-Units are case-sensitive: `y` years, `M` months, `w` weeks, `d` days, `h` hours, `m` minutes, and `s` seconds. Duration amounts are signed whole numbers. Each operation combines repeated units and applies years, then months, then weeks/days, then elapsed hours/minutes/seconds. Years and months clamp to the last valid day of the target month. Calendar operations use the device's local time and preserve the clock time; nonexistent times at daylight-saving transitions produce an error. Repeated local times choose the earlier occurrence. Hours/minutes/seconds measure elapsed time. Time-only inputs use January 1, 2000 as their calendar anchor. Month clamping means addition and subtraction are not always exact inverses.
+Units are case-sensitive: `y` years, `M` months, `w` weeks, `d` days, `h` hours, `m` minutes, and `s` seconds. Duration amounts are signed whole numbers. Compact `3M5m` and comma-separated `3M,5m` both mean three months and five minutes; you can also mix the forms or separate amounts with spaces. A sign belongs to its individual amount: `-3M5m` means minus three months plus five minutes, while `sub(3M5m)` subtracts both. Each operation combines repeated units and applies years, then months, then weeks/days, then elapsed hours/minutes/seconds. Years and months clamp to the last valid day of the target month. Calendar operations use the device's local time and preserve the clock time; nonexistent times at daylight-saving transitions produce an error. Repeated local times choose the earlier occurrence. Hours/minutes/seconds measure elapsed time. Time-only inputs use January 1, 2000 as their calendar anchor. Month clamping means addition and subtraction are not always exact inverses.
 
 ## Quick editing
 
@@ -125,6 +126,7 @@ Variable names in creation expressions cannot contain spaces.
 {{due=DATE::add(7d)}}
 {{previous=DATE:YYYY-MM-DD::sub(1M)}}
 {{reminder=DATETIME:YYYY-MM-DD HH:mm::add(1w)::sub(2h)}}
+{{ad = DATETIME::sub(3M5m)}}
 ```
 
 An unnamed shortcut creates a name from the first five letters or numbers of the current filename, the shortcut type, and a counter, such as `Proje_Date_01`. Optional `::add()` and `::sub()` steps adjust the captured date/time before saving it; the adjusted value stays fixed, rather than keeping an offset selector on the inserted token. Put a custom display format before the adjustment steps. Use `[::]` or escaped colons for literal double colons in a format. Invalid durations leave the creation expression unchanged and show an error.

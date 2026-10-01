@@ -15,6 +15,30 @@ test('calendar month and leap-year arithmetic clamps rather than overflowing', (
   assert.equal(formatTemporalValue(adjustTemporalValue(january, parseDuration('2M,3d'))), '2024-04-03');
 });
 
+test('compact durations match comma-separated amounts while preserving signs, units, and limits', () => {
+  assert.deepEqual(parseDuration('3M5m'), parseDuration('3M,5m'));
+  assert.deepEqual(parseDuration('1y2M3w4d5h6m7s'), parseDuration('1y,2M,3w,4d,5h,6m,7s'));
+  assert.deepEqual(parseDuration(' -3M+5m, 2d-1h '), parseDuration('-3M,+5m,2d,-1h'));
+  assert.deepEqual(parseDuration('3M 5m'), parseDuration('3M,5m'));
+  assert.deepEqual(parseDuration('0d0h'), [{ unit: 'd', amount: 0 }, { unit: 'h', amount: 0 }]);
+  assert.equal(parseDuration('1s'.repeat(32)).length, 32);
+  for (const source of ['3M5', '3M5x', '3M5.5m', '3M,', ',3M', '3M,,5m', '3MM5m', '3 M5m', '3M--5m', '3M/5m', '1s'.repeat(33), '1s,'.repeat(33), '3M1000001m', '1'.repeat(10_001)]) {
+    assert.throws(() => parseDuration(source));
+  }
+});
+
+test('compact date creation and selector pipelines produce the same adjusted canonical values', () => {
+  const now = new Date(2024, 5, 30, 12, 30);
+  const compact = captureTemporalValue(now, 'datetime', 'YYYY-MM-DD HH:mm', '::sub(3M5m)');
+  assert.equal(formatTemporalValue(compact), '2024-03-30 12:25');
+  assert.deepEqual(compact, captureTemporalValue(now, 'datetime', 'YYYY-MM-DD HH:mm', '::sub(3M,5m)'));
+  const parsed = parseVariableSelector('date::sub(3M5m)::add(1w2d)');
+  assert.deepEqual(parsed, parseVariableSelector('date::sub(3M,5m)::add(1w,2d)'));
+  const token = formatVariableToken(parsed.name, { prefix: '<<', suffix: '>>' }, undefined, parsed.selector);
+  assert.equal(token, '<<date::sub(3M,5m)::add(1w,2d)>>');
+  assert.deepEqual(findVariableTokens(token, { prefix: '<<', suffix: '>>' })[0].selector, parsed.selector);
+});
+
 test('typed date creation parses adjustment pipelines and preserves custom and literal formats', () => {
   const plain = parseCapturedTimeCreationQuery('due=DATE::add(7d)::sub(1w)');
   assert.equal(plain?.requestedName, 'due');

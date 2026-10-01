@@ -27,17 +27,28 @@ export function captureTemporalValue(date: Date, kind: CapturedTimeShortcut, for
 }
 
 export function parseDuration(source: string): DurationPart[] {
-  const parts = source.split(',').map((part) => part.trim());
-  if (!parts.length || parts.length > 32) throw new Error('Use one to 32 duration amounts');
-  return parts.map((part) => {
-    const match = part.match(/^([+-]?\d+)([yMwdhms])$/u);
-    if (!match) throw new Error(`Invalid duration '${part}'; use y, M, w, d, h, m, or s`);
-    const amount = Number(match[1]);
-    if (!Number.isSafeInteger(amount) || Math.abs(amount) > 1_000_000) {
-      throw new Error('Duration amount is outside the supported range');
+  if (source.length > 10_000) throw new Error('Duration is too long');
+  const groups = source.split(',').map((part) => part.trim());
+  if (groups.length > 32) throw new Error('Use one to 32 duration amounts');
+  const parts: DurationPart[] = [];
+  const token = /([+-]?\d+)([yMwdhms])\s*/uy;
+  for (const group of groups) {
+    if (!group) throw new Error('Use duration amounts such as 3M5m or 3M,5m');
+    let position = 0;
+    while (position < group.length) {
+      token.lastIndex = position;
+      const match = token.exec(group);
+      if (!match) throw new Error(`Invalid duration '${group}'; use y, M, w, d, h, m, or s`);
+      const amount = Number(match[1]);
+      if (!Number.isSafeInteger(amount) || Math.abs(amount) > 1_000_000) {
+        throw new Error('Duration amount is outside the supported range');
+      }
+      parts.push({ unit: match[2] as DurationUnit, amount });
+      if (parts.length > 32) throw new Error('Use one to 32 duration amounts');
+      position = token.lastIndex;
     }
-    return { unit: match[2] as DurationUnit, amount };
-  });
+  }
+  return parts;
 }
 
 /** ISO inputs only. Date-only values use local midnight; times use January 1, 2000. */
