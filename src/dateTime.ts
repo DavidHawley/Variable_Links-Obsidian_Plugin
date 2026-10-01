@@ -6,6 +6,7 @@ export interface CapturedTimeCreationQuery {
   type?: CapturedTimeShortcut;
   format?: string;
   hasFormat: boolean;
+  adjustment?: string;
 }
 
 export type DateTimeFormatResult =
@@ -34,12 +35,23 @@ export function parseCapturedTimeCreationQuery(
   const couldMatch = typeQuery.length === 0
     || (['date', 'time', 'datetime'] as const).some((candidate) => candidate.startsWith(typeQuery));
   if (!couldMatch) return null;
+  let adjustmentStart = -1;
+  let literal = false;
+  for (let index = Math.max(0, sourceSeparator); index < expression.length; index++) {
+    const character = expression[index];
+    if (character === '\\') { index++; continue; }
+    if (character === '[') literal = true;
+    else if (character === ']') literal = false;
+    else if (!literal && expression.startsWith('::', index)) { adjustmentStart = index; break; }
+  }
+  const hasFormat = sourceSeparator !== -1 && sourceSeparator !== adjustmentStart;
   return {
     requestedName,
     typeQuery,
     type,
-    format: sourceSeparator === -1 ? undefined : expression.slice(sourceSeparator + 1),
-    hasFormat: sourceSeparator !== -1,
+    format: hasFormat ? expression.slice(sourceSeparator + 1, adjustmentStart === -1 ? undefined : adjustmentStart) : undefined,
+    hasFormat,
+    adjustment: adjustmentStart === -1 ? undefined : expression.slice(adjustmentStart),
   };
 }
 

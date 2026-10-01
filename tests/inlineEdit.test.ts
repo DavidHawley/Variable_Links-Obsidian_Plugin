@@ -1,18 +1,20 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { build } from 'esbuild';
-import type { Editor } from 'obsidian';
+import type { App, Editor, TFile } from 'obsidian';
 import type VariableLinksPlugin from '../src/main';
 import type { InlineExpressionEditor as InlineEditor } from '../src/inlineEdit';
+import type { InlineExpressionTarget } from '../src/inlineEdit';
 import type { InlinePromotionPlan } from '../src/registry';
 
 const bundle = await build({
-  stdin: { contents: "export { InlineExpressionEditor } from './src/inlineEdit';", resolveDir: process.cwd() },
+  stdin: { contents: "export { InlineExpressionEditor, editorExpressionTarget, readingExpressionTarget } from './src/inlineEdit'; export { TFile as TestFile } from 'obsidian';", resolveDir: process.cwd() },
   bundle: true, write: false, format: 'esm', platform: 'node',
   plugins: [{ name: 'inline-editor-test-host', setup(builder) {
     builder.onResolve({ filter: /^obsidian$/ }, () => ({ path: 'obsidian', namespace: 'inline-host' }));
     builder.onLoad({ filter: /.*/, namespace: 'inline-host' }, () => ({ contents: `
       export class Editor {} export class Notice {}
+      export class TFile { constructor(path) { this.path = path; } }
       export class Modal {
         constructor(app) { this.contentEl = app.createElement(); this.modalEl = app.createElement(); }
         setTitle() {} close() { this.onClose(); }
@@ -21,7 +23,7 @@ const bundle = await build({
   } }],
 });
 // eslint-disable-next-line no-unsanitized/method -- Only repository code and the host stub above are bundled.
-const { InlineExpressionEditor } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`) as { InlineExpressionEditor: typeof InlineEditor };
+const { InlineExpressionEditor, editorExpressionTarget, readingExpressionTarget, TestFile } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`) as typeof import('../src/inlineEdit') & { TestFile: new (path: string) => TFile };
 
 interface EventStub { key?: string; ctrlKey?: boolean; metaKey?: boolean; preventDefault(): void }
 class ElementStub {
@@ -32,9 +34,10 @@ class ElementStub {
   placeholder = '';
   disabled = false;
   isConnected = true;
+  focused = false;
   constructor(readonly tag = 'div') {}
   addClass(): void {}
-  focus(): void {}
+  focus(): void { this.focused = true; }
   empty(): void { this.children.length = 0; this.text = ''; }
   setText(text: string): void { this.text = text; }
   private createChild(tag: string, options?: { text?: string }): ElementStub {
@@ -55,7 +58,7 @@ class ElementStub {
   }
 }
 
-function fixture(expression = '1 + 2', prefix = '{{', suffix = '}}', taken: string[] = [], shortcuts: string[] = []) {
+function fixture(expression = '1 + 2', prefix = '{{', suffix = '}}', taken: string[] = [], shortcuts: string[] = [], targetOverride?: InlineExpressionTarget, promotionMode = false) {
   const names = new Set(taken);
   const reviewed: string[] = [];
   const created: string[] = [];
@@ -76,7 +79,8 @@ function fixture(expression = '1 + 2', prefix = '{{', suffix = '}}', taken: stri
     },
   } as unknown as VariableLinksPlugin;
   const editor = { getRange: () => note, replaceRange: (text: string) => { note = text; }, focus: () => {} } as unknown as Editor;
-  const modal = new InlineExpressionEditor(plugin, editor, { line: 0, ch: 0 }, { line: 0, ch: note.length }, note, expression, 'invoice.md', { prefix, suffix });
+  const target = targetOverride ?? editorExpressionTarget(editor, { line: 0, ch: 0 }, { line: 0, ch: note.length }, 'invoice.md', { prefix, suffix });
+  const modal: InlineEditor = new InlineExpressionEditor(plugin, target, expression, promotionMode);
   modal.onOpen();
   const content = modal.contentEl as unknown as ElementStub;
   const name = content.querySelectorAll('input')[0];
@@ -152,4 +156,55 @@ test('auto-naming respects custom delimiters and unfinished expressions still op
   assert.equal(view.name.value, 'math01');
   assert.deepEqual(view.created, []);
   view.button('Cancel').dispatch('click');
+});
+
+test('the make-into-variable-link entry point focuses the name without automatically reviewing or creating', () => {
+  const view = fixture('1 + 2', '{{', '}}', [], [], undefined, true);
+  assert.equal(view.name.focused, true);
+  assert.equal(view.input.focused, false);
+  assert.deepEqual(view.reviewed, []);
+  assert.deepEqual(view.created, []);
+});
+
+test('Reading View replaces only the chosen expression and rejects concurrent source edits', async () => {
+  const original = 'First {{=1 + 2}}, second {{=1 + 2}}.';
+  let current = original;
+  const app = { vault: {
+    read: async () => current,
+    process: async (_file: TFile, update: (text: string) => string) => { current = update(current); },
+  } } as unknown as App;
+  const start = original.lastIndexOf('{{=');
+  const target = readingExpressionTarget(app, new TestFile('invoice.md'), original, start, start + '{{=1 + 2}}'.length, { prefix: '{{', suffix: '}}' });
+  const view = fixture('1 + 2', '{{', '}}', [], [], target, true);
+  view.button('Review permanent creation').dispatch('click');
+  await flushPromises();
+  assert.equal(current, original);
+  assert.deepEqual(view.created, []);
+  view.button('Create reviewed variable and property links').dispatch('click');
+  await flushPromises();
+  assert.deepEqual(view.created, ['math_01']);
+  assert.equal(current, 'First {{=1 + 2}}, second {{math_01}}.');
+  current = `Changed ${original}`;
+  assert.equal(await target.isCurrent(), false);
+  await assert.rejects(async () => target.replace('{{other}}'), /note changed/u);
+  assert.equal(current, `Changed ${original}`);
+});
+
+test('an asynchronous stale-note check prevents permanent creation and repeated submissions', async () => {
+  let finishCheck: (current: boolean) => void = () => {};
+  const view = fixture('1 + 2', '{{', '}}', [], [], {
+    sourcePath: 'invoice.md', syntax: { prefix: '{{', suffix: '}}' },
+    isCurrent: () => new Promise<boolean>((resolve) => { finishCheck = resolve; }),
+    replace: () => { throw new Error('Must not replace a stale note'); }, focus: () => {},
+  }, true);
+  view.button('Review permanent creation').dispatch('click');
+  await flushPromises();
+  const create = view.button('Create reviewed variable and property links');
+  create.dispatch('click'); create.dispatch('click');
+  assert.equal(view.name.disabled, true);
+  finishCheck(false);
+  await flushPromises();
+  assert.deepEqual(view.created, []);
+  assert.equal(create.disabled, true);
+  assert.equal(view.name.disabled, false);
 });

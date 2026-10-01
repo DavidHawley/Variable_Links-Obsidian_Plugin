@@ -40,6 +40,8 @@ export default defineConfig(
     rules: {
       '@typescript-eslint/no-floating-promises': 'off',
       'obsidianmd/no-nodejs-modules': 'off',
+      // Node host tests install DOM globals; there is no Obsidian window here.
+      'obsidianmd/no-global-this': 'off',
     },
   },
 );

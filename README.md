@@ -38,7 +38,7 @@ For a calculation directly in a note, start the token with `=`:
 {{=round(@price * @qty * (1 + @tax), 2)}}
 ```
 
-Inline references use an existing Variable Link first, followed by an enabled shortcut, then an exact frontmatter property in the note containing the expression. No permanent entries are created during rendering. The inline quick editor provides a preview and suggests an unused permanent name such as `math_01` when the name field is blank. You can change the name; **Review permanent creation** lists the property links that would be added, and nothing is created until you explicitly confirm with **Create reviewed variable and property links**. Saving the inline expression alone does not create permanent entries. Renaming registered inputs updates their references in valid inline expressions. Code blocks and inline code remain literal.
+Inline references use an existing Variable Link first, followed by an enabled shortcut, then an exact frontmatter property in the note containing the expression. No permanent entries are created during rendering. The inline quick editor provides a preview and suggests an unused permanent name such as `math_01` when the name field is blank. You can change the name; **Review permanent creation** lists the property links that would be added, and nothing is created until you explicitly confirm with **Create reviewed variable and property links**. Right-click an inline expression and choose **Make into variable link** to open this flow in editing mode or Reading View. If identical expressions share a rendered section in Reading View, choose the source line and column to convert. Saving the inline expression alone does not create permanent entries. Renaming registered inputs updates their references in valid inline expressions. Code blocks and inline code remain literal.
 
 Choose **Date**, **Time**, or **Date and time** in the variable's Date/time field. Fixed values store their canonical value separately from their display format. Note-property dates read ISO text from the source property. Use `YYYY-MM-DD`, `HH:mm[:ss]`, or `YYYY-MM-DDTHH:mm[:ss]` as the canonical input; Date-time also accepts an explicit ISO offset. New captured date/time variables retain their canonical values automatically. Older captured text remains usable; select its date/time kind and enter a canonical value to enable arithmetic.
 
@@ -122,9 +122,12 @@ Variable names in creation expressions cannot contain spaces.
 {{DATE}}
 {{Started=TIME:hh:mm A}}
 {{Published=DATETIME:YYYY-MM-DD HH:mm}}
+{{due=DATE::add(7d)}}
+{{previous=DATE:YYYY-MM-DD::sub(1M)}}
+{{reminder=DATETIME:YYYY-MM-DD HH:mm::add(1w)::sub(2h)}}
 ```
 
-An unnamed shortcut creates a name from the first five letters or numbers of the current filename, the shortcut type, and a counter, such as `Proje_Date_01`.
+An unnamed shortcut creates a name from the first five letters or numbers of the current filename, the shortcut type, and a counter, such as `Proje_Date_01`. Optional `::add()` and `::sub()` steps adjust the captured date/time before saving it; the adjusted value stays fixed, rather than keeping an offset selector on the inserted token. Put a custom display format before the adjustment steps. Use `[::]` or escaped colons for literal double colons in a format. Invalid durations leave the creation expression unchanged and show an error.
 
 All three shortcuts support the same date-and-time format language; they differ only in their default formats and automatic names. Open the **Syntax** Settings tab and select the question-mark help beside the formats for a complete token reference and live preview.
 

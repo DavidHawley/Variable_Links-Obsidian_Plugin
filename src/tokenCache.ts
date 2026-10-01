@@ -631,6 +631,11 @@ export default class TokenCache {
     for (const guid of Object.keys(this.data.tokens)) if (!validGuids.has(guid)) delete this.data.tokens[guid];
   }
 
+  getInlineExpressionOccurrences(content: string, name: string): Occurrence[] {
+    if (!name.startsWith('=') || this.registry.getVariable(name)) return [];
+    return this.findTokens(content).filter((occurrence) => occurrence.name === name);
+  }
+
   private findTokens(
     content: string,
     syntaxes: readonly TokenSyntax[] = getRecognizedTokenSyntaxes(

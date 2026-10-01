@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { adjustTemporalValue, createTemporalValue, formatTemporalValue, normalizeTemporalValue, parseDuration, parseTemporalInput } from '../src/temporal';
+import { adjustTemporalValue, captureTemporalValue, createTemporalValue, formatTemporalValue, normalizeTemporalValue, parseDuration, parseTemporalInput } from '../src/temporal';
+import { parseCapturedTimeCreationQuery } from '../src/dateTime';
+import { isCompleteVariableCreationExpression } from '../src/creationSyntax';
 import { findVariableTokens, formatVariableToken, parseVariableSelector } from '../src/tokenSyntax';
 import { resolutionErrorText } from '../src/resolutionError';
 
@@ -11,6 +13,35 @@ test('calendar month and leap-year arithmetic clamps rather than overflowing', (
   assert.equal(formatTemporalValue(adjustTemporalValue(leap, parseDuration('1y'))), '2025-02-28');
   assert.equal(formatTemporalValue(adjustTemporalValue(january, parseDuration('1M'), true)), '2023-12-31');
   assert.equal(formatTemporalValue(adjustTemporalValue(january, parseDuration('2M,3d'))), '2024-04-03');
+});
+
+test('typed date creation parses adjustment pipelines and preserves custom and literal formats', () => {
+  const plain = parseCapturedTimeCreationQuery('due=DATE::add(7d)::sub(1w)');
+  assert.equal(plain?.requestedName, 'due');
+  assert.equal(plain?.type, 'date');
+  assert.equal(plain?.hasFormat, false);
+  assert.equal(plain?.adjustment, '::add(7d)::sub(1w)');
+  const formatted = parseCapturedTimeCreationQuery('due=DATE:YYYY-MM-DD [::]::sub(1M)');
+  assert.equal(formatted?.format, 'YYYY-MM-DD [::]');
+  assert.equal(formatted?.adjustment, '::sub(1M)');
+  assert.equal(parseCapturedTimeCreationQuery('TIME:HH:mm:ss')?.format, 'HH:mm:ss');
+  assert.equal(parseCapturedTimeCreationQuery('DATE:YYYY-MM-DD [::add(7d)]')?.adjustment, undefined);
+  assert.equal(parseCapturedTimeCreationQuery('DATE:YYYY-MM-DD \\:\\:')?.adjustment, undefined);
+  assert.equal(isCompleteVariableCreationExpression('due=DATE::add(7d)'), true);
+  assert.equal(parseCapturedTimeCreationQuery('due=FIXED:today'), null);
+});
+
+test('creation-time adjustments save their adjusted canonical date rather than a selector on an unadjusted date', () => {
+  const now = new Date(2024, 0, 31, 12, 0);
+  const nextMonth = captureTemporalValue(now, 'date', 'YYYY-MM-DD', '::add(1M)');
+  assert.equal(formatTemporalValue(nextMonth), '2024-02-29');
+  assert.equal(formatTemporalValue({ ...nextMonth, format: 'DD/MM/YYYY' }), '29/02/2024');
+  assert.equal(formatTemporalValue(captureTemporalValue(now, 'date', 'YYYY-MM-DD', '::sub(1M)::add(7d)')), '2024-01-07');
+  assert.equal(formatTemporalValue(captureTemporalValue(now, 'datetime', 'YYYY-MM-DD HH:mm', '::add(1M,2h)::sub(15m)')), '2024-02-29 13:45');
+  assert.equal(formatTemporalValue(captureTemporalValue(now, 'time', 'HH:mm', '::sub(30m)')), '11:30');
+  for (const adjustment of ['::add(', '::add(1x)', '::upper()', '::add(7d)::', '::sub(1.5M)', '::add(1000000y)']) {
+    assert.throws(() => captureTemporalValue(now, 'date', 'YYYY-MM-DD', adjustment));
+  }
 });
 
 test('strict temporal parsing rejects invalid dates, times, zones and duration syntax', () => {

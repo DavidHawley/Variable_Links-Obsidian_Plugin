@@ -1,4 +1,4 @@
-import { App, MarkdownView } from 'obsidian';
+import { App, MarkdownView, type MarkdownSectionInformation } from 'obsidian';
 import Registry, { getVariableType } from './registry';
 import Resolver from './resolver';
 import { resolutionErrorText } from './resolutionError';
@@ -60,7 +60,7 @@ export class Renderer {
     document.addEventListener('mousemove', this.mouseMoveHandler);
   }
 
-  async processElement(el: HTMLElement, sourcePath?: string): Promise<void> {
+  async processElement(el: HTMLElement, sourcePath?: string, sectionInfo?: (element: HTMLElement) => MarkdownSectionInformation | null): Promise<void> {
     if (!this.enabled) return;
     const syntaxes = getRecognizedTokenSyntaxes(this.registry.plugin.settings);
     // Walk text nodes and replace Variable Link token occurrences.
@@ -104,6 +104,11 @@ export class Renderer {
         placeholder.textContent = '…';
         placeholder.dataset.var = varName;
         if (sourcePath) placeholder.dataset.sourcePath = sourcePath;
+        const section = textNode.parentElement ? sectionInfo?.(textNode.parentElement) : null;
+        if (section) {
+          placeholder.dataset.sourceLineStart = String(section.lineStart + 1);
+          placeholder.dataset.sourceLineEnd = String(section.lineEnd + 1);
+        }
         if (definition?.hidden) {
           placeholder.textContent = '';
           placeholder.classList.add('is-hidden-value');

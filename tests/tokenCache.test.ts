@@ -59,6 +59,18 @@ async function fixture(notes: Record<string, string>, definitions: Record<string
   return { cache, data, text: (path: string) => contents.get(path), externalEdit: (path: string, text: string) => { contents.set(path, text); } };
 }
 
+test('Reading View conversion locates inline occurrences without choosing literal code or frontmatter examples', async () => {
+  const content = ['---', 'sample: "{{=1 + 2}}"', '---', '{{=1 + 2}} {{=1 + 2}}', '`{{=1 + 2}}`', '```', '{{=1 + 2}}', '```', '<!-- {{=1 + 2}} -->'].join('\n');
+  const { cache } = await fixture({ 'note.md': content });
+  const matches = cache.getInlineExpressionOccurrences(content, '=1 + 2');
+  assert.equal(matches.length, 2);
+  assert.equal(matches[0].line, 4);
+  assert.equal(matches[1].line, 4);
+  assert.notEqual(matches[0].start, matches[1].start);
+  assert.equal(content.slice(matches[1].start, matches[1].end), '{{=1 + 2}}');
+  assert.deepEqual(cache.getInlineExpressionOccurrences(content, 'ordinary'), []);
+});
+
 test('renames update direct and inline references, preserving selectors, delimiters, and protected Markdown', async () => {
   const source = [
     '---', 'literal: "{{= @price * 2 }}"', '---',

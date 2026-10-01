@@ -1,4 +1,4 @@
-import { formatCapturedDateTime, type CapturedTimeShortcut } from './dateTime';
+import { formatCapturedDateTime, type CapturedTimeCreationQuery, type CapturedTimeShortcut } from './dateTime';
 
 export interface TemporalValue {
   kind: CapturedTimeShortcut;
@@ -8,6 +8,23 @@ export interface TemporalValue {
 
 export type DurationUnit = 'y' | 'M' | 'w' | 'd' | 'h' | 'm' | 's';
 export interface DurationPart { unit: DurationUnit; amount: number }
+
+/** Capture once, then apply creation-time adjustments to the saved date/time. */
+export function captureTemporalValue(date: Date, kind: CapturedTimeShortcut, format: string, adjustment?: CapturedTimeCreationQuery['adjustment']): TemporalValue {
+  const canonical = formatCapturedDateTime(date, kind === 'date' ? 'YYYY-MM-DD' : 'HH:mm:ss.SSS');
+  if (!canonical.ok) throw new Error(canonical.error);
+  let value = createTemporalValue(kind === 'datetime' ? date.toISOString() : canonical.value, kind, format);
+  if (adjustment === undefined) return value;
+  if (adjustment.length > 10_000) throw new Error('Date adjustment is too long');
+  const steps = adjustment.split('::');
+  if (steps.shift() !== '' || !steps.length || steps.length > 32) throw new Error('Use one to 32 add() or sub() adjustments');
+  for (const step of steps) {
+    const match = step.trim().match(/^(add|sub)\(([^()]*)\)$/u);
+    if (!match) throw new Error('Use ::add(7d) or ::sub(1M) when creating a date/time variable');
+    value = adjustTemporalValue(value, parseDuration(match[2]), match[1] === 'sub');
+  }
+  return value;
+}
 
 export function parseDuration(source: string): DurationPart[] {
   const parts = source.split(',').map((part) => part.trim());

@@ -1,28 +1,60 @@
-import { Editor, Modal, Notice, type EditorPosition } from 'obsidian';
+import { Modal, Notice, type App, type Editor, type EditorPosition, type TFile } from 'obsidian';
 import type VariableLinksPlugin from './main';
 import { parseComputedExpression } from './computed';
 import { formatVariableToken, getTokenSyntax, type TokenSyntax } from './tokenSyntax';
 import type { InlinePromotionPlan } from './registry';
 
+export interface InlineExpressionTarget {
+  sourcePath: string;
+  syntax: TokenSyntax;
+  isCurrent(): boolean | Promise<boolean>;
+  replace(token: string): void | Promise<void>;
+  focus(): void;
+}
+
+export function editorExpressionTarget(editor: Editor, from: EditorPosition, to: EditorPosition, sourcePath: string, syntax: TokenSyntax): InlineExpressionTarget {
+  const original = editor.getRange(from, to);
+  return {
+    sourcePath, syntax,
+    isCurrent: () => editor.getRange(from, to) === original,
+    replace: (token) => {
+      if (editor.getRange(from, to) !== original) throw new Error('The note changed while editing. Reopen this expression.');
+      editor.replaceRange(token, from, to);
+    },
+    focus: () => editor.focus(),
+  };
+}
+
+export function readingExpressionTarget(app: App, file: TFile, original: string, start: number, end: number, syntax: TokenSyntax): InlineExpressionTarget {
+  return {
+    sourcePath: file.path, syntax,
+    isCurrent: async () => await app.vault.read(file) === original,
+    replace: async (token) => {
+      await app.vault.process(file, (current) => {
+        if (current !== original) throw new Error('The note changed while editing. Reopen this expression.');
+        return current.slice(0, start) + token + current.slice(end);
+      });
+    },
+    focus: () => {},
+  };
+}
+
 export class InlineExpressionEditor extends Modal {
   private generation = 0;
   private reviewGeneration = 0;
+  private closed = false;
 
   constructor(
     private readonly plugin: VariableLinksPlugin,
-    private readonly editor: Editor,
-    private readonly from: EditorPosition,
-    private readonly to: EditorPosition,
-    private readonly original: string,
+    private readonly target: InlineExpressionTarget,
     private readonly expression: string,
-    private readonly sourcePath: string,
-    private readonly syntax: TokenSyntax,
+    private readonly promotionMode = false,
   ) { super(plugin.app); }
 
   onOpen(): void {
     this.plugin.trackDialog(this);
     this.modalEl.addClass('variable-links-quick-editor');
-    this.setTitle('Edit inline expression');
+    this.setTitle(this.promotionMode ? 'Make into variable link' : 'Edit inline expression');
     this.contentEl.createDiv({ text: 'Inputs use existing Variable Links first, then exact properties from this note. Ctrl/Cmd+Enter saves. Escape cancels.', cls: 'variable-links-hint-text' });
     const form = this.contentEl.createDiv({ cls: 'variable-links-quick-form' });
     const label = form.createEl('label', { cls: 'variable-links-quick-field' });
@@ -33,28 +65,37 @@ export class InlineExpressionEditor extends Modal {
     const error = form.createDiv({ cls: 'variable-links-editor-error', attr: { role: 'alert' } });
     const updatePreview = async (): Promise<void> => {
       const generation = ++this.generation;
-      const result = await this.plugin.resolver?.resolveInline(input.value, this.sourcePath);
+      const result = await this.plugin.resolver?.resolveInline(input.value, this.target.sourcePath);
       if (generation !== this.generation || !preview.isConnected) return;
       preview.setText(result?.ok ? `Preview: ${String(result.value)}` : `[Expression error] ${result?.error ?? ''}`);
     };
     input.addEventListener('input', () => void updatePreview());
     void updatePreview();
-    const replace = (name: string): void => {
-      const token = formatVariableToken(name, this.syntax);
-      if (this.editor.getRange(this.from, this.to) !== this.original) throw new Error('The note changed while editing. Reopen this expression.');
-      this.editor.replaceRange(token, this.from, this.to);
+    const replace = async (name: string): Promise<void> => {
+      const token = formatVariableToken(name, this.target.syntax);
+      await this.target.replace(token);
       this.close();
-      this.editor.focus();
+      this.target.focus();
     };
-    const save = (): void => {
-      if (promoting) return;
-      try { parseComputedExpression(input.value); replace(`=${input.value.trim()}`); }
+    let saving = false;
+    const freezeControls = (): (() => void) => {
+      const controls = form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement>('input, textarea, button');
+      const disabled = [...controls].map((control) => control.disabled);
+      for (const control of controls) control.disabled = true;
+      return () => { [...controls].forEach((control, index) => { control.disabled = disabled[index]; }); };
+    };
+    const save = async (): Promise<void> => {
+      if (promoting || saving || this.closed) return;
+      saving = true;
+      const restore = freezeControls();
+      try { parseComputedExpression(input.value); await replace(`=${input.value.trim()}`); }
       catch (reason) { error.setText(reason instanceof Error ? reason.message : String(reason)); }
+      finally { saving = false; restore(); }
     };
     const actions = form.createDiv({ cls: 'variable-links-quick-actions' });
-    actions.createEl('button', { text: 'Save expression', cls: 'mod-cta' }).addEventListener('click', save);
+    actions.createEl('button', { text: 'Save expression', cls: 'mod-cta' }).addEventListener('click', () => void save());
     actions.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
-    input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); save(); } });
+    input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void save(); } });
     const permanent = form.createEl('label', { cls: 'variable-links-quick-field' });
     permanent.createSpan({ text: 'Permanent name (optional)' });
     const name = permanent.createEl('input', { type: 'text' });
@@ -93,19 +134,19 @@ export class InlineExpressionEditor extends Modal {
     let promoting = false;
     review.addEventListener('click', () => {
       const registry = this.plugin.registry;
-      if (!registry || promoting) return;
+      if (!registry || promoting || saving || this.closed) return;
       suggestName();
       const generation = ++this.reviewGeneration;
       plan = undefined;
       promote.disabled = true;
       error.empty();
       summary.setText('Checking permanent inputs…');
-      void registry.prepareInlinePromotion(name.value, input.value, this.sourcePath).then((prepared) => {
+      void registry.prepareInlinePromotion(name.value, input.value, this.target.sourcePath).then((prepared) => {
         if (generation !== this.reviewGeneration || !summary.isConnected) return;
         plan = prepared;
         const newProperties = prepared.additions.map((entry) => entry.name);
         const existing = prepared.inputs.filter((entry) => !newProperties.includes(entry.name)).map((entry) => `${entry.name} → ${entry.targetName}${entry.selector ?? ''}`);
-        summary.setText(`Create “${prepared.name}” and ${newProperties.length} permanent property link(s) from ${this.sourcePath}: ${newProperties.join(', ') || 'none'}. Reuse: ${existing.join(', ') || 'none'}. These names will be available throughout the vault.`);
+        summary.setText(`Create “${prepared.name}” and ${newProperties.length} permanent property link(s) from ${this.target.sourcePath}: ${newProperties.join(', ') || 'none'}. Reuse: ${existing.join(', ') || 'none'}. These names will be available throughout the vault.`);
         promote.disabled = false;
       }).catch((reason: unknown) => {
         if (generation !== this.reviewGeneration || !summary.isConnected) return;
@@ -115,27 +156,29 @@ export class InlineExpressionEditor extends Modal {
     });
     for (const control of [input, name]) control.addEventListener('input', () => { this.reviewGeneration++; plan = undefined; promote.disabled = true; summary.empty(); });
     promote.addEventListener('click', () => {
-      if (promoting || !plan) return;
+      if (promoting || saving || this.closed || !plan) return;
       const reviewedPlan = plan;
       promote.disabled = true;
-      if (this.editor.getRange(this.from, this.to) !== this.original) { error.setText('The note changed. Reopen the expression.'); return; }
       const registry = this.plugin.registry;
       if (!registry) { error.setText('The registry is unavailable'); return; }
       promoting = true;
-      const controls = form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement>('input, textarea, button');
-      for (const control of controls) control.disabled = true;
-      void registry.promoteInlineExpression(reviewedPlan).then(() => {
-        try { replace(reviewedPlan.name); }
+      const restore = freezeControls();
+      void (async () => {
+        if (!await this.target.isCurrent()) throw new Error('The note changed. Reopen the expression.');
+        if (this.closed) return;
+        await registry.promoteInlineExpression(reviewedPlan);
+        try { await replace(reviewedPlan.name); }
         catch (reason) { new Notice(`The permanent variable was created; ${reason instanceof Error ? reason.message : String(reason)}`); this.close(); }
-      }).catch((reason: unknown) => {
+      })().catch((reason: unknown) => {
         error.setText(reason instanceof Error ? reason.message : String(reason));
         promoting = false;
-        for (const control of controls) control.disabled = false;
+        restore();
         promote.disabled = true;
       });
     });
-    input.focus();
+    if (this.promotionMode) name.focus();
+    else input.focus();
   }
 
-  onClose(): void { this.generation++; this.reviewGeneration++; this.plugin.releaseDialog(this); this.contentEl.empty(); }
+  onClose(): void { this.closed = true; this.generation++; this.reviewGeneration++; this.plugin.releaseDialog(this); this.contentEl.empty(); }
 }

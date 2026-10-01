@@ -16,12 +16,11 @@ import Registry, {
   type VariableType,
 } from './registry';
 import Resolver from './resolver';
-import { createTemporalValue, type TemporalValue } from './temporal';
+import { captureTemporalValue, formatTemporalValue, type TemporalValue } from './temporal';
 import {
   automaticCapturedTimeNameBase,
   capturedTimeShortcutLabel,
   defaultFormatForCapturedTime,
-  formatCapturedDateTime,
   parseCapturedTimeCreationQuery,
   type CapturedTimeCreationQuery,
   type CapturedTimeShortcut,
@@ -775,21 +774,22 @@ export default class VariableSuggest extends EditorSuggest<SuggestItem> {
             ? 'The variable name contains the active token prefix or suffix.'
             : 'The automatic name conflicts with the active token format. Use Name=DATE, Name=TIME, or Name=DATETIME.';
         }
-        const formatted = formatCapturedDateTime(capturedAt, format);
-        const canonical = formatCapturedDateTime(capturedAt, type === 'date' ? 'YYYY-MM-DD' : 'HH:mm:ss.SSS');
-        if (!creationError && !formatted.ok) creationError = formatted.error;
+        let temporal: TemporalValue | undefined;
+        let value = '';
+        try {
+          temporal = captureTemporalValue(capturedAt, type, format, query.adjustment);
+          value = formatTemporalValue(temporal);
+        } catch (error) {
+          if (!creationError) creationError = error instanceof Error ? error.message : String(error);
+        }
         return {
           name,
           kind: 'capture' as const,
           file: toFileLink(file.path),
-          value: formatted.ok ? formatted.value : '',
+          value,
           captureType: type,
           captureFormat: format,
-          temporal: formatted.ok && canonical.ok ? createTemporalValue(
-            type === 'datetime' ? capturedAt.toISOString()
-              : canonical.value,
-            type, format,
-          ) : undefined,
+          temporal,
           creationError: creationError || undefined,
           textCase,
         };

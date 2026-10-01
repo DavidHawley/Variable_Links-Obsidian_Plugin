@@ -28,7 +28,7 @@ import Renderer from './renderer';
 import Resolver from './resolver';
 import { resolutionErrorText } from './resolutionError';
 import { QuickVariableEditor } from './quickEdit';
-import { InlineExpressionEditor } from './inlineEdit';
+import { InlineExpressionEditor, editorExpressionTarget, readingExpressionTarget } from './inlineEdit';
 import {
   DEFAULT_SETTINGS,
   normalizeInfoCardEditorCollapsedItems,
@@ -172,7 +172,7 @@ export default class VariableLinksPlugin extends Plugin {
       }));
       this.renderer = new Renderer(this.app, this.registry, this.resolver, this.indexer);
       this.registerMarkdownPostProcessor(async (element, context) => {
-        if (this.renderer) await this.renderer.processElement(element, context.sourcePath);
+        if (this.renderer) await this.renderer.processElement(element, context.sourcePath, (section) => context.getSectionInfo(section));
       });
 
       this.livePreviewRenderer = new LivePreviewRenderer(this.app, this.resolver);
@@ -343,8 +343,36 @@ export default class VariableLinksPlugin extends Plugin {
     new QuickVariableEditor(this, name, inspector, anchor).open();
   }
 
-  private openInlineEditor(editor: Editor, token: VariableTokenContext, sourcePath: string): void {
-    new InlineExpressionEditor(this, editor, token.from, token.to, editor.getRange(token.from, token.to), token.name.slice(1), sourcePath, token.syntax).open();
+  private openInlineEditor(editor: Editor, token: VariableTokenContext, sourcePath: string, promotionMode = false): void {
+    new InlineExpressionEditor(this, editorExpressionTarget(editor, token.from, token.to, sourcePath, token.syntax), token.name.slice(1), promotionMode).open();
+  }
+
+  private async openReadingInlineEditor(name: string, anchor: HTMLElement): Promise<void> {
+    try {
+      const file = this.app.vault.getFileByPath(anchor.dataset.sourcePath ?? '');
+      if (!file || !this.tokenCache) throw new Error('The source note is unavailable. Open the original note to convert this expression.');
+      const original = await this.app.vault.read(file);
+      if (!this.active) return;
+      const startLine = Number(anchor.dataset.sourceLineStart);
+      const endLine = Number(anchor.dataset.sourceLineEnd);
+      const candidates = this.tokenCache.getInlineExpressionOccurrences(original, name)
+        .filter((entry) => !Number.isFinite(startLine) || !Number.isFinite(endLine) || (entry.line >= startLine && entry.line <= endLine));
+      if (!candidates.length) throw new Error('The expression changed or its source location is unavailable. Reopen the note.');
+      const open = (entry: typeof candidates[number]): void => {
+        new InlineExpressionEditor(this, readingExpressionTarget(this.app, file, original, entry.start, entry.end, entry.syntax), name.slice(1), true).open();
+      };
+      if (candidates.length === 1) { open(candidates[0]); return; }
+      // Identical expressions in one rendered section require an explicit choice.
+      const menu = new Menu();
+      const lines = original.split(/\r\n|\n|\r/u);
+      for (const entry of candidates) menu.addItem((item) => item
+        .setTitle(`Line ${entry.line}, column ${entry.ch}: ${(lines[entry.line - 1] ?? '').trim().slice(0, 100)}`)
+        .onClick(() => open(entry)));
+      const bounds = anchor.getBoundingClientRect();
+      menu.showAtPosition({ x: bounds.left, y: bounds.bottom });
+    } catch (error) {
+      new Notice(`Variable links: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   releaseDialog(dialog: CloseableDialog): void {
@@ -965,7 +993,13 @@ export default class VariableLinksPlugin extends Plugin {
       };
       const readingToken = event.target instanceof Element ? event.target.closest<HTMLElement>('.variable-links-token-reading[data-var]') : null;
       const name = readingToken?.dataset.var;
-      if (readingToken && name && this.registry?.getVariable(name)) {
+      if (readingToken && name && !this.registry?.getVariable(name) && name.startsWith('=')) {
+        event.preventDefault(); event.stopPropagation();
+        const menu = new Menu();
+        menu.addItem((item) => item.setTitle('Make into variable link').setIcon('braces')
+          .onClick(() => void this.openReadingInlineEditor(name, readingToken)));
+        menu.showAtMouseEvent(event);
+      } else if (readingToken && name && this.registry?.getVariable(name)) {
         event.preventDefault(); event.stopPropagation();
         const menu = new Menu();
         menu.addItem((item) => item.setTitle('Quick edit').setIcon('pencil').onClick(() => this.openQuickVariableEditor(name, false, readingToken)));
@@ -975,7 +1009,7 @@ export default class VariableLinksPlugin extends Plugin {
       }
     }, true);
 
-      this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, info) => {
+    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, info) => {
       if (!this.active) return;
       this.clearContextMenuResources();
       const insertionPosition = this.getContextEditorPosition(editor);
@@ -984,6 +1018,11 @@ export default class VariableLinksPlugin extends Plugin {
       const variableName = tokenContext?.name ?? null;
       const insideVariableToken = tokenContext !== null;
       const definition = variableName ? this.registry?.getVariable(variableName) : null;
+      if (tokenContext && !definition && variableName?.startsWith('=') && info.file) {
+        const sourcePath = info.file.path;
+        menu.addItem((item) => item.setTitle('Make into variable link').setIcon('braces')
+          .onClick(() => this.openInlineEditor(editor, tokenContext, sourcePath, true)));
+      }
       const favorites = Array.from(this.registry?.data.entries() ?? [])
         .filter(([, item]) => item.favorite)
         .map(([name]) => name)
