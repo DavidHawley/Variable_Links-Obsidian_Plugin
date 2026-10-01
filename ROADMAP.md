@@ -310,7 +310,7 @@ This document records planned improvements to Variable Links. Plans may change a
 
 ## 1.4.0
 
-> **Scope closed:** The user confirmed the implemented features and smoke tests on October 1, 2026, and requested release preparation. Keep further feature additions and editor redesigns for a later update. The approved additions below are included in this release; publication remains pending.
+> **Released October 1, 2026:** The user confirmed the implemented features and smoke tests, and version 1.4.0 was merged into `main` and published. Keep further feature additions and editor redesigns for a later update. The approved additions below are included in this release.
 
 > **Planning gate:** Review the expression syntax, date arithmetic rules, error behavior, and direct-editing safeguards before their implementation begins. Keep computed values declarative and understandable, use a safe parser rather than executable JavaScript, and build direct editing on the Management Center and validation systems introduced in 1.3.
 
