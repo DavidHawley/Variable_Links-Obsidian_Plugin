@@ -1,3 +1,5 @@
+**[Overview](README.md)** • [Roadmap](ROADMAP.md) • [Changelog](CHANGELOG.md)
+
 # Variable Links
 
 Variable Links is an Obsidian plugin for creating reusable pointers to values in your vault.
