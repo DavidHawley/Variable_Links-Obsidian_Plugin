@@ -1,3 +1,5 @@
+[Overview](README.md) • **[Roadmap](ROADMAP.md)** • [Changelog](CHANGELOG.md)
+
 # Roadmap
 
 This document records planned improvements to Variable Links. Plans may change as features are designed and tested. Completed work belongs in `CHANGELOG.md`.
